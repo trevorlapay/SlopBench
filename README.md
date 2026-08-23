@@ -59,8 +59,6 @@ target carries no answers, by construction:
 
 ## Using a bench
 
-_IF YOU READ NOTHING ELSE IN THIS DOCUMENT, READ THIS PART._
-
 Point the scanner at the bench directory, but first remove the couple of
 **non-key** evaluator files that would still *announce* the tree is a benchmark
 (the answer keys themselves already live outside every bench, in
