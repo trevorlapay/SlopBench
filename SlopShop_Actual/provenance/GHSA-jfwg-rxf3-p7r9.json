@@ -1,0 +1,33 @@
+{
+  "cve": "GHSA-jfwg-rxf3-p7r9",
+  "osv_id": "GHSA-jfwg-rxf3-p7r9",
+  "aliases": [
+    "GO-2026-5467"
+  ],
+  "published": "2026-04-06T17:56:31+00:00",
+  "ecosystem": "Go",
+  "package": "github.com/authorizerdev/authorizer",
+  "cwe_ids": [
+    "CWE-209",
+    "CWE-943"
+  ],
+  "primary_cwe": "CWE-209",
+  "summary": "Authorizer: CQL/N1QL Injection in Cassandra and Couchbase Backends via fmt.Sprintf String Interpolation",
+  "severity": "CVSS:3.1/AV:N/AC:L/PR:N/",
+  "repo": "https://github.com/authorizerdev/authorizer",
+  "fix_commit": "73679faa53cd215c7524d651046e402c43809786",
+  "upstream_path": "internal/storage/db/cassandradb/authenticator.go",
+  "language": "go",
+  "start_line": 7,
+  "end_line": 7,
+  "hunks": 11,
+  "file_lines": 134,
+  "local_path": "corpus/go/GHSA-jfwg-rxf3-p7r9__authenticator.go",
+  "references": [
+    "https://github.com/authorizerdev/authorizer/security/advisories/GHSA-jfwg-rxf3-p7r9",
+    "https://github.com/authorizerdev/authorizer/pull/500",
+    "https://github.com/authorizerdev/authorizer/commit/73679faa53cd215c7524d651046e402c43809786",
+    "https://github.com/authorizerdev/authorizer",
+    "https://github.com/authorizerdev/authorizer/releases/tag/2.0.1"
+  ]
+}

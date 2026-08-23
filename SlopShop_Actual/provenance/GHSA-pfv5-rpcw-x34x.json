@@ -1,0 +1,29 @@
+{
+  "cve": "GHSA-pfv5-rpcw-x34x",
+  "osv_id": "GHSA-pfv5-rpcw-x34x",
+  "aliases": [],
+  "published": "2026-03-19T03:30:57+00:00",
+  "ecosystem": "npm",
+  "package": "openclaw",
+  "cwe_ids": [
+    "CWE-78"
+  ],
+  "primary_cwe": "CWE-78",
+  "summary": "Duplicate Advisory: OpenClaw's allow-always wrapper persistence could bypass future approvals and enable command execution",
+  "severity": "CVSS:3.1/AV:N/AC:H/PR:H/",
+  "repo": "https://github.com/openclaw/openclaw",
+  "fix_commit": "24c954d972400f508814532dea0e4dcb38418bb0",
+  "upstream_path": "src/infra/exec-approvals-allowlist.ts",
+  "language": "typescript",
+  "start_line": 6,
+  "end_line": 6,
+  "hunks": 5,
+  "file_lines": 468,
+  "local_path": "corpus/typescript/GHSA-pfv5-rpcw-x34x__exec-approvals-allowlist.ts",
+  "references": [
+    "https://github.com/openclaw/openclaw/security/advisories/GHSA-6j27-pc5c-m8w8",
+    "https://nvd.nist.gov/vuln/detail/CVE-2026-29607",
+    "https://github.com/openclaw/openclaw/commit/24c954d972400f508814532dea0e4dcb38418bb0",
+    "https://www.vulncheck.com/advisories/openclaw-authorization-bypass-via-allow-always-wrapper-persistence"
+  ]
+}

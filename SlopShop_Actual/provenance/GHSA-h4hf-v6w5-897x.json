@@ -1,0 +1,34 @@
+{
+  "cve": "GHSA-h4hf-v6w5-897x",
+  "osv_id": "GHSA-h4hf-v6w5-897x",
+  "aliases": [],
+  "published": "2026-07-24T21:54:55+00:00",
+  "ecosystem": "Packagist",
+  "package": "poweradmin/poweradmin",
+  "cwe_ids": [
+    "CWE-620",
+    "CWE-862"
+  ],
+  "primary_cwe": "CWE-620",
+  "summary": "Poweradmin: API user-update endpoint leads to a non-admin reset any user's password and take over the superuser account",
+  "severity": "CVSS:3.1/AV:N/AC:L/PR:L/",
+  "repo": "https://github.com/poweradmin/poweradmin",
+  "fix_commit": "36e9081a5c83cb962dc6275b7adcd6cb463f1028",
+  "upstream_path": "lib/Application/Controller/Api/V1/UsersController.php",
+  "language": "php",
+  "start_line": 708,
+  "end_line": 708,
+  "hunks": 1,
+  "file_lines": 999,
+  "local_path": "corpus/php/GHSA-h4hf-v6w5-897x__UsersController.php",
+  "references": [
+    "https://github.com/poweradmin/poweradmin/security/advisories/GHSA-h4hf-v6w5-897x",
+    "https://github.com/poweradmin/poweradmin/commit/36e9081a5c83cb962dc6275b7adcd6cb463f1028",
+    "https://github.com/poweradmin/poweradmin/commit/9bdda77bc103f283a0babcaf3355f3f95b360122",
+    "https://github.com/poweradmin/poweradmin/commit/b90fd83e67e6d7b6ad6c9be3a1c0d2f45bd73b6c",
+    "https://github.com/poweradmin/poweradmin/commit/ffb95d5201cad5cb38e3eabc4f8103cac2ca18e2",
+    "https://github.com/poweradmin/poweradmin",
+    "https://github.com/poweradmin/poweradmin/releases/tag/v4.2.5",
+    "https://github.com/poweradmin/poweradmin/releases/tag/v4.3.4"
+  ]
+}

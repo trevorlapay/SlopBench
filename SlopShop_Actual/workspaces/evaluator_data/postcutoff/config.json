@@ -1,0 +1,8 @@
+{
+  "benchmark": "postcutoff",
+  "total_test_cases": 150,
+  "total_ground_truths": 150,
+  "workspace_path": "C:\\Users\\trevo\\Claude\\SASTBenchTool\\workspaces\\postcutoff",
+  "prompt_template": "selective",
+  "layout": "app-like-nested"
+}

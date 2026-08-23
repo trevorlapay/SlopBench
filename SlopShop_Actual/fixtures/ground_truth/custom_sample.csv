@@ -1,0 +1,4 @@
+file_path,cwe_id,start_line,end_line,is_vulnerable
+code/sample_001.c,CWE-79,15,,true
+code/sample_002.java,CWE-89,30,32,true
+code/sample_003.c,CWE-120,10,,true

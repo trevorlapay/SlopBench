@@ -1,0 +1,32 @@
+{
+  "cve": "GHSA-gx4c-2hqx-cw2r",
+  "osv_id": "GHSA-gx4c-2hqx-cw2r",
+  "aliases": [
+    "GO-2026-6196"
+  ],
+  "published": "2026-08-05T20:43:11+00:00",
+  "ecosystem": "Go",
+  "package": "github.com/rclone/rclone",
+  "cwe_ids": [
+    "CWE-319",
+    "CWE-522"
+  ],
+  "primary_cwe": "CWE-319",
+  "summary": "rclone: S3 backend does not strip X-Amz-Security-Token on a same-host HTTPS->HTTP redirect",
+  "severity": "CVSS:3.1/AV:A/AC:H/PR:N/",
+  "repo": "https://github.com/rclone/rclone",
+  "fix_commit": "1a28451ea6fc8ac1806b0e9923dcb5b3f543f7fa",
+  "upstream_path": "backend/s3/s3.go",
+  "language": "go",
+  "start_line": 1373,
+  "end_line": 1379,
+  "hunks": 3,
+  "file_lines": 5389,
+  "local_path": "corpus/go/GHSA-gx4c-2hqx-cw2r__s3.go",
+  "references": [
+    "https://github.com/rclone/rclone/security/advisories/GHSA-gx4c-2hqx-cw2r",
+    "https://github.com/rclone/rclone/commit/1a28451ea6fc8ac1806b0e9923dcb5b3f543f7fa",
+    "https://github.com/rclone/rclone",
+    "https://github.com/rclone/rclone/releases/tag/v1.74.4"
+  ]
+}

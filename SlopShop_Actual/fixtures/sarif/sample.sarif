@@ -1,0 +1,85 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "SampleScanner",
+          "version": "1.0.0",
+          "rules": [
+            {
+              "id": "SQL001",
+              "shortDescription": { "text": "SQL Injection" },
+              "properties": { "cwe": "CWE-89" }
+            },
+            {
+              "id": "XSS001",
+              "shortDescription": { "text": "Cross-Site Scripting" },
+              "properties": { "cwe": "CWE-79" }
+            },
+            {
+              "id": "PATH001",
+              "shortDescription": { "text": "Path Traversal" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "SQL001",
+          "level": "error",
+          "message": { "text": "Possible SQL injection via unsanitized user input" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/db/queries.py" },
+                "region": { "startLine": 42, "endLine": 45 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "XSS001",
+          "level": "warning",
+          "message": { "text": "Reflected XSS in template rendering" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/web/views.py" },
+                "region": { "startLine": 18 }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "PATH001",
+          "level": "warning",
+          "message": { "text": "Path traversal via user-controlled filename" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "./src/utils/file_handler.py" },
+                "region": { "startLine": 7, "endLine": 10 }
+              }
+            }
+          ],
+          "properties": { "cwe": "CWE-22" }
+        },
+        {
+          "ruleId": "CWE-78",
+          "level": "error",
+          "message": { "text": "OS command injection in subprocess call" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "src/utils/runner.py" },
+                "region": { "startLine": 55, "endLine": 60 }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

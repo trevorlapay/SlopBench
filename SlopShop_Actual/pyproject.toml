@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sastbench"
+version = "0.1.0"
+description = "Benchmark framework for evaluating vulnerability-hunting AI agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["security", "vulnerability", "benchmark", "AI", "static-analysis", "SAST", "CWE"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "pydantic>=2.0",
+    "jinja2>=3.1",
+    "plotly>=5.18",
+    "pandas>=2.1",
+    "pyarrow>=14.0",
+    "pyyaml>=6.0",
+    "httpx>=0.25",
+]
+
+[project.urls]
+Homepage = "https://github.com/sargemonkey/SASTBench"
+Repository = "https://github.com/sargemonkey/SASTBench"
+Issues = "https://github.com/sargemonkey/SASTBench/issues"
+Documentation = "https://github.com/sargemonkey/SASTBench/blob/main/docs/architecture.md"
+
+[project.optional-dependencies]
+docker = ["docker>=7.0"]
+github = ["PyGithub>=2.1"]
+llm = ["openai>=1.0", "anthropic>=0.18"]
+all = ["sastbench[docker,github,llm]"]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.3",
+]
+
+[project.scripts]
+sastbench = "sastbench.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+sastbench = ["prompts/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

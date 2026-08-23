@@ -1,0 +1,6 @@
+Analyze the following source code for security vulnerabilities.
+
+For each vulnerability, report: file_path, start_line, cwe_id, severity,
+confidence, and a brief message.
+
+Focus on exploitable issues only. Report as JSON.

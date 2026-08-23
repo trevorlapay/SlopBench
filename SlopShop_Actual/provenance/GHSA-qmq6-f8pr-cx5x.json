@@ -1,0 +1,28 @@
+{
+  "cve": "GHSA-qmq6-f8pr-cx5x",
+  "osv_id": "GHSA-qmq6-f8pr-cx5x",
+  "aliases": [],
+  "published": "2026-04-23T06:30:22+00:00",
+  "ecosystem": "npm",
+  "package": "uuid",
+  "cwe_ids": [
+    "CWE-670"
+  ],
+  "primary_cwe": "CWE-670",
+  "summary": "Duplicate Advisory: uuid: Missing buffer bounds check in v3/v5/v6 when buf is provided",
+  "severity": "CVSS:3.1/AV:L/AC:H/PR:N/",
+  "repo": "https://github.com/uuidjs/uuid",
+  "fix_commit": "3d2c5b0342f0fcb52a5ac681c3d47c13e7444b34",
+  "upstream_path": "src/v35.ts",
+  "language": "typescript",
+  "start_line": 58,
+  "end_line": 58,
+  "hunks": 1,
+  "file_lines": 69,
+  "local_path": "corpus/typescript/GHSA-qmq6-f8pr-cx5x__v35.ts",
+  "references": [
+    "https://github.com/uuidjs/uuid/security/advisories/GHSA-w5hq-g745-h8pq",
+    "https://nvd.nist.gov/vuln/detail/CVE-2026-41988",
+    "https://github.com/uuidjs/uuid/commit/3d2c5b0342f0fcb52a5ac681c3d47c13e7444b34"
+  ]
+}

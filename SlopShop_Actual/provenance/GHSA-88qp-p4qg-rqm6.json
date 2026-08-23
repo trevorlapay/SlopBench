@@ -1,0 +1,29 @@
+{
+  "cve": "GHSA-88qp-p4qg-rqm6",
+  "osv_id": "GHSA-88qp-p4qg-rqm6",
+  "aliases": [],
+  "published": "2026-02-19T20:30:25+00:00",
+  "ecosystem": "npm",
+  "package": "@sveltejs/kit",
+  "cwe_ids": [
+    "CWE-843"
+  ],
+  "primary_cwe": "CWE-843",
+  "summary": "CPU exhaustion in SvelteKit remote form deserialization (experimental only)",
+  "severity": "CVSS:4.0/AV:N/AC:L/AT:N/",
+  "repo": "https://github.com/sveltejs/kit",
+  "fix_commit": "3e607b314aec9e5f278d32847945b8b6323e1cb8",
+  "upstream_path": "packages/kit/src/runtime/form-utils.js",
+  "language": "javascript",
+  "start_line": 271,
+  "end_line": 271,
+  "hunks": 1,
+  "file_lines": 846,
+  "local_path": "corpus/javascript/GHSA-88qp-p4qg-rqm6__form-utils.js",
+  "references": [
+    "https://github.com/sveltejs/kit/security/advisories/GHSA-88qp-p4qg-rqm6",
+    "https://github.com/sveltejs/kit/commit/3e607b314aec9e5f278d32847945b8b6323e1cb8",
+    "https://github.com/sveltejs/kit",
+    "https://github.com/sveltejs/kit/releases/tag/@sveltejs/kit@2.52.2"
+  ]
+}

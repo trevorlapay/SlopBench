@@ -1,0 +1,28 @@
+{
+  "ground_truths": [
+    {
+      "file_path": "code/sample_001.c",
+      "cwe_id": "CWE-79",
+      "start_line": 15,
+      "is_vulnerable": true
+    },
+    {
+      "file_path": "code/sample_002.java",
+      "cwe_id": "CWE-89",
+      "start_line": 30,
+      "is_vulnerable": true
+    },
+    {
+      "file_path": "code/sample_003.c",
+      "cwe_id": "CWE-120",
+      "start_line": 10,
+      "is_vulnerable": true
+    },
+    {
+      "file_path": "code/sample_004.py",
+      "cwe_id": "CWE-79",
+      "start_line": 5,
+      "is_vulnerable": false
+    }
+  ]
+}

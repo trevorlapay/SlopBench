@@ -1,0 +1,30 @@
+{
+  "cve": "GHSA-pqh8-p93p-2rx7",
+  "osv_id": "GHSA-pqh8-p93p-2rx7",
+  "aliases": [],
+  "published": "2026-07-31T15:56:12+00:00",
+  "ecosystem": "npm",
+  "package": "@dynatrace-oss/dynatrace-mcp-server",
+  "cwe_ids": [
+    "CWE-943"
+  ],
+  "primary_cwe": "CWE-943",
+  "summary": "@dynatrace-oss/dynatrace-mcp-server has a DQL injection via parameters not documented as DQL",
+  "severity": "CVSS:3.1/AV:N/AC:L/PR:N/",
+  "repo": "https://github.com/dynatrace-oss/dynatrace-mcp",
+  "fix_commit": "15d3546c0618ffbaeaeca477337e08e92f2151bc",
+  "upstream_path": "src/capabilities/find-monitored-entity-by-name.ts",
+  "language": "typescript",
+  "start_line": 2,
+  "end_line": 41,
+  "hunks": 4,
+  "file_lines": 79,
+  "local_path": "corpus/typescript/GHSA-pqh8-p93p-2rx7__find-monitored-entity-by-name.ts",
+  "references": [
+    "https://github.com/dynatrace-oss/dynatrace-mcp/security/advisories/GHSA-pqh8-p93p-2rx7",
+    "https://github.com/dynatrace-oss/dynatrace-mcp/pull/562",
+    "https://github.com/dynatrace-oss/dynatrace-mcp/commit/15d3546c0618ffbaeaeca477337e08e92f2151bc",
+    "https://github.com/dynatrace-oss/dynatrace-mcp",
+    "https://github.com/dynatrace-oss/dynatrace-mcp/releases/tag/v2.1.1"
+  ]
+}

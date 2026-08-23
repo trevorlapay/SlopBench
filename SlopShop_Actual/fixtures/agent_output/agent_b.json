@@ -1,0 +1,36 @@
+{
+  "findings": [
+    {
+      "file_path": "src/api/endpoint.py",
+      "start_line": 15,
+      "end_line": 20,
+      "cwe_id": "CWE-89",
+      "severity": "high",
+      "confidence": 0.92,
+      "message": "SQL injection in query builder",
+      "rule_id": "SQL-INJ-001",
+      "tool_name": "AgentBeta"
+    },
+    {
+      "file_path": "src/auth/session.py",
+      "start_line": 44,
+      "cwe_id": "CWE-287",
+      "severity": "critical",
+      "confidence": 0.85,
+      "message": "Authentication bypass via session fixation",
+      "rule_id": "AUTH-001",
+      "tool_name": "AgentBeta"
+    },
+    {
+      "file_path": "src/templates/profile.html",
+      "start_line": 8,
+      "end_line": 8,
+      "cwe_id": "CWE-79",
+      "severity": "medium",
+      "confidence": 0.78,
+      "message": "Stored XSS in user profile field",
+      "rule_id": "XSS-002",
+      "tool_name": "AgentBeta"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "cve": "GHSA-mj63-m3rc-8ppr",
+  "osv_id": "GHSA-mj63-m3rc-8ppr",
+  "aliases": [],
+  "published": "2026-08-06T20:42:54+00:00",
+  "ecosystem": "Packagist",
+  "package": "league/commonmark",
+  "cwe_ids": [
+    "CWE-405"
+  ],
+  "primary_cwe": "CWE-405",
+  "summary": "league/commonmark: Denial of service via deeply nested XML output",
+  "severity": "CVSS:3.1/AV:N/AC:L/PR:N/",
+  "repo": "https://github.com/thephpleague/commonmark",
+  "fix_commit": "b5ac8c3947ca81844e85a09c7e0a5b4148bde2e1",
+  "upstream_path": ".phpstorm.meta.php",
+  "language": "php",
+  "start_line": 38,
+  "end_line": 38,
+  "hunks": 1,
+  "file_lines": 107,
+  "local_path": "corpus/php/GHSA-mj63-m3rc-8ppr__.phpstorm.meta.php",
+  "references": [
+    "https://github.com/thephpleague/commonmark/security/advisories/GHSA-mj63-m3rc-8ppr",
+    "https://github.com/thephpleague/commonmark/commit/b5ac8c3947ca81844e85a09c7e0a5b4148bde2e1",
+    "https://github.com/thephpleague/commonmark",
+    "https://github.com/thephpleague/commonmark/releases/tag/2.9.0"
+  ]
+}

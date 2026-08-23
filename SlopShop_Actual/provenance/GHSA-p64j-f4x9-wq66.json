@@ -1,0 +1,31 @@
+{
+  "cve": "GHSA-p64j-f4x9-wq66",
+  "osv_id": "GHSA-p64j-f4x9-wq66",
+  "aliases": [
+    "GO-2026-5531"
+  ],
+  "published": "2026-05-07T21:30:45+00:00",
+  "ecosystem": "Go",
+  "package": "github.com/lin-snow/Ech0",
+  "cwe_ids": [
+    "CWE-1173",
+    "CWE-601"
+  ],
+  "primary_cwe": "CWE-1173",
+  "summary": "Ech0's OAuth redirect URI validation ignores path component, enables exchange-code theft",
+  "severity": "CVSS:3.1/AV:N/AC:H/PR:N/",
+  "repo": "https://github.com/lin-snow/Ech0",
+  "fix_commit": "a7e8b8e84bd1e3db090dfb720f2c6c433356b442",
+  "upstream_path": "internal/service/auth/auth.go",
+  "language": "go",
+  "start_line": 125,
+  "end_line": 125,
+  "hunks": 4,
+  "file_lines": 1206,
+  "local_path": "corpus/go/GHSA-p64j-f4x9-wq66__auth.go",
+  "references": [
+    "https://github.com/lin-snow/Ech0/security/advisories/GHSA-p64j-f4x9-wq66",
+    "https://github.com/lin-snow/Ech0/commit/a7e8b8e84bd1e3db090dfb720f2c6c433356b442",
+    "https://github.com/lin-snow/Ech0"
+  ]
+}

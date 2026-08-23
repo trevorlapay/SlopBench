@@ -1,0 +1,29 @@
+{
+  "cve": "GHSA-h37v-hp6w-2pp8",
+  "osv_id": "GHSA-h37v-hp6w-2pp8",
+  "aliases": [],
+  "published": "2026-02-02T20:33:08+00:00",
+  "ecosystem": "crates.io",
+  "package": "ml-dsa",
+  "cwe_ids": [
+    "CWE-193",
+    "CWE-682"
+  ],
+  "primary_cwe": "CWE-193",
+  "summary": "ml-dsa's UseHint function has off by two error when r0 equals zero",
+  "severity": "CVSS:4.0/AV:N/AC:L/AT:N/",
+  "repo": "https://github.com/RustCrypto/signatures",
+  "fix_commit": "10f4ff04cb43ef2b789ee06e885f11cd054b1335",
+  "upstream_path": "ml-dsa/src/hint.rs",
+  "language": "rust",
+  "start_line": 9,
+  "end_line": 9,
+  "hunks": 4,
+  "file_lines": 315,
+  "local_path": "corpus/rust/GHSA-h37v-hp6w-2pp8__hint.rs",
+  "references": [
+    "https://github.com/RustCrypto/signatures/security/advisories/GHSA-h37v-hp6w-2pp8",
+    "https://github.com/RustCrypto/signatures/commit/10f4ff04cb43ef2b789ee06e885f11cd054b1335",
+    "https://github.com/RustCrypto/signatures"
+  ]
+}

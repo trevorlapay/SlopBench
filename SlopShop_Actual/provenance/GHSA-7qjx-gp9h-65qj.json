@@ -1,0 +1,30 @@
+{
+  "cve": "GHSA-7qjx-gp9h-65qj",
+  "osv_id": "GHSA-7qjx-gp9h-65qj",
+  "aliases": [
+    "GO-2026-5231"
+  ],
+  "published": "2026-06-09T21:59:33+00:00",
+  "ecosystem": "Go",
+  "package": "github.com/dexidp/dex",
+  "cwe_ids": [
+    "CWE-285"
+  ],
+  "primary_cwe": "CWE-285",
+  "summary": "Dex: Token-exchange endpoint is missing AllowedConnectors enforcement",
+  "severity": "CVSS:3.1/AV:N/AC:L/PR:H/",
+  "repo": "https://github.com/dexidp/dex",
+  "fix_commit": "204dbb2e3ff7692af3b7ca4362b1ee46fb43c227",
+  "upstream_path": "connector/authproxy/authproxy.go",
+  "language": "go",
+  "start_line": 86,
+  "end_line": 99,
+  "hunks": 4,
+  "file_lines": 134,
+  "local_path": "corpus/go/GHSA-7qjx-gp9h-65qj__authproxy.go",
+  "references": [
+    "https://github.com/dexidp/dex/security/advisories/GHSA-7qjx-gp9h-65qj",
+    "https://github.com/dexidp/dex/commit/204dbb2e3ff7692af3b7ca4362b1ee46fb43c227",
+    "https://github.com/dexidp/dex"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "cve": "GHSA-3288-p39f-rqpv",
+  "osv_id": "GHSA-3288-p39f-rqpv",
+  "aliases": [
+    "RUSTSEC-2026-0012"
+  ],
+  "published": "2026-02-19T15:17:41+00:00",
+  "ecosystem": "crates.io",
+  "package": "keccak",
+  "cwe_ids": [
+    "CWE-758"
+  ],
+  "primary_cwe": "CWE-758",
+  "summary": "Unsoundness in opt-in ARMv8 assembly backend for `keccak`",
+  "severity": "CVSS:4.0/AV:L/AC:H/AT:P/",
+  "repo": "https://github.com/RustCrypto/sponges",
+  "fix_commit": "7ac1920198ebb7d0192e6d2c3581e15b38a6e0e5",
+  "upstream_path": "keccak/src/armv8.rs",
+  "language": "rust",
+  "start_line": 127,
+  "end_line": 129,
+  "hunks": 1,
+  "file_lines": 207,
+  "local_path": "corpus/rust/GHSA-3288-p39f-rqpv__armv8.rs",
+  "references": [
+    "https://github.com/RustCrypto/sponges/pull/101",
+    "https://github.com/RustCrypto/sponges/commit/7ac1920198ebb7d0192e6d2c3581e15b38a6e0e5",
+    "https://github.com/RustCrypto/sponges",
+    "https://rustsec.org/advisories/RUSTSEC-2026-0012.html"
+  ]
+}

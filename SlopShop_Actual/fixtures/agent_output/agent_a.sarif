@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "AgentAlpha",
+          "version": "2.3.0",
+          "rules": []
+        }
+      },
+      "results": [
+        {
+          "ruleId": "SQLI-DETECT",
+          "level": "error",
+          "message": { "text": "SQL injection in login handler" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "app/auth/login.py" },
+                "region": { "startLine": 30, "endLine": 35 }
+              }
+            }
+          ],
+          "properties": { "cwe": "89" }
+        },
+        {
+          "ruleId": "HARDCODED-SECRET",
+          "level": "error",
+          "message": { "text": "Hardcoded API key found" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": { "uri": "config/settings.py" },
+                "region": { "startLine": 12 }
+              }
+            }
+          ],
+          "properties": { "cwe": "CWE-798" }
+        }
+      ]
+    }
+  ]
+}

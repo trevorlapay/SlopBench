@@ -1,0 +1,2769 @@
+[
+  {
+    "file_path": "code/services/analytics-engine/src/handler0.py",
+    "start_line": 1591,
+    "end_line": 1604,
+    "function_name": null,
+    "cwe_id": "CWE-617",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-55514",
+      "all_cwes": [
+        "CWE-617"
+      ],
+      "published": "2026-07-20T19:13:07+00:00",
+      "repo": "https://github.com/vllm-project/vllm",
+      "fix_commit": "470229c37efaf69c86e8bc97482b0b1ff7551c65"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/handler0.go",
+    "start_line": 11,
+    "end_line": 87,
+    "function_name": null,
+    "cwe_id": "CWE-338",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-66630",
+      "all_cwes": [
+        "CWE-338"
+      ],
+      "published": "2026-02-09T15:28:37+00:00",
+      "repo": "https://github.com/gofiber/fiber",
+      "fix_commit": "eb874b6f6c5896b968d9b0ab2b56ac7052cb0ee1"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/handler0.js",
+    "start_line": 155,
+    "end_line": 155,
+    "function_name": null,
+    "cwe_id": "CWE-459",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-3304",
+      "all_cwes": [
+        "CWE-459"
+      ],
+      "published": "2026-03-01T01:18:50+00:00",
+      "repo": "https://github.com/expressjs/multer",
+      "fix_commit": "739919097dde3921ec31b930e4b9025036fa74ee"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/service1.go",
+    "start_line": 6,
+    "end_line": 68,
+    "function_name": null,
+    "cwe_id": "CWE-343",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-33221",
+      "all_cwes": [
+        "CWE-343",
+        "CWE-345",
+        "CWE-434"
+      ],
+      "published": "2026-03-18T20:21:37+00:00",
+      "repo": "https://github.com/nhost/nhost",
+      "fix_commit": "c4bd53f042d7f568e567e18e2665af81660fce85"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/client2.go",
+    "start_line": 38,
+    "end_line": 42,
+    "function_name": null,
+    "cwe_id": "CWE-706",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-25890",
+      "all_cwes": [
+        "CWE-706",
+        "CWE-863"
+      ],
+      "published": "2026-02-10T00:25:17+00:00",
+      "repo": "https://github.com/filebrowser/filebrowser",
+      "fix_commit": "489af403a19057f6b6b4b1dc0e48cbb26a202ef9"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Controller0.java",
+    "start_line": 27,
+    "end_line": 27,
+    "function_name": null,
+    "cwe_id": "CWE-312",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-67638",
+      "all_cwes": [
+        "CWE-312"
+      ],
+      "published": "2025-12-10T18:30:26+00:00",
+      "repo": "https://github.com/jenkinsci/jenkins",
+      "fix_commit": "4710d65339251aaf1d1599f19545db99be24d981"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Service1.java",
+    "start_line": 20,
+    "end_line": 61,
+    "function_name": null,
+    "cwe_id": "CWE-321",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-54947",
+      "all_cwes": [
+        "CWE-321",
+        "CWE-798"
+      ],
+      "published": "2025-12-12T15:30:41+00:00",
+      "repo": "https://github.com/apache/streampark",
+      "fix_commit": "39034db0c806168afa82e58e4f376e1e3c3b73e4"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/service1.js",
+    "start_line": 4,
+    "end_line": 72,
+    "function_name": null,
+    "cwe_id": "CWE-407",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-34573",
+      "all_cwes": [
+        "CWE-407"
+      ],
+      "published": "2026-03-31T23:49:18+00:00",
+      "repo": "https://github.com/parse-community/parse-server",
+      "fix_commit": "ea15412795f34594cc8a674fe858d445675e0295"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/client2.js",
+    "start_line": 308,
+    "end_line": 308,
+    "function_name": null,
+    "cwe_id": "CWE-436",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-13676",
+      "all_cwes": [
+        "CWE-436",
+        "CWE-551"
+      ],
+      "published": "2026-07-21T19:03:11+00:00",
+      "repo": "https://github.com/fastify/fast-uri",
+      "fix_commit": "2a6d357a18a68e6d812824379fd3388a1ae50d05"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/store3.go",
+    "start_line": 7,
+    "end_line": 7,
+    "function_name": null,
+    "cwe_id": "CWE-209",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-jfwg-rxf3-p7r9",
+      "all_cwes": [
+        "CWE-209",
+        "CWE-943"
+      ],
+      "published": "2026-04-06T17:56:31+00:00",
+      "repo": "https://github.com/authorizerdev/authorizer",
+      "fix_commit": "73679faa53cd215c7524d651046e402c43809786"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/router4.go",
+    "start_line": 370,
+    "end_line": 370,
+    "function_name": null,
+    "cwe_id": "CWE-942",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-9739",
+      "all_cwes": [
+        "CWE-942"
+      ],
+      "published": "2026-05-28T00:30:29+00:00",
+      "repo": "https://github.com/googleapis/mcp-toolbox",
+      "fix_commit": "c4c7bd917e686de68e2be866cfe3872c3439efae"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/worker5.go",
+    "start_line": 787,
+    "end_line": 800,
+    "function_name": null,
+    "cwe_id": "CWE-755",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-27586",
+      "all_cwes": [
+        "CWE-755"
+      ],
+      "published": "2026-02-24T20:22:53+00:00",
+      "repo": "https://github.com/caddyserver/caddy",
+      "fix_commit": "d42d39b4bc237c628f9a95363b28044cb7a7fe72"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Controller0.php",
+    "start_line": 40,
+    "end_line": 56,
+    "function_name": null,
+    "cwe_id": "CWE-79",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-26992",
+      "all_cwes": [
+        "CWE-79"
+      ],
+      "published": "2026-02-18T22:07:42+00:00",
+      "repo": "https://github.com/librenms/librenms",
+      "fix_commit": "882fe6f90ea504a3732f83caf89bba7850a5699f"
+    }
+  },
+  {
+    "file_path": "code/services/crypto-core/src/handler0.rs",
+    "start_line": 127,
+    "end_line": 129,
+    "function_name": null,
+    "cwe_id": "CWE-758",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-3288-p39f-rqpv",
+      "all_cwes": [
+        "CWE-758"
+      ],
+      "published": "2026-02-19T15:17:41+00:00",
+      "repo": "https://github.com/RustCrypto/sponges",
+      "fix_commit": "7ac1920198ebb7d0192e6d2c3581e15b38a6e0e5"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/middleware6.go",
+    "start_line": 203,
+    "end_line": 203,
+    "function_name": null,
+    "cwe_id": "CWE-647",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-62685",
+      "all_cwes": [
+        "CWE-647",
+        "CWE-706"
+      ],
+      "published": "2026-07-20T22:19:10+00:00",
+      "repo": "https://github.com/filebrowser/filebrowser",
+      "fix_commit": "883a36f02fcb69566a8628cb47f18fdc73348387"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Repository2.java",
+    "start_line": 66,
+    "end_line": 66,
+    "function_name": null,
+    "cwe_id": "CWE-178",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-50559",
+      "all_cwes": [
+        "CWE-178",
+        "CWE-287",
+        "CWE-41",
+        "CWE-551",
+        "CWE-863"
+      ],
+      "published": "2026-07-29T15:40:05+00:00",
+      "repo": "https://github.com/quarkusio/quarkus",
+      "fix_commit": "919b80017d85564143a845b38e9cca54aff5b3cc"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Handler3.java",
+    "start_line": 16,
+    "end_line": 17,
+    "function_name": null,
+    "cwe_id": "CWE-323",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-14813",
+      "all_cwes": [
+        "CWE-323"
+      ],
+      "published": "2026-04-17T18:31:50+00:00",
+      "repo": "https://github.com/bcgit/bc-java",
+      "fix_commit": "b42574345414e4b7c8051b16fa1fafe01c29871f"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/handler0.ts",
+    "start_line": 1606,
+    "end_line": 1622,
+    "function_name": null,
+    "cwe_id": "CWE-601",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-53668",
+      "all_cwes": [
+        "CWE-601"
+      ],
+      "published": "2026-07-23T19:36:31+00:00",
+      "repo": "https://github.com/remix-run/react-router",
+      "fix_commit": "3a5b5ad0e5cf9918c646509563f5c41a89226ff3"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Service1.php",
+    "start_line": 561,
+    "end_line": 561,
+    "function_name": null,
+    "cwe_id": "CWE-669",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-35544",
+      "all_cwes": [
+        "CWE-669"
+      ],
+      "published": "2026-04-03T06:31:32+00:00",
+      "repo": "https://github.com/roundcube/roundcubemail",
+      "fix_commit": "099009b9c8e1d3c636fb9a5af72f7c2596018662"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/gateway7.go",
+    "start_line": 3,
+    "end_line": 9,
+    "function_name": null,
+    "cwe_id": "CWE-295",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-53475",
+      "all_cwes": [
+        "CWE-295"
+      ],
+      "published": "2026-06-10T15:31:33+00:00",
+      "repo": "https://github.com/kubev2v/assisted-migration-agent",
+      "fix_commit": "b940fec9f5032a0801e994054d30e81d64b2942a"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/proxy8.go",
+    "start_line": 1373,
+    "end_line": 1379,
+    "function_name": null,
+    "cwe_id": "CWE-319",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-gx4c-2hqx-cw2r",
+      "all_cwes": [
+        "CWE-319",
+        "CWE-522"
+      ],
+      "published": "2026-08-05T20:43:11+00:00",
+      "repo": "https://github.com/rclone/rclone",
+      "fix_commit": "1a28451ea6fc8ac1806b0e9923dcb5b3f543f7fa"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/store3.js",
+    "start_line": 4,
+    "end_line": 4,
+    "function_name": null,
+    "cwe_id": "CWE-331",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-71851",
+      "all_cwes": [
+        "CWE-331",
+        "CWE-334",
+        "CWE-338"
+      ],
+      "published": "2026-08-07T18:48:59+00:00",
+      "repo": "https://github.com/brix/crypto-js",
+      "fix_commit": "b405ff597fb3ac76a7bdfbc72dca10ba1079b1d5"
+    }
+  },
+  {
+    "file_path": "code/services/packfile-lib/src/service1.rs",
+    "start_line": 1,
+    "end_line": 2,
+    "function_name": null,
+    "cwe_id": "CWE-183",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-40034",
+      "all_cwes": [
+        "CWE-183",
+        "CWE-349",
+        "CWE-501",
+        "CWE-77"
+      ],
+      "published": "2026-05-05T19:23:45+00:00",
+      "repo": "https://github.com/GitoxideLabs/gitoxide",
+      "fix_commit": "6a2e6a436f76c8bbf2487f9967413a51356667a0"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/cache9.go",
+    "start_line": 8,
+    "end_line": 8,
+    "function_name": null,
+    "cwe_id": "CWE-497",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-67717",
+      "all_cwes": [
+        "CWE-497"
+      ],
+      "published": "2025-12-10T18:20:01+00:00",
+      "repo": "https://github.com/zitadel/zitadel",
+      "fix_commit": "826039c6208fe71df57b3a94c982b5ac5b0af12c"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/service1.ts",
+    "start_line": 20,
+    "end_line": 20,
+    "function_name": null,
+    "cwe_id": "CWE-1322",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-71439",
+      "all_cwes": [
+        "CWE-1322",
+        "CWE-606"
+      ],
+      "published": "2026-08-06T20:01:07+00:00",
+      "repo": "https://github.com/mermaid-js/mermaid",
+      "fix_commit": "59b22fad2b3bb04f87a476c84a8a2b24679e607e"
+    }
+  },
+  {
+    "file_path": "code/services/crypto-core/src/client2.rs",
+    "start_line": 44,
+    "end_line": 49,
+    "function_name": null,
+    "cwe_id": "CWE-415",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-vfvv-c25p-m7mm",
+      "all_cwes": [
+        "CWE-415",
+        "CWE-416"
+      ],
+      "published": "2026-05-15T18:09:10+00:00",
+      "repo": "https://github.com/rkyv/rkyv",
+      "fix_commit": "5828cf5c27b664eb4432c4a93d4769e12e5e42fb"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Repository2.php",
+    "start_line": 26,
+    "end_line": 26,
+    "function_name": null,
+    "cwe_id": "CWE-918",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-25494",
+      "all_cwes": [
+        "CWE-918"
+      ],
+      "published": "2026-02-09T20:35:35+00:00",
+      "repo": "https://github.com/craftcms/cms",
+      "fix_commit": "d49e93e5ba0c48939ce5eaa6cd9b4a990542d8b2"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/service1.py",
+    "start_line": 10,
+    "end_line": 67,
+    "function_name": null,
+    "cwe_id": "CWE-113",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-22779",
+      "all_cwes": [
+        "CWE-113",
+        "CWE-93"
+      ],
+      "published": "2026-01-14T16:52:53+00:00",
+      "repo": "https://github.com/Neoteroi/BlackSheep",
+      "fix_commit": "bd4ecb9542b5d52442276b5a6907931b90f38d12"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Handler3.php",
+    "start_line": 97,
+    "end_line": 102,
+    "function_name": null,
+    "cwe_id": "CWE-1007",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-45064",
+      "all_cwes": [
+        "CWE-1007",
+        "CWE-451"
+      ],
+      "published": "2026-05-27T20:04:22+00:00",
+      "repo": "https://github.com/symfony/symfony",
+      "fix_commit": "743a435e948b897ef2b5564ac438d4beb95d2526"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/queue10.go",
+    "start_line": 31,
+    "end_line": 31,
+    "function_name": null,
+    "cwe_id": "CWE-326",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-44523",
+      "all_cwes": [
+        "CWE-326",
+        "CWE-345"
+      ],
+      "published": "2026-05-07T21:08:10+00:00",
+      "repo": "https://github.com/enchant97/note-mark",
+      "fix_commit": "18b58775866776ed400c403dd0ccad68c1fa4802"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/router4.js",
+    "start_line": 518,
+    "end_line": 584,
+    "function_name": null,
+    "cwe_id": "CWE-1289",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-35039",
+      "all_cwes": [
+        "CWE-1289",
+        "CWE-345",
+        "CWE-706"
+      ],
+      "published": "2026-04-03T04:07:09+00:00",
+      "repo": "https://github.com/nearform/fast-jwt",
+      "fix_commit": "de121056c6415b58770c60640881eaec67ac4ceb"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/client2.ts",
+    "start_line": 42,
+    "end_line": 42,
+    "function_name": null,
+    "cwe_id": "CWE-180",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-73420",
+      "all_cwes": [
+        "CWE-180"
+      ],
+      "published": "2026-07-23T14:40:15+00:00",
+      "repo": "https://github.com/nextauthjs/next-auth",
+      "fix_commit": "19d2feb24359fa8c79418907fc68d9ec8152ca94"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/store3.ts",
+    "start_line": 2,
+    "end_line": 2,
+    "function_name": null,
+    "cwe_id": "CWE-915",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-46480",
+      "all_cwes": [
+        "CWE-915"
+      ],
+      "published": "2026-05-14T16:19:52+00:00",
+      "repo": "https://github.com/FlowiseAI/Flowise",
+      "fix_commit": "dc07f4062b852033554543a3cff3daf3433b0dac"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/codec11.go",
+    "start_line": 125,
+    "end_line": 125,
+    "function_name": null,
+    "cwe_id": "CWE-1173",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-p64j-f4x9-wq66",
+      "all_cwes": [
+        "CWE-1173",
+        "CWE-601"
+      ],
+      "published": "2026-05-07T21:30:45+00:00",
+      "repo": "https://github.com/lin-snow/Ech0",
+      "fix_commit": "a7e8b8e84bd1e3db090dfb720f2c6c433356b442"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/worker5.js",
+    "start_line": 66,
+    "end_line": 66,
+    "function_name": null,
+    "cwe_id": "CWE-472",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-59817",
+      "all_cwes": [
+        "CWE-472",
+        "CWE-639"
+      ],
+      "published": "2026-08-04T21:57:48+00:00",
+      "repo": "https://github.com/TryGhost/Ghost",
+      "fix_commit": "cab716cd015ac04b7ee50c7a405478d97bc7b1e0"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/parser12.go",
+    "start_line": 281,
+    "end_line": 281,
+    "function_name": null,
+    "cwe_id": "CWE-653",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-41174",
+      "all_cwes": [
+        "CWE-653",
+        "CWE-863"
+      ],
+      "published": "2026-04-24T20:12:10+00:00",
+      "repo": "https://github.com/traefik/traefik",
+      "fix_commit": "df00d82fc7f12e07199551832b54de6d0e55414d"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/client2.py",
+    "start_line": 5020,
+    "end_line": 5020,
+    "function_name": null,
+    "cwe_id": "CWE-256",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-74873",
+      "all_cwes": [
+        "CWE-256"
+      ],
+      "published": "2026-03-31T23:42:17+00:00",
+      "repo": "https://github.com/jahlives/openssl_encrypt",
+      "fix_commit": "e78a3666e4592f3538adaaa6be8f5f04356174db"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/store3.py",
+    "start_line": 1092,
+    "end_line": 1094,
+    "function_name": null,
+    "cwe_id": "CWE-834",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-48156",
+      "all_cwes": [
+        "CWE-834"
+      ],
+      "published": "2026-06-12T18:29:59+00:00",
+      "repo": "https://github.com/py-pdf/pypdf",
+      "fix_commit": "507d7c9aa6ea83389b954b9c3c0c528fe5d5da70"
+    }
+  },
+  {
+    "file_path": "code/services/packfile-lib/src/store3.rs",
+    "start_line": 19,
+    "end_line": 19,
+    "function_name": null,
+    "cwe_id": "CWE-1285",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-43868",
+      "all_cwes": [
+        "CWE-1285",
+        "CWE-789"
+      ],
+      "published": "2026-05-05T09:31:55+00:00",
+      "repo": "https://github.com/apache/thrift",
+      "fix_commit": "d5152211af61f850ec393604316804096dd4632e"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/router4.ts",
+    "start_line": 2,
+    "end_line": 41,
+    "function_name": null,
+    "cwe_id": "CWE-943",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-pqh8-p93p-2rx7",
+      "all_cwes": [
+        "CWE-943"
+      ],
+      "published": "2026-07-31T15:56:12+00:00",
+      "repo": "https://github.com/dynatrace-oss/dynatrace-mcp",
+      "fix_commit": "15d3546c0618ffbaeaeca477337e08e92f2151bc"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/router4.py",
+    "start_line": 434,
+    "end_line": 434,
+    "function_name": null,
+    "cwe_id": "CWE-202",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-69662",
+      "all_cwes": [
+        "CWE-202",
+        "CWE-89"
+      ],
+      "published": "2026-01-30T21:30:22+00:00",
+      "repo": "https://github.com/geopandas/geopandas",
+      "fix_commit": "6aa8ef14ffdee4ba1044349ab948e1a1fbfaf419"
+    }
+  },
+  {
+    "file_path": "code/services/crypto-core/src/router4.rs",
+    "start_line": 91,
+    "end_line": 91,
+    "function_name": null,
+    "cwe_id": "CWE-1286",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-13327",
+      "all_cwes": [
+        "CWE-1286"
+      ],
+      "published": "2026-02-27T09:30:29+00:00",
+      "repo": "https://github.com/astral-sh/uv",
+      "fix_commit": "da659fee4898a73dbc75070f3e82d49f745e4628"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/worker5.py",
+    "start_line": 543,
+    "end_line": 543,
+    "function_name": null,
+    "cwe_id": "CWE-305",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-2652",
+      "all_cwes": [
+        "CWE-305"
+      ],
+      "published": "2026-05-15T03:30:37+00:00",
+      "repo": "https://github.com/mlflow/mlflow",
+      "fix_commit": "bb62e773263c14e9ba4d1a82fe72d0de2442c6aa"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/engine13.go",
+    "start_line": 86,
+    "end_line": 99,
+    "function_name": null,
+    "cwe_id": "CWE-285",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-7qjx-gp9h-65qj",
+      "all_cwes": [
+        "CWE-285"
+      ],
+      "published": "2026-06-09T21:59:33+00:00",
+      "repo": "https://github.com/dexidp/dex",
+      "fix_commit": "204dbb2e3ff7692af3b7ca4362b1ee46fb43c227"
+    }
+  },
+  {
+    "file_path": "code/services/packfile-lib/src/worker5.rs",
+    "start_line": 414,
+    "end_line": 414,
+    "function_name": null,
+    "cwe_id": "CWE-252",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-35339",
+      "all_cwes": [
+        "CWE-252",
+        "CWE-253",
+        "CWE-755"
+      ],
+      "published": "2026-07-06T19:27:41+00:00",
+      "repo": "https://github.com/uutils/coreutils",
+      "fix_commit": "abd581f62e97d0b147306ac40eac13af71c6fbba"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/provider14.go",
+    "start_line": 63,
+    "end_line": 63,
+    "function_name": null,
+    "cwe_id": "CWE-120",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-68383",
+      "all_cwes": [
+        "CWE-120",
+        "CWE-1284"
+      ],
+      "published": "2025-12-19T00:31:42+00:00",
+      "repo": "https://github.com/elastic/beats",
+      "fix_commit": "27a168fb1c598d4a16748e9a7382bc0d197335a5"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/worker5.ts",
+    "start_line": 174,
+    "end_line": 174,
+    "function_name": null,
+    "cwe_id": "CWE-401",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-73565",
+      "all_cwes": [
+        "CWE-401",
+        "CWE-770"
+      ],
+      "published": "2026-07-21T22:04:27+00:00",
+      "repo": "https://github.com/honojs/node-server",
+      "fix_commit": "3a21938c418340e980cb7ffa88e78369f78392d1"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/middleware6.ts",
+    "start_line": 163,
+    "end_line": 163,
+    "function_name": null,
+    "cwe_id": "CWE-1113",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-29086",
+      "all_cwes": [
+        "CWE-1113",
+        "CWE-113"
+      ],
+      "published": "2026-03-04T19:49:14+00:00",
+      "repo": "https://github.com/honojs/hono",
+      "fix_commit": "44ae0c8cc4d5ab2bed529127a4ac72e1483ad073"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/gateway7.ts",
+    "start_line": 1,
+    "end_line": 1,
+    "function_name": null,
+    "cwe_id": "CWE-776",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-26278",
+      "all_cwes": [
+        "CWE-776"
+      ],
+      "published": "2026-02-17T21:30:10+00:00",
+      "repo": "https://github.com/NaturalIntelligence/fast-xml-parser",
+      "fix_commit": "910dae5be2de2955e968558fadf6e8f74f117a77"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Provider4.java",
+    "start_line": 263,
+    "end_line": 266,
+    "function_name": null,
+    "cwe_id": "CWE-772",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-42577",
+      "all_cwes": [
+        "CWE-772"
+      ],
+      "published": "2026-05-06T23:10:41+00:00",
+      "repo": "https://github.com/netty/netty",
+      "fix_commit": "0ec3d97fab376e243d328ac95fbd288ba0f6e22d"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/middleware6.js",
+    "start_line": 618,
+    "end_line": 618,
+    "function_name": null,
+    "cwe_id": "CWE-471",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-65898",
+      "all_cwes": [
+        "CWE-471",
+        "CWE-665",
+        "CWE-79"
+      ],
+      "published": "2026-06-18T14:27:37+00:00",
+      "repo": "https://github.com/cure53/DOMPurify",
+      "fix_commit": "011bc3b2fcc4be17aa76f9030e8668207717acb9"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/proxy8.ts",
+    "start_line": 214,
+    "end_line": 278,
+    "function_name": null,
+    "cwe_id": "CWE-697",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-50029",
+      "all_cwes": [
+        "CWE-697"
+      ],
+      "published": "2026-06-26T22:49:28+00:00",
+      "repo": "https://github.com/sunnyadn/js-toml",
+      "fix_commit": "e0504fa5d3dcde2d1d588c9001c24b7b700beeeb"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Resolver5.java",
+    "start_line": 30,
+    "end_line": 32,
+    "function_name": null,
+    "cwe_id": "CWE-1220",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-9088",
+      "all_cwes": [
+        "CWE-1220"
+      ],
+      "published": "2026-06-05T09:33:46+00:00",
+      "repo": "https://github.com/keycloak/keycloak",
+      "fix_commit": "bf0df40a91a05e550891dcdae2d922b556db7e7b"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Manager6.java",
+    "start_line": 469,
+    "end_line": 475,
+    "function_name": null,
+    "cwe_id": "CWE-327",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-29129",
+      "all_cwes": [
+        "CWE-327"
+      ],
+      "published": "2026-04-09T21:31:29+00:00",
+      "repo": "https://github.com/apache/tomcat",
+      "fix_commit": "5cfa876d73f1ff5f4dc8309c4320f684cbeff74e"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Client7.java",
+    "start_line": 20,
+    "end_line": 61,
+    "function_name": null,
+    "cwe_id": "CWE-1240",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-53960",
+      "all_cwes": [
+        "CWE-1240"
+      ],
+      "published": "2025-12-12T18:30:35+00:00",
+      "repo": "https://github.com/apache/streampark",
+      "fix_commit": "39034db0c806168afa82e58e4f376e1e3c3b73e4"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Provider4.php",
+    "start_line": 347,
+    "end_line": 347,
+    "function_name": null,
+    "cwe_id": "CWE-22",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-33681",
+      "all_cwes": [
+        "CWE-22"
+      ],
+      "published": "2026-03-25T19:51:46+00:00",
+      "repo": "https://github.com/WWBN/AVideo",
+      "fix_commit": "81b591c509835505cb9f298aa1162ac64c4152cb"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Filter8.java",
+    "start_line": 53,
+    "end_line": 53,
+    "function_name": null,
+    "cwe_id": "CWE-502",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-41699",
+      "all_cwes": [
+        "CWE-502"
+      ],
+      "published": "2026-06-11T09:31:56+00:00",
+      "repo": "https://github.com/spring-projects/spring-graphql",
+      "fix_commit": "5579b6eca045126a27405b4cb1ae1f38d7577cb7"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/middleware6.py",
+    "start_line": 38,
+    "end_line": 38,
+    "function_name": null,
+    "cwe_id": "CWE-347",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-28802",
+      "all_cwes": [
+        "CWE-347"
+      ],
+      "published": "2026-03-04T20:55:47+00:00",
+      "repo": "https://github.com/authlib/authlib",
+      "fix_commit": "a61c2acb807496e67f32051b5f1b1d5ccf8f0a75"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/resolver15.go",
+    "start_line": 394,
+    "end_line": 394,
+    "function_name": null,
+    "cwe_id": "CWE-384",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-30224",
+      "all_cwes": [
+        "CWE-384",
+        "CWE-613"
+      ],
+      "published": "2026-03-05T20:53:08+00:00",
+      "repo": "https://github.com/OliveTin/OliveTin",
+      "fix_commit": "d6a0abc3755d43107be1939567c52953bcbec3d5"
+    }
+  },
+  {
+    "file_path": "code/services/crypto-core/src/middleware6.rs",
+    "start_line": 143,
+    "end_line": 162,
+    "function_name": null,
+    "cwe_id": "CWE-73",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-25628",
+      "all_cwes": [
+        "CWE-73"
+      ],
+      "published": "2026-02-05T21:22:50+00:00",
+      "repo": "https://github.com/qdrant/qdrant",
+      "fix_commit": "32b7fdfb7f542624ecd1f7c8d3e2b13c4e36a2c1"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Resolver5.php",
+    "start_line": 900,
+    "end_line": 900,
+    "function_name": null,
+    "cwe_id": "CWE-200",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-68436",
+      "all_cwes": [
+        "CWE-200"
+      ],
+      "published": "2026-01-05T17:42:31+00:00",
+      "repo": "https://github.com/craftcms/cms",
+      "fix_commit": "4bcb0db554e273b66ce3b75263a13414c2368fc9"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/gateway7.py",
+    "start_line": 117,
+    "end_line": 117,
+    "function_name": null,
+    "cwe_id": "CWE-409",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-54233",
+      "all_cwes": [
+        "CWE-409"
+      ],
+      "published": "2026-06-17T14:06:22+00:00",
+      "repo": "https://github.com/vllm-project/vllm",
+      "fix_commit": "1b1359c33269446f13c05da9a90c25174cbea590"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/manager16.go",
+    "start_line": 32,
+    "end_line": 32,
+    "function_name": null,
+    "cwe_id": "CWE-287",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-32815",
+      "all_cwes": [
+        "CWE-287"
+      ],
+      "published": "2026-03-16T18:46:34+00:00",
+      "repo": "https://github.com/siyuan-note/siyuan",
+      "fix_commit": "1e370e37359778c0932673e825182ff555b504a3"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/cache9.ts",
+    "start_line": 341,
+    "end_line": 341,
+    "function_name": null,
+    "cwe_id": "CWE-488",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-27492",
+      "all_cwes": [
+        "CWE-488"
+      ],
+      "published": "2026-02-20T21:14:49+00:00",
+      "repo": "https://github.com/lettermint/lettermint-node",
+      "fix_commit": "24a17acbc2429c5eb30391f9df3dc0ea7aaf4de1"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/proxy8.py",
+    "start_line": 64,
+    "end_line": 64,
+    "function_name": null,
+    "cwe_id": "CWE-248",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-25577",
+      "all_cwes": [
+        "CWE-248",
+        "CWE-703"
+      ],
+      "published": "2026-02-10T14:33:15+00:00",
+      "repo": "https://github.com/emmett-framework/core",
+      "fix_commit": "9557ea23a27cbadf7774d8bca6bbe4b54fa8a3ec"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/queue10.ts",
+    "start_line": 1380,
+    "end_line": 1380,
+    "function_name": null,
+    "cwe_id": "CWE-91",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-41674",
+      "all_cwes": [
+        "CWE-91"
+      ],
+      "published": "2026-04-22T20:19:12+00:00",
+      "repo": "https://github.com/xmldom/xmldom",
+      "fix_commit": "372008f9ae0e20fd69f761c7b79e202598267314"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Manager6.php",
+    "start_line": 38,
+    "end_line": 38,
+    "function_name": null,
+    "cwe_id": "CWE-405",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-mj63-m3rc-8ppr",
+      "all_cwes": [
+        "CWE-405"
+      ],
+      "published": "2026-08-06T20:42:54+00:00",
+      "repo": "https://github.com/thephpleague/commonmark",
+      "fix_commit": "b5ac8c3947ca81844e85a09c7e0a5b4148bde2e1"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/pipeline17.go",
+    "start_line": 101,
+    "end_line": 118,
+    "function_name": null,
+    "cwe_id": "CWE-636",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-35205",
+      "all_cwes": [
+        "CWE-636"
+      ],
+      "published": "2026-04-10T15:33:03+00:00",
+      "repo": "https://github.com/helm/helm",
+      "fix_commit": "05fa37973dc9e42b76e1d2883494c87174b6074f"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Gateway9.java",
+    "start_line": 5,
+    "end_line": 5,
+    "function_name": null,
+    "cwe_id": "CWE-385",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-5598",
+      "all_cwes": [
+        "CWE-385"
+      ],
+      "published": "2026-04-17T18:31:50+00:00",
+      "repo": "https://github.com/bcgit/bc-java",
+      "fix_commit": "8692e6b2b191fc4aafa32545c7a78bdb9bf110c5"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/controller18.go",
+    "start_line": 676,
+    "end_line": 696,
+    "function_name": null,
+    "cwe_id": "CWE-150",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-73506",
+      "all_cwes": [
+        "CWE-150"
+      ],
+      "published": "2026-07-24T22:35:52+00:00",
+      "repo": "https://github.com/JanDeDobbeleer/oh-my-posh",
+      "fix_commit": "edcf3c88f3fb582e84358b385c49d33d04c04224"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/adapter19.go",
+    "start_line": 25,
+    "end_line": 34,
+    "function_name": null,
+    "cwe_id": "CWE-362",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-33544",
+      "all_cwes": [
+        "CWE-362"
+      ],
+      "published": "2026-04-01T19:52:04+00:00",
+      "repo": "https://github.com/steveiliop56/tinyauth",
+      "fix_commit": "f26c2171610d5c2dfbba2edb6ccd39490e349803"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/gateway7.js",
+    "start_line": 4,
+    "end_line": 53,
+    "function_name": null,
+    "cwe_id": "CWE-177",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-22037",
+      "all_cwes": [
+        "CWE-177",
+        "CWE-288"
+      ],
+      "published": "2026-01-20T16:35:21+00:00",
+      "repo": "https://github.com/fastify/fastify-express",
+      "fix_commit": "dc02a3fe1387f945143f22597baa42557d549a40"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/cache9.py",
+    "start_line": 4,
+    "end_line": 53,
+    "function_name": null,
+    "cwe_id": "CWE-74",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2023-7333",
+      "all_cwes": [
+        "CWE-74"
+      ],
+      "published": "2026-01-08T00:31:14+00:00",
+      "repo": "https://github.com/bluelabsio/records-mover",
+      "fix_commit": "3f8383aa89f45d861ca081e3e9fd2cc9d0b5dfaa"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Client7.php",
+    "start_line": 19,
+    "end_line": 19,
+    "function_name": null,
+    "cwe_id": "CWE-863",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-33650",
+      "all_cwes": [
+        "CWE-863"
+      ],
+      "published": "2026-03-25T17:49:32+00:00",
+      "repo": "https://github.com/WWBN/AVideo",
+      "fix_commit": "838e16818c793779406ecbf34ebaeba9830e33f8"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/queue10.py",
+    "start_line": 72,
+    "end_line": 72,
+    "function_name": null,
+    "cwe_id": "CWE-789",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-54060",
+      "all_cwes": [
+        "CWE-789"
+      ],
+      "published": "2026-07-20T21:08:40+00:00",
+      "repo": "https://github.com/python-pillow/Pillow",
+      "fix_commit": "0a263e6264aa5399988d9acd3bbfbca2ca3ec77d"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Filter8.php",
+    "start_line": 33,
+    "end_line": 33,
+    "function_name": null,
+    "cwe_id": "CWE-98",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-41228",
+      "all_cwes": [
+        "CWE-98"
+      ],
+      "published": "2026-04-16T01:02:12+00:00",
+      "repo": "https://github.com/froxlor/froxlor",
+      "fix_commit": "bc5e6dbaa90e6f3573129da640595e8c770e1d0c"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/handler20.go",
+    "start_line": 1061,
+    "end_line": 1061,
+    "function_name": null,
+    "cwe_id": "CWE-704",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-42576",
+      "all_cwes": [
+        "CWE-704"
+      ],
+      "published": "2026-05-04T21:25:30+00:00",
+      "repo": "https://github.com/chainguard-dev/apko",
+      "fix_commit": "6604826b19e36e9bc6e196592800fad93738f4a1"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Gateway9.php",
+    "start_line": 1286,
+    "end_line": 1286,
+    "function_name": null,
+    "cwe_id": "CWE-470",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-25498",
+      "all_cwes": [
+        "CWE-470"
+      ],
+      "published": "2026-02-09T20:36:43+00:00",
+      "repo": "https://github.com/craftcms/cms",
+      "fix_commit": "395c64f0b80b507be1c862a2ec942eaacb353748"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Mapper10.php",
+    "start_line": 708,
+    "end_line": 708,
+    "function_name": null,
+    "cwe_id": "CWE-620",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-h4hf-v6w5-897x",
+      "all_cwes": [
+        "CWE-620",
+        "CWE-862"
+      ],
+      "published": "2026-07-24T21:54:55+00:00",
+      "repo": "https://github.com/poweradmin/poweradmin",
+      "fix_commit": "36e9081a5c83cb962dc6275b7adcd6cb463f1028"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/service21.go",
+    "start_line": 295,
+    "end_line": 314,
+    "function_name": null,
+    "cwe_id": "CWE-552",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-33380",
+      "all_cwes": [
+        "CWE-552"
+      ],
+      "published": "2026-05-13T21:32:06+00:00",
+      "repo": "https://github.com/grafana/grafana",
+      "fix_commit": "fb7336fc36c14e1ff869482c5085ddb9f39e1b86"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Mapper10.java",
+    "start_line": 20,
+    "end_line": 21,
+    "function_name": null,
+    "cwe_id": "CWE-297",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-22747",
+      "all_cwes": [
+        "CWE-297"
+      ],
+      "published": "2026-04-22T06:30:28+00:00",
+      "repo": "https://github.com/spring-projects/spring-security",
+      "fix_commit": "88118afb8f9357ae7cc215500a441e89fee701c3"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/client22.go",
+    "start_line": 47,
+    "end_line": 47,
+    "function_name": null,
+    "cwe_id": "CWE-324",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-52809",
+      "all_cwes": [
+        "CWE-324",
+        "CWE-613"
+      ],
+      "published": "2026-06-23T17:03:25+00:00",
+      "repo": "https://github.com/gogs/gogs",
+      "fix_commit": "187e9c557930eb4a8b9b1502ee45cccf3255ee7f"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/store23.go",
+    "start_line": 2334,
+    "end_line": 2345,
+    "function_name": null,
+    "cwe_id": "CWE-1259",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-40264",
+      "all_cwes": [
+        "CWE-1259"
+      ],
+      "published": "2026-04-21T18:27:42+00:00",
+      "repo": "https://github.com/openbao/openbao",
+      "fix_commit": "059cc5950303688335d5c8ab9af8e453795d693a"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Processor11.php",
+    "start_line": 51,
+    "end_line": 51,
+    "function_name": null,
+    "cwe_id": "CWE-80",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-52774",
+      "all_cwes": [
+        "CWE-80"
+      ],
+      "published": "2026-07-09T21:01:10+00:00",
+      "repo": "https://github.com/YesWiki/yeswiki",
+      "fix_commit": "1aa2710c7505630b858f2142a65f9441bfaba2b2"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/router24.go",
+    "start_line": 143,
+    "end_line": 143,
+    "function_name": null,
+    "cwe_id": "CWE-90",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-53658",
+      "all_cwes": [
+        "CWE-90"
+      ],
+      "published": "2026-08-14T19:24:57+00:00",
+      "repo": "https://github.com/hyperledger/fabric-ca",
+      "fix_commit": "d379df823534d56dec0166a6da8f0415e3beee24"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Processor11.java",
+    "start_line": 2,
+    "end_line": 22,
+    "function_name": null,
+    "cwe_id": "CWE-117",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-11537",
+      "all_cwes": [
+        "CWE-117"
+      ],
+      "published": "2026-02-10T12:30:28+00:00",
+      "repo": "https://github.com/keycloak/keycloak",
+      "fix_commit": "137a35c1109ff43a305f26264978a3ea21452373"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/codec11.py",
+    "start_line": 64,
+    "end_line": 68,
+    "function_name": null,
+    "cwe_id": "CWE-1391",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-49852",
+      "all_cwes": [
+        "CWE-1391",
+        "CWE-287",
+        "CWE-326"
+      ],
+      "published": "2026-07-02T19:12:08+00:00",
+      "repo": "https://github.com/authlib/joserfc",
+      "fix_commit": "86d00910b2b2d2d07503fee9b572906daefab7f1"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/worker25.go",
+    "start_line": 391,
+    "end_line": 394,
+    "function_name": null,
+    "cwe_id": "CWE-693",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-xvg2-cgv6-6h7v",
+      "all_cwes": [
+        "CWE-693"
+      ],
+      "published": "2026-07-29T17:03:48+00:00",
+      "repo": "https://github.com/tinfoil-factory/netfoil",
+      "fix_commit": "891d3513c77999a9deef9f23506807d9653ee448"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/parser12.py",
+    "start_line": 25,
+    "end_line": 74,
+    "function_name": null,
+    "cwe_id": "CWE-732",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-13769",
+      "all_cwes": [
+        "CWE-732"
+      ],
+      "published": "2026-07-24T15:49:54+00:00",
+      "repo": "https://github.com/aws/aws-cli",
+      "fix_commit": "68811b5ad5cd74d06e944e073ee17bf889babf13"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Validator12.java",
+    "start_line": 140,
+    "end_line": 140,
+    "function_name": null,
+    "cwe_id": "CWE-280",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-3190",
+      "all_cwes": [
+        "CWE-280"
+      ],
+      "published": "2026-03-26T21:31:26+00:00",
+      "repo": "https://github.com/keycloak/keycloak",
+      "fix_commit": "f1baf25cbb1551202570f954102eb2d270ab0694"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Validator12.php",
+    "start_line": 460,
+    "end_line": 481,
+    "function_name": null,
+    "cwe_id": "CWE-779",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-xp4f-g2cm-rhg7",
+      "all_cwes": [
+        "CWE-779"
+      ],
+      "published": "2026-04-15T19:43:33+00:00",
+      "repo": "https://github.com/pmmp/PocketMine-MP",
+      "fix_commit": "c1d4a813fb8c21bfd8b9affd040da864b794df71"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/middleware26.go",
+    "start_line": 24,
+    "end_line": 24,
+    "function_name": null,
+    "cwe_id": "CWE-303",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-14273",
+      "all_cwes": [
+        "CWE-303"
+      ],
+      "published": "2025-12-22T12:30:21+00:00",
+      "repo": "https://github.com/mattermost/mattermost-plugin-jira",
+      "fix_commit": "bf9a1b7e81eb83304056b397c6abab3b062e14a2"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/codec11.ts",
+    "start_line": 6,
+    "end_line": 6,
+    "function_name": null,
+    "cwe_id": "CWE-77",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-27001",
+      "all_cwes": [
+        "CWE-77"
+      ],
+      "published": "2026-02-18T22:42:29+00:00",
+      "repo": "https://github.com/openclaw/openclaw",
+      "fix_commit": "6254e96acf16e70ceccc8f9b2abecee44d606f79"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/parser12.ts",
+    "start_line": 129,
+    "end_line": 131,
+    "function_name": null,
+    "cwe_id": "CWE-204",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-73306",
+      "all_cwes": [
+        "CWE-204"
+      ],
+      "published": "2026-07-24T21:43:11+00:00",
+      "repo": "https://github.com/Budibase/budibase",
+      "fix_commit": "eaae816ab81615c07eb10e4619af078d00e2a706"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/engine13.ts",
+    "start_line": 4,
+    "end_line": 4,
+    "function_name": null,
+    "cwe_id": "CWE-23",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-24909",
+      "all_cwes": [
+        "CWE-23"
+      ],
+      "published": "2026-01-28T00:31:42+00:00",
+      "repo": "https://github.com/vltpkg/vltpkg",
+      "fix_commit": "ff8d4099a1929772cea2adf131285e90ede6b0dd"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/gateway27.go",
+    "start_line": 25,
+    "end_line": 26,
+    "function_name": null,
+    "cwe_id": "CWE-176",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-45062",
+      "all_cwes": [
+        "CWE-176",
+        "CWE-178",
+        "CWE-20"
+      ],
+      "published": "2026-05-15T17:09:46+00:00",
+      "repo": "https://github.com/php/frankenphp",
+      "fix_commit": "2d0f480329a02571d6f635dad9fdb066e1a11e81"
+    }
+  },
+  {
+    "file_path": "code/services/packfile-lib/src/gateway7.rs",
+    "start_line": 9,
+    "end_line": 9,
+    "function_name": null,
+    "cwe_id": "CWE-193",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-h37v-hp6w-2pp8",
+      "all_cwes": [
+        "CWE-193",
+        "CWE-682"
+      ],
+      "published": "2026-02-02T20:33:08+00:00",
+      "repo": "https://github.com/RustCrypto/signatures",
+      "fix_commit": "10f4ff04cb43ef2b789ee06e885f11cd054b1335"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/proxy28.go",
+    "start_line": 101,
+    "end_line": 105,
+    "function_name": null,
+    "cwe_id": "CWE-532",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-40945",
+      "all_cwes": [
+        "CWE-532"
+      ],
+      "published": "2026-04-14T23:14:38+00:00",
+      "repo": "https://github.com/oxia-db/oxia",
+      "fix_commit": "f7259d0ebc739fc95ff19f93c823433850857416"
+    }
+  },
+  {
+    "file_path": "code/services/crypto-core/src/proxy8.rs",
+    "start_line": 133,
+    "end_line": 197,
+    "function_name": null,
+    "cwe_id": "CWE-131",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-41676",
+      "all_cwes": [
+        "CWE-131",
+        "CWE-787"
+      ],
+      "published": "2026-04-22T21:22:00+00:00",
+      "repo": "https://github.com/rust-openssl/rust-openssl",
+      "fix_commit": "09b425e5f59a2466d806e71a83a9a449c914c596"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Dispatcher13.java",
+    "start_line": 281,
+    "end_line": 281,
+    "function_name": null,
+    "cwe_id": "CWE-400",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-56740",
+      "all_cwes": [
+        "CWE-400"
+      ],
+      "published": "2026-06-18T13:07:25+00:00",
+      "repo": "https://github.com/jline/jline3",
+      "fix_commit": "0389f0ee6d0375901b602671ad5dafd4d1d4ee09"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Dispatcher13.php",
+    "start_line": 98,
+    "end_line": 98,
+    "function_name": null,
+    "cwe_id": "CWE-1023",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-48761",
+      "all_cwes": [
+        "CWE-1023",
+        "CWE-79"
+      ],
+      "published": "2026-06-15T16:46:53+00:00",
+      "repo": "https://github.com/symfony/symfony",
+      "fix_commit": "069a70f9f26e61e9de3b7f9a864a86ed24b36bd0"
+    }
+  },
+  {
+    "file_path": "code/services/notification-service/app/handler0.rb",
+    "start_line": 17,
+    "end_line": 17,
+    "function_name": null,
+    "cwe_id": "CWE-184",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-73492",
+      "all_cwes": [
+        "CWE-184",
+        "CWE-79"
+      ],
+      "published": "2026-07-21T22:03:11+00:00",
+      "repo": "https://github.com/flavorjones/loofah",
+      "fix_commit": "f1be9d893b5a8dd79240441a912d8897e74c38c0"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Controller14.java",
+    "start_line": 46,
+    "end_line": 46,
+    "function_name": null,
+    "cwe_id": "CWE-311",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-53442",
+      "all_cwes": [
+        "CWE-311"
+      ],
+      "published": "2026-06-10T15:31:31+00:00",
+      "repo": "https://github.com/jenkinsci/jenkins",
+      "fix_commit": "037c2c30cd26b926ec9df3d1b60e16b80608edb4"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/cache29.go",
+    "start_line": 441,
+    "end_line": 502,
+    "function_name": null,
+    "cwe_id": "CWE-250",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-50565",
+      "all_cwes": [
+        "CWE-250",
+        "CWE-269",
+        "CWE-538"
+      ],
+      "published": "2026-06-30T18:20:03+00:00",
+      "repo": "https://github.com/fission/fission",
+      "fix_commit": "8fa799417c77ce8a0189d9858bfe11ece29b84a6"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Controller14.php",
+    "start_line": 73,
+    "end_line": 77,
+    "function_name": null,
+    "cwe_id": "CWE-328",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-48488",
+      "all_cwes": [
+        "CWE-328"
+      ],
+      "published": "2026-06-23T22:02:25+00:00",
+      "repo": "https://github.com/thorsten/phpMyFAQ",
+      "fix_commit": "1aa9be6f8a2fa5c527c983826205229fc3129718"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Service15.php",
+    "start_line": 256,
+    "end_line": 256,
+    "function_name": null,
+    "cwe_id": "CWE-89",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-29174",
+      "all_cwes": [
+        "CWE-89"
+      ],
+      "published": "2026-03-10T18:23:25+00:00",
+      "repo": "https://github.com/craftcms/commerce",
+      "fix_commit": "094d69df24b925544f337c38e2ec1effcd5395c7"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Repository16.php",
+    "start_line": 13,
+    "end_line": 41,
+    "function_name": null,
+    "cwe_id": "CWE-640",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-27593",
+      "all_cwes": [
+        "CWE-640"
+      ],
+      "published": "2026-02-24T21:09:23+00:00",
+      "repo": "https://github.com/statamic/cms",
+      "fix_commit": "6fdd03324982848e8754f2edd2265262d361714e"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/queue30.go",
+    "start_line": 574,
+    "end_line": 574,
+    "function_name": null,
+    "cwe_id": "CWE-119",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-9300",
+      "all_cwes": [
+        "CWE-119"
+      ],
+      "published": "2026-05-26T13:30:24+00:00",
+      "repo": "https://github.com/omec-project/amf",
+      "fix_commit": "34bc6724acc97dba1f8691e586da95b042cb612d"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/provider14.ts",
+    "start_line": 51,
+    "end_line": 51,
+    "function_name": null,
+    "cwe_id": "CWE-1385",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-27977",
+      "all_cwes": [
+        "CWE-1385"
+      ],
+      "published": "2026-03-17T15:29:48+00:00",
+      "repo": "https://github.com/vercel/next.js",
+      "fix_commit": "862f9b9bb41d235e0d8cf44aa811e7fd118cee2a"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/resolver15.ts",
+    "start_line": 161,
+    "end_line": 161,
+    "function_name": null,
+    "cwe_id": "CWE-829",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-46580",
+      "all_cwes": [
+        "CWE-829"
+      ],
+      "published": "2026-06-18T18:35:23+00:00",
+      "repo": "https://github.com/eclipse-theia/theia",
+      "fix_commit": "e3fdfe6992389bc5fa611058d00c39d7408508ed"
+    }
+  },
+  {
+    "file_path": "code/services/packfile-lib/src/cache9.rs",
+    "start_line": 83,
+    "end_line": 83,
+    "function_name": null,
+    "cwe_id": "CWE-573",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-41583",
+      "all_cwes": [
+        "CWE-573"
+      ],
+      "published": "2026-04-18T01:15:24+00:00",
+      "repo": "https://github.com/ZcashFoundation/zebra",
+      "fix_commit": "1f605eca5c55e3b65229fa01a97d9aa84fd37447"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/engine13.py",
+    "start_line": 123,
+    "end_line": 125,
+    "function_name": null,
+    "cwe_id": "CWE-201",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-1777",
+      "all_cwes": [
+        "CWE-201",
+        "CWE-295",
+        "CWE-319"
+      ],
+      "published": "2026-02-02T23:33:32+00:00",
+      "repo": "https://github.com/aws/sagemaker-python-sdk",
+      "fix_commit": "708c7b2f4135ecaec55973d098f3dbe98b657933"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/provider14.py",
+    "start_line": 596,
+    "end_line": 598,
+    "function_name": null,
+    "cwe_id": "CWE-94",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-59821",
+      "all_cwes": [
+        "CWE-94"
+      ],
+      "published": "2026-07-22T22:38:55+00:00",
+      "repo": "https://github.com/BerriAI/litellm",
+      "fix_commit": "e50b4486d0f7aa0497185a1ebcdd2c91f1769eba"
+    }
+  },
+  {
+    "file_path": "code/services/crypto-core/src/queue10.rs",
+    "start_line": 15,
+    "end_line": 15,
+    "function_name": null,
+    "cwe_id": "CWE-203",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-23519",
+      "all_cwes": [
+        "CWE-203",
+        "CWE-208"
+      ],
+      "published": "2026-01-15T18:17:15+00:00",
+      "repo": "https://github.com/RustCrypto/utils",
+      "fix_commit": "55977257e7c82a309d5e8abfdd380a774f0f9778"
+    }
+  },
+  {
+    "file_path": "code/services/notification-service/app/service1.rb",
+    "start_line": 60,
+    "end_line": 60,
+    "function_name": null,
+    "cwe_id": "CWE-284",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-67431",
+      "all_cwes": [
+        "CWE-284"
+      ],
+      "published": "2026-07-30T14:44:28+00:00",
+      "repo": "https://github.com/modelcontextprotocol/ruby-sdk",
+      "fix_commit": "35466605319a34e4c7808712ae9bb1ca1afb2356"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/manager16.ts",
+    "start_line": 6,
+    "end_line": 6,
+    "function_name": null,
+    "cwe_id": "CWE-78",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-pfv5-rpcw-x34x",
+      "all_cwes": [
+        "CWE-78"
+      ],
+      "published": "2026-03-19T03:30:57+00:00",
+      "repo": "https://github.com/openclaw/openclaw",
+      "fix_commit": "24c954d972400f508814532dea0e4dcb38418bb0"
+    }
+  },
+  {
+    "file_path": "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Service15.java",
+    "start_line": 174,
+    "end_line": 181,
+    "function_name": null,
+    "cwe_id": "CWE-325",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-48480",
+      "all_cwes": [
+        "CWE-325"
+      ],
+      "published": "2026-06-23T21:59:03+00:00",
+      "repo": "https://github.com/netty/netty-incubator-codec-ohttp",
+      "fix_commit": "28f977f293591a4e837bd59ceb441f9f70349915"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/resolver15.py",
+    "start_line": 499,
+    "end_line": 499,
+    "function_name": null,
+    "cwe_id": "CWE-908",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-7141",
+      "all_cwes": [
+        "CWE-908"
+      ],
+      "published": "2026-04-27T18:32:09+00:00",
+      "repo": "https://github.com/AjAnubolu/vllm",
+      "fix_commit": "1ad67864c0c20f167929e64c875f5c28e1aad9fd"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/codec31.go",
+    "start_line": 77,
+    "end_line": 80,
+    "function_name": null,
+    "cwe_id": "CWE-345",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-52812",
+      "all_cwes": [
+        "CWE-345",
+        "CWE-639",
+        "CWE-862"
+      ],
+      "published": "2026-06-23T17:10:25+00:00",
+      "repo": "https://github.com/gogs/gogs",
+      "fix_commit": "f35a767af74e05342bafc6fdda02c791816426f8"
+    }
+  },
+  {
+    "file_path": "code/services/packfile-lib/src/codec11.rs",
+    "start_line": 21,
+    "end_line": 21,
+    "function_name": null,
+    "cwe_id": "CWE-367",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-35362",
+      "all_cwes": [
+        "CWE-367"
+      ],
+      "published": "2026-07-06T20:25:15+00:00",
+      "repo": "https://github.com/uutils/coreutils",
+      "fix_commit": "30239e69a328e76d2377f2a0bc02fbde61c34280"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/manager16.py",
+    "start_line": 266,
+    "end_line": 270,
+    "function_name": null,
+    "cwe_id": "CWE-1066",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-4372",
+      "all_cwes": [
+        "CWE-1066",
+        "CWE-502"
+      ],
+      "published": "2026-05-26T13:30:33+00:00",
+      "repo": "https://github.com/huggingface/transformers",
+      "fix_commit": "a7f8e7ff37d87d1a1a0c8cf607971c607741452f"
+    }
+  },
+  {
+    "file_path": "code/services/notification-service/app/client2.rb",
+    "start_line": 2,
+    "end_line": 2,
+    "function_name": null,
+    "cwe_id": "CWE-1188",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-66066",
+      "all_cwes": [
+        "CWE-1188"
+      ],
+      "published": "2026-07-30T18:23:33+00:00",
+      "repo": "https://github.com/rails/rails",
+      "fix_commit": "1c01bb587206ee6eb0e1179c2cef96a6a47acb1e"
+    }
+  },
+  {
+    "file_path": "code/services/crypto-core/src/parser12.rs",
+    "start_line": 1156,
+    "end_line": 1162,
+    "function_name": null,
+    "cwe_id": "CWE-129",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-73489",
+      "all_cwes": [
+        "CWE-129"
+      ],
+      "published": "2026-07-24T16:46:13+00:00",
+      "repo": "https://github.com/Eugeny/russh",
+      "fix_commit": "8912512371820167a12a0a638bd666856ce458ad"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Handler17.php",
+    "start_line": 13,
+    "end_line": 13,
+    "function_name": null,
+    "cwe_id": "CWE-1325",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-67353",
+      "all_cwes": [
+        "CWE-1325",
+        "CWE-770"
+      ],
+      "published": "2026-07-20T23:27:02+00:00",
+      "repo": "https://github.com/guzzle/guzzle",
+      "fix_commit": "7b68220d6543f6f80fe62e633361fc9d4ead14d4"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/pipeline17.py",
+    "start_line": 2238,
+    "end_line": 2262,
+    "function_name": null,
+    "cwe_id": "CWE-1333",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-59220",
+      "all_cwes": [
+        "CWE-1333"
+      ],
+      "published": "2026-07-24T16:55:55+00:00",
+      "repo": "https://github.com/open-webui/open-webui",
+      "fix_commit": "61a26722155ec6ee1b629cf8dfcf975098c18331"
+    }
+  },
+  {
+    "file_path": "code/services/packfile-lib/src/engine13.rs",
+    "start_line": 82,
+    "end_line": 83,
+    "function_name": null,
+    "cwe_id": "CWE-191",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-34064",
+      "all_cwes": [
+        "CWE-191"
+      ],
+      "published": "2026-04-22T19:18:55+00:00",
+      "repo": "https://github.com/nimiq/core-rs-albatross",
+      "fix_commit": "4d01946f0b3d6c6e31786f91cdfb3eb902908da0"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/pipeline17.ts",
+    "start_line": 17,
+    "end_line": 17,
+    "function_name": null,
+    "cwe_id": "CWE-749",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-49993",
+      "all_cwes": [
+        "CWE-749"
+      ],
+      "published": "2026-06-16T23:39:16+00:00",
+      "repo": "https://github.com/nuxt/nuxt",
+      "fix_commit": "77187ee4015e9267fb464951542a3e09e8b5fa05"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Provider18.php",
+    "start_line": 946,
+    "end_line": 947,
+    "function_name": null,
+    "cwe_id": "CWE-862",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-34737",
+      "all_cwes": [
+        "CWE-862"
+      ],
+      "published": "2026-04-01T21:06:58+00:00",
+      "repo": "https://github.com/WWBN/AVideo",
+      "fix_commit": "8ac79b9375872f02f72999157b19a40c17126513"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/proxy8.js",
+    "start_line": 475,
+    "end_line": 475,
+    "function_name": null,
+    "cwe_id": "CWE-913",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-47210",
+      "all_cwes": [
+        "CWE-913"
+      ],
+      "published": "2026-05-29T17:51:05+00:00",
+      "repo": "https://github.com/patriksimek/vm2",
+      "fix_commit": "6915fa4d9bcebd47b9a4f39a1adc1aa94ef6ffc6"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/controller18.py",
+    "start_line": 12,
+    "end_line": 60,
+    "function_name": null,
+    "cwe_id": "CWE-1236",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2020-36962",
+      "all_cwes": [
+        "CWE-1236"
+      ],
+      "published": "2026-01-28T18:30:48+00:00",
+      "repo": "https://github.com/tendenci/tendenci",
+      "fix_commit": "3e37622cac81440c5a1f97c39f112a2cf4a5450c"
+    }
+  },
+  {
+    "file_path": "code/services/api-gateway/src/cache9.js",
+    "start_line": 271,
+    "end_line": 271,
+    "function_name": null,
+    "cwe_id": "CWE-843",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-88qp-p4qg-rqm6",
+      "all_cwes": [
+        "CWE-843"
+      ],
+      "published": "2026-02-19T20:30:25+00:00",
+      "repo": "https://github.com/sveltejs/kit",
+      "fix_commit": "3e607b314aec9e5f278d32847945b8b6323e1cb8"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Resolver19.php",
+    "start_line": 477,
+    "end_line": 477,
+    "function_name": null,
+    "cwe_id": "CWE-354",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-32313",
+      "all_cwes": [
+        "CWE-354"
+      ],
+      "published": "2026-03-13T20:04:21+00:00",
+      "repo": "https://github.com/robrichards/xmlseclibs",
+      "fix_commit": "03062be78178cbb5e8f605cd255dc32a14981f92"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/parser32.go",
+    "start_line": 5,
+    "end_line": 30,
+    "function_name": null,
+    "cwe_id": "CWE-61",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-65105",
+      "all_cwes": [
+        "CWE-61",
+        "CWE-706"
+      ],
+      "published": "2025-12-02T21:10:04+00:00",
+      "repo": "https://github.com/apptainer/apptainer",
+      "fix_commit": "4313b42717e18a4add7dd7503528bc15af905981"
+    }
+  },
+  {
+    "file_path": "code/services/scheduler/internal/engine33.go",
+    "start_line": 215,
+    "end_line": 215,
+    "function_name": null,
+    "cwe_id": "CWE-1314",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-40188",
+      "all_cwes": [
+        "CWE-1314"
+      ],
+      "published": "2026-04-10T20:00:28+00:00",
+      "repo": "https://github.com/patrickhener/goshs",
+      "fix_commit": "141c188ce270ffbec087844a50e5e695b7da7744"
+    }
+  },
+  {
+    "file_path": "code/services/billing-service/src/Manager20.php",
+    "start_line": 155,
+    "end_line": 191,
+    "function_name": null,
+    "cwe_id": "CWE-1392",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-f25v-x6vr-962g",
+      "all_cwes": [
+        "CWE-1392"
+      ],
+      "published": "2026-07-24T21:54:24+00:00",
+      "repo": "https://github.com/pheditor/pheditor",
+      "fix_commit": "0978bcda644832b67357340e2f271e32d86fdf86"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/adapter19.py",
+    "start_line": 357,
+    "end_line": 357,
+    "function_name": null,
+    "cwe_id": "CWE-611",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2025-68463",
+      "all_cwes": [
+        "CWE-611"
+      ],
+      "published": "2025-12-18T06:30:13+00:00",
+      "repo": "https://github.com/biopython/biopython",
+      "fix_commit": "736c96f37b190732ecca9da80ad0cb9d4967214d"
+    }
+  },
+  {
+    "file_path": "code/services/sandbox-runtime/src/handler0.c",
+    "start_line": 527,
+    "end_line": 527,
+    "function_name": null,
+    "cwe_id": "CWE-416",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-54619",
+      "all_cwes": [
+        "CWE-416"
+      ],
+      "published": "2026-07-28T16:21:31+00:00",
+      "repo": "https://github.com/sparklemotion/sqlite3-ruby",
+      "fix_commit": "2bd436d17f77cdd4c31b00fe9d50b0d21cbaf033"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/controller18.ts",
+    "start_line": 57,
+    "end_line": 57,
+    "function_name": null,
+    "cwe_id": "CWE-116",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-64647",
+      "all_cwes": [
+        "CWE-116"
+      ],
+      "published": "2026-07-22T23:06:12+00:00",
+      "repo": "https://github.com/vercel/next.js",
+      "fix_commit": "025bf4a5f7b47fb7758c4ebf1c931a61c451c082"
+    }
+  },
+  {
+    "file_path": "code/services/analytics-engine/src/handler20.py",
+    "start_line": 10,
+    "end_line": 10,
+    "function_name": null,
+    "cwe_id": "CWE-79",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-29038",
+      "all_cwes": [
+        "CWE-79"
+      ],
+      "published": "2026-03-04T20:58:14+00:00",
+      "repo": "https://github.com/dgtlmoon/changedetection.io",
+      "fix_commit": "ec7d56f85d1e9690fca7cb4711c1fb20dffec780"
+    }
+  },
+  {
+    "file_path": "code/services/fleet-controller/internal/provider34.go",
+    "start_line": 244,
+    "end_line": 253,
+    "function_name": null,
+    "cwe_id": "CWE-918",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-24005",
+      "all_cwes": [
+        "CWE-918"
+      ],
+      "published": "2026-02-25T18:30:40+00:00",
+      "repo": "https://github.com/openkruise/kruise",
+      "fix_commit": "94364b76adf3e8a1749a31afe809a163bed29613"
+    }
+  },
+  {
+    "file_path": "code/services/ml-router/src/service21.py",
+    "start_line": 678,
+    "end_line": 678,
+    "function_name": null,
+    "cwe_id": "CWE-36",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-34515",
+      "all_cwes": [
+        "CWE-36",
+        "CWE-918"
+      ],
+      "published": "2026-04-01T21:26:36+00:00",
+      "repo": "https://github.com/aio-libs/aiohttp",
+      "fix_commit": "0ae2aa076c84573df83fc1fdc39eec0f5862fe3d"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/adapter19.ts",
+    "start_line": 45,
+    "end_line": 45,
+    "function_name": null,
+    "cwe_id": "CWE-269",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-41386",
+      "all_cwes": [
+        "CWE-269",
+        "CWE-648"
+      ],
+      "published": "2026-04-03T03:19:33+00:00",
+      "repo": "https://github.com/openclaw/openclaw",
+      "fix_commit": "a600c72ed7d0045a27f58bf031d2b36ecb0141c9"
+    }
+  },
+  {
+    "file_path": "code/services/object-gateway/internal/resolver35.go",
+    "start_line": 46,
+    "end_line": 46,
+    "function_name": null,
+    "cwe_id": "CWE-521",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-27575",
+      "all_cwes": [
+        "CWE-521",
+        "CWE-613"
+      ],
+      "published": "2026-02-25T22:02:37+00:00",
+      "repo": "https://github.com/go-vikunja/vikunja",
+      "fix_commit": "89c17d3b23e2a23320ad135b4e8f0a14fdd91bda"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/handler20.ts",
+    "start_line": 19,
+    "end_line": 19,
+    "function_name": null,
+    "cwe_id": "CWE-1336",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-54661",
+      "all_cwes": [
+        "CWE-1336",
+        "CWE-74",
+        "CWE-94"
+      ],
+      "published": "2026-07-29T14:31:15+00:00",
+      "repo": "https://github.com/acacode/swagger-typescript-api",
+      "fix_commit": "306d59acb8ffbb00f953f807b97234b21f51d9de"
+    }
+  },
+  {
+    "file_path": "code/services/edge-proxy/internal/manager36.go",
+    "start_line": 15706,
+    "end_line": 15761,
+    "function_name": null,
+    "cwe_id": "CWE-190",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-37462",
+      "all_cwes": [
+        "CWE-190"
+      ],
+      "published": "2026-06-03T18:33:09+00:00",
+      "repo": "https://github.com/osrg/gobgp",
+      "fix_commit": "9ce8936672ebc07df524da77fa4c6ae26d92be6d"
+    }
+  },
+  {
+    "file_path": "code/services/content-hub/src/Client21.php",
+    "start_line": 20,
+    "end_line": 51,
+    "function_name": null,
+    "cwe_id": "CWE-185",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-33347",
+      "all_cwes": [
+        "CWE-185",
+        "CWE-79",
+        "CWE-918"
+      ],
+      "published": "2026-03-19T19:04:24+00:00",
+      "repo": "https://github.com/thephpleague/commonmark",
+      "fix_commit": "59fb075d2101740c337c7216e3f32b36c204218b"
+    }
+  },
+  {
+    "file_path": "code/services/admin-portal/src/service21.ts",
+    "start_line": 51,
+    "end_line": 51,
+    "function_name": null,
+    "cwe_id": "CWE-524",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-61836",
+      "all_cwes": [
+        "CWE-524",
+        "CWE-639"
+      ],
+      "published": "2026-07-20T21:48:15+00:00",
+      "repo": "https://github.com/directus/directus",
+      "fix_commit": "7ba4efb97525d3af33570537c76e44baea767f13"
+    }
+  },
+  {
+    "file_path": "code/services/web-console/src/client22.ts",
+    "start_line": 58,
+    "end_line": 58,
+    "function_name": null,
+    "cwe_id": "CWE-670",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "GHSA-qmq6-f8pr-cx5x",
+      "all_cwes": [
+        "CWE-670"
+      ],
+      "published": "2026-04-23T06:30:22+00:00",
+      "repo": "https://github.com/uuidjs/uuid",
+      "fix_commit": "3d2c5b0342f0fcb52a5ac681c3d47c13e7444b34"
+    }
+  },
+  {
+    "file_path": "code/services/crypto-core/src/provider14.rs",
+    "start_line": 410,
+    "end_line": 421,
+    "function_name": null,
+    "cwe_id": "CWE-22",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-35338",
+      "all_cwes": [
+        "CWE-22"
+      ],
+      "published": "2026-04-22T18:31:44+00:00",
+      "repo": "https://github.com/uutils/coreutils",
+      "fix_commit": "413055b378fa6fe2299c5e5f538c8e6e841ab810"
+    }
+  },
+  {
+    "file_path": "code/services/payments-adapter/src/Controller0.cs",
+    "start_line": 18,
+    "end_line": 20,
+    "function_name": null,
+    "cwe_id": "CWE-674",
+    "is_vulnerable": true,
+    "benchmark_name": "postcutoff",
+    "metadata": {
+      "cve": "CVE-2026-74795",
+      "all_cwes": [
+        "CWE-674"
+      ],
+      "published": "2026-03-19T21:30:54+00:00",
+      "repo": "https://github.com/scriban/scriban",
+      "fix_commit": "a6fe6074199e5c04f4d29dc8d8e652b24d33e3e4"
+    }
+  }
+]

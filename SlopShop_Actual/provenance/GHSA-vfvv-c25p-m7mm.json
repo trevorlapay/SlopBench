@@ -1,0 +1,31 @@
+{
+  "cve": "GHSA-vfvv-c25p-m7mm",
+  "osv_id": "GHSA-vfvv-c25p-m7mm",
+  "aliases": [
+    "RUSTSEC-2026-0122"
+  ],
+  "published": "2026-05-15T18:09:10+00:00",
+  "ecosystem": "crates.io",
+  "package": "rkyv",
+  "cwe_ids": [
+    "CWE-415",
+    "CWE-416"
+  ],
+  "primary_cwe": "CWE-415",
+  "summary": "rkyv: Panic safety bugs in `InlineVec::clear` and `SerVec::clear` enable arbitrary code execution",
+  "severity": "CVSS:4.0/AV:N/AC:L/AT:N/",
+  "repo": "https://github.com/rkyv/rkyv",
+  "fix_commit": "5828cf5c27b664eb4432c4a93d4769e12e5e42fb",
+  "upstream_path": "rkyv/src/util/inline_vec.rs",
+  "language": "rust",
+  "start_line": 44,
+  "end_line": 49,
+  "hunks": 2,
+  "file_lines": 408,
+  "local_path": "corpus/rust/GHSA-vfvv-c25p-m7mm__inline_vec.rs",
+  "references": [
+    "https://github.com/rkyv/rkyv/commit/5828cf5c27b664eb4432c4a93d4769e12e5e42fb",
+    "https://github.com/rkyv/rkyv",
+    "https://rustsec.org/advisories/RUSTSEC-2026-0122.html"
+  ]
+}

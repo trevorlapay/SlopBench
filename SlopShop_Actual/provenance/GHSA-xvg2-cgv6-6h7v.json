@@ -1,0 +1,32 @@
+{
+  "cve": "GHSA-xvg2-cgv6-6h7v",
+  "osv_id": "GHSA-xvg2-cgv6-6h7v",
+  "aliases": [
+    "GO-2026-6143"
+  ],
+  "published": "2026-07-29T17:03:48+00:00",
+  "ecosystem": "Go",
+  "package": "github.com/tinfoil-factory/netfoil",
+  "cwe_ids": [
+    "CWE-693"
+  ],
+  "primary_cwe": "CWE-693",
+  "summary": "netfoil: Incorrect block responses could lead to localhost traffic",
+  "severity": "CVSS:4.0/AV:N/AC:L/AT:P/",
+  "repo": "https://github.com/tinfoil-factory/netfoil",
+  "fix_commit": "891d3513c77999a9deef9f23506807d9653ee448",
+  "upstream_path": "dns/dns_proxy.go",
+  "language": "go",
+  "start_line": 391,
+  "end_line": 394,
+  "hunks": 2,
+  "file_lines": 430,
+  "local_path": "corpus/go/GHSA-xvg2-cgv6-6h7v__dns_proxy.go",
+  "references": [
+    "https://github.com/tinfoil-factory/netfoil/security/advisories/GHSA-xvg2-cgv6-6h7v",
+    "https://github.com/tinfoil-factory/netfoil/pull/33",
+    "https://github.com/tinfoil-factory/netfoil/commit/891d3513c77999a9deef9f23506807d9653ee448",
+    "https://github.com/tinfoil-factory/netfoil",
+    "https://github.com/tinfoil-factory/netfoil/releases/tag/v0.4.0"
+  ]
+}
