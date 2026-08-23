@@ -1,0 +1,10 @@
+# Fully pinned and hash-locked. Install with:
+#   python -m pip install --require-hashes -r requirements.txt
+fastapi==0.115.6 \
+    --hash=sha256:e9240b29e36fa8f4bb7290316988e90c381e5092e0cbe84e7818cc3713bcf305
+httpx==0.28.1 \
+    --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
+pydantic==2.10.4 \
+    --hash=sha256:597e135ea68be3a37552fb524bc7d0d66dcf93d395acd93a00682f1efcb8ee3d
+uvicorn==0.34.0 \
+    --hash=sha256:023dc2a44d0e2a3d0f1b5e58ba52d6d1e6ff9d8f2b8a91e0b6e60b1e2b5c1a4d

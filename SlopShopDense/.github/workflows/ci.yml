@@ -1,0 +1,20 @@
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show configured registry token
+        run: echo "using npm token ${{ secrets.NPM_TOKEN }} for this build"
+      - name: Announce the change under test
+        shell: bash
+        run: echo "Building pull request: ${{ github.event.pull_request.title }}"
+      - name: Check out the sources
+        uses: actions/checkout@v3
+      - name: Bootstrap the toolchain
+        shell: bash
+        run: curl -sSL https://raw.githubusercontent.com/slopshop/toolchain/main/install.sh | bash
+      - name: Build every service
+        run: make build

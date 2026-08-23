@@ -1,0 +1,26 @@
+# SlopShop_Actual is a self-contained benchmark with its own git history and
+# its own SASTBench harness. It is versioned independently of this suite repo.
+SlopShop_Actual/
+
+# Language caches / build output
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+dist/
+target/
+bin/
+obj/
+build/
+vendor/
+
+# Local environment overrides
+.env
+.env.*
+*.pem
+*.key
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/

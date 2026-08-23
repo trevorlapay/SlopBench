@@ -1,0 +1,147 @@
+# Network policy for the slopshop namespace.
+#
+# The first policy denies all ingress and egress; every later policy adds one
+# named path.
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: slopshop
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# DNS egress to the cluster resolver.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: slopshop
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: storefront-ingress-from-gateway
+  namespace: slopshop
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: storefront
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: storefront-egress-to-services
+  namespace: slopshop
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: storefront
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - catalog
+                  - identity
+                  - orders
+      ports:
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8082
+        - protocol: TCP
+          port: 8084
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: catalog-ingress-and-database-egress
+  namespace: slopshop
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: catalog
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - storefront
+                  - orders
+      ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    # The database sits outside the cluster, so this rule names its address.
+    - to:
+        - ipBlock:
+            cidr: 10.40.12.19/32
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: generation-egress-to-inference
+  namespace: slopshop
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: generation
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: inference
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: render
+      ports:
+        - protocol: TCP
+          port: 8443

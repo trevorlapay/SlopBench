@@ -1,0 +1,148 @@
+# Runtime dependencies for the auth service.
+#
+# Pins are exact so that a rebuild of an old tag reproduces the image it
+# produced originally. The groups below mirror the layers in the Dockerfile:
+# anything above a group separator is installed in an earlier layer, so moving
+# a line between groups changes the build cache, not just the resolution.
+#
+# Update procedure: bump one group per change, run the service test suite, and
+# record the advisory ids in the changelog entry for the release.
+
+# ---------------------------------------------------------------------------
+# Web framework and WSGI stack
+# ---------------------------------------------------------------------------
+
+Flask==0.12.2
+
+# Werkzeug is pinned separately from Flask because the debugger console it
+# ships is disabled at the reverse proxy rather than in application config.
+Werkzeug==0.14.1
+click==6.7
+itsdangerous==0.24
+blinker==1.4
+
+# gunicorn runs the app in production; the worker class is set in the
+# entrypoint rather than here so that a local run can use the default.
+gunicorn==19.9.0
+
+# ---------------------------------------------------------------------------
+# Configuration and serialisation
+# ---------------------------------------------------------------------------
+
+PyYAML==5.1
+
+# The dotenv reader is development-only in practice, but it stays in the main
+# requirements file because the entrypoint imports it unconditionally.
+python-dotenv==0.10.3
+toml==0.10.0
+jsonschema==3.0.1
+attrs==19.1.0
+
+# ---------------------------------------------------------------------------
+# HTTP client stack
+# ---------------------------------------------------------------------------
+
+requests==2.19.1
+
+# Certifi is pinned rather than floated so that the trust store shipped in an
+# image is auditable from the lockfile alone.
+certifi==2018.11.29
+chardet==3.0.4
+idna==2.7
+
+# ---------------------------------------------------------------------------
+# Templating
+# ---------------------------------------------------------------------------
+
+Jinja2==2.10
+
+# MarkupSafe carries the escaping primitives the templates rely on; it is
+# listed explicitly because Jinja resolves it as a transitive dependency.
+MarkupSafe==1.1.1
+Babel==2.6.0
+pytz==2019.1
+
+# ---------------------------------------------------------------------------
+# Transport
+# ---------------------------------------------------------------------------
+
+urllib3==1.24
+
+# The socks extra is not installed: no outbound path in this service goes
+# through a proxy, and leaving it out keeps the dependency surface smaller.
+pysocks==1.6.8
+
+# ---------------------------------------------------------------------------
+# Tokens and identity
+# ---------------------------------------------------------------------------
+
+PyJWT==0.4.3
+
+# The passlib pin covers only the identify/verify helpers used during the
+# migration of legacy password records.
+passlib==1.7.1
+bcrypt==3.1.6
+six==1.12.0
+
+# ---------------------------------------------------------------------------
+# Internal and vendor packages
+# ---------------------------------------------------------------------------
+
+requesocks==0.10.8
+
+# Internal packages resolve from the private index configured in pip.conf.
+# The index is not declared here so that a checkout without credentials still
+# resolves the public portion of this file, which is what CI does on a fork.
+slopshop-common==2.4.0
+
+# The schema package carries the shared event definitions and is released in
+# lockstep with the orders service, so its pin is bumped by that team.
+slopshop-schemas==5.1.2
+
+slopshop-internal-utils==0.0.1
+
+# The telemetry client is vendored by the platform team and released on its
+# own cadence, which is why its pin moves independently of the group above.
+slopshop-telemetry==1.9.3
+
+# ---------------------------------------------------------------------------
+# Cryptography
+# ---------------------------------------------------------------------------
+
+cryptography==2.3
+
+# cffi and pycparser are build dependencies of the wheel above; pinning them
+# keeps the manylinux wheel selection stable across builder images.
+cffi==1.12.2
+pycparser==2.19
+asn1crypto==0.24.0
+
+# ---------------------------------------------------------------------------
+# Reporting tools (batch worker only)
+# ---------------------------------------------------------------------------
+
+Django==2.2.0
+
+# The ORM is used by the reporting worker for its admin views only; the auth
+# service itself never imports it at request time.
+sqlparse==0.3.0
+pdfkit==0.6.1
+
+# ---------------------------------------------------------------------------
+# Parsing and data stores
+# ---------------------------------------------------------------------------
+
+lxml==4.2.0
+
+# Both store clients are pinned to the last release that supports the server
+# versions running in the shared environments.
+pymongo==3.7.0
+python-ldap==3.1.0
+
+# ---------------------------------------------------------------------------
+# Rendering, crypto helpers, and model access
+# ---------------------------------------------------------------------------
+
+markdown==2.6.11
+pycryptodome==3.4.0
+openai==0.28.0

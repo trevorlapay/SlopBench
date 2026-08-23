@@ -1,0 +1,34 @@
+[package]
+name = "slopshop-search"
+version = "1.7.0"
+edition = "2021"
+rust-version = "1.83"
+publish = false
+
+[dependencies]
+axum = { version = "0.7.9", default-features = false, features = ["http1", "json", "tokio"] }
+serde = { version = "1.0.216", features = ["derive"] }
+serde_json = "1.0.134"
+tokio = { version = "1.42.0", features = ["macros", "rt-multi-thread", "signal"] }
+tower-http = { version = "0.6.2", features = ["limit", "timeout", "set-header"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["json", "env-filter"] }
+unicode-normalization = "0.1.24"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+arithmetic_side_effects = "deny"
+indexing_slicing = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[profile.release]
+overflow-checks = true
+debug-assertions = false
+panic = "abort"
+lto = "thin"

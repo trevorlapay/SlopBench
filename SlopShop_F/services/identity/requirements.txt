@@ -1,0 +1,18 @@
+# Fully pinned and hash-locked. Install with:
+#   python -m pip install --require-hashes -r requirements.txt
+argon2-cffi==23.1.0 \
+    --hash=sha256:879c3e79a2729ce768ebb7d36d4609e3a78a4ca2ec3a9f12286ca057e3d0db08
+cryptography==44.0.0 \
+    --hash=sha256:84111ad4ff3f6253820e6d3e58be2cc2a00adb29335d4cacb5ab4d4d34f2a123
+fastapi==0.115.6 \
+    --hash=sha256:e9240b29e36fa8f4bb7290316988e90c381e5092e0cbe84e7818cc3713bcf305
+httpx==0.28.1 \
+    --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
+psycopg[binary]==3.2.3 \
+    --hash=sha256:c09e6396f2e64ca8a4bf9c19f4dcaddaef6db6b0e0a7d1b8d0e1ffb8cfe4e1f6
+pydantic==2.10.4 \
+    --hash=sha256:597e135ea68be3a37552fb524bc7d0d66dcf93d395acd93a00682f1efcb8ee3d
+pyjwt[crypto]==2.10.1 \
+    --hash=sha256:dcdd193e30abefd5debf142f9adfcdd2b58004e644f25406ffaebd50bd98dacb
+uvicorn==0.34.0 \
+    --hash=sha256:023dc2a44d0e2a3d0f1b5e58ba52d6d1e6ff9d8f2b8a91e0b6e60b1e2b5c1a4d

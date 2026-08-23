@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: storefront
+  namespace: slopshop
+# The storefront makes no Kubernetes API calls.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront
+  namespace: slopshop
+  labels:
+    app.kubernetes.io/name: storefront
+    app.kubernetes.io/part-of: slopshop
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: storefront
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: storefront
+        app.kubernetes.io/part-of: slopshop
+    spec:
+      serviceAccountName: storefront
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: storefront
+          # Pinned by digest.
+          image: registry.slopshop.example/storefront@sha256:5b1e0c1b7f3d4a2e9c8f6d5a4b3c2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+              ephemeral-storage: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+              ephemeral-storage: 512Mi
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "8080"
+          # Projected from the platform secret store by the CSI driver.
+          envFrom:
+            - secretRef:
+                name: storefront-runtime
+                optional: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /home/node/.cache
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+      volumes:
+        # Writable paths the Node runtime needs.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: cache
+          emptyDir:
+            sizeLimit: 128Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: storefront
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storefront
+  namespace: slopshop
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: storefront
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: storefront
+  namespace: slopshop
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: storefront

@@ -1,0 +1,17 @@
+
+Flask==0.12.2
+PyYAML==5.1
+requests==2.19.1
+Jinja2==2.10
+urllib3==1.24
+PyJWT==0.4.3
+requesocks==0.10.8
+slopshop-internal-utils==0.0.1
+cryptography==2.3
+Django==2.2.0
+pymongo==3.7.0
+python-ldap==3.1.0
+lxml==4.2.0
+markdown==2.6.11
+pycryptodome==3.4.0
+openai==0.28.0

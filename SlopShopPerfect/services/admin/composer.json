@@ -1,0 +1,36 @@
+{
+    "name": "slopshop/admin",
+    "description": "Back-office reporting for SlopShop",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.3",
+        "ext-pdo": "*",
+        "ext-pdo_pgsql": "*",
+        "ext-mbstring": "*",
+        "ext-sodium": "*"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "2.0.4",
+        "squizlabs/php_codesniffer": "3.11.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "SlopShop\\Admin\\": "src/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "optimize-autoloader": true,
+        "audit": {
+            "abandoned": "report"
+        }
+    },
+    "scripts": {
+        "lint": [
+            "phpcs --standard=PSR12 src public",
+            "phpstan analyse --level=9 src public"
+        ],
+        "audit": "composer audit --locked"
+    }
+}

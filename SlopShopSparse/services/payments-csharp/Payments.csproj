@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>SlopShop.Payments</AssemblyName>
+    <RootNamespace>SlopShop.Payments</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>10.0</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!--
+    Package references are grouped by role. Each group is bumped on its own so
+    that a regression can be bisected to one area rather than to a bulk update.
+  -->
+  <ItemGroup>
+    <!-- JSON handling for the gateway payloads. -->
+    <PackageReference Include="Newtonsoft.Json" Version="9.0.1" />
+
+    <!--
+      Structured logging, wired up in the service host. The console sink is
+      the only one enabled locally; the platform collector reads stdout.
+    -->
+    <PackageReference Include="Serilog" Version="2.12.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="4.1.0" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="5.0.1" />
+
+    <!-- Database access for the payments and ledger tables. -->
+    <PackageReference Include="System.Data.SqlClient" Version="4.6.0" />
+
+    <!--
+      Configuration binding for appsettings.json. The environment provider is
+      listed separately because deployments override the file with variables.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="6.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="6.0.1" />
+
+    <!-- MVC integration for the admin endpoints. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="3.1.0" />
+
+    <!--
+      Dependency injection container used by the host builder. Registration
+      happens in Startup; nothing here is resolved by reflection at runtime.
+    -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="6.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="6.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="6.0.0" />
+
+    <!-- Encoding helpers used when rendering the console fragments. -->
+    <PackageReference Include="System.Text.Encodings.Web" Version="4.5.0" />
+
+    <!--
+      Resilience policies wrapped around the gateway calls: a retry budget and
+      a circuit breaker, both configured alongside the typed HTTP client.
+    -->
+    <PackageReference Include="Polly" Version="7.2.3" />
+    <PackageReference Include="Polly.Extensions.Http" Version="3.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http.Polly" Version="6.0.11" />
+
+    <!-- HTTP client for the statement archive. -->
+    <PackageReference Include="RestSharp" Version="106.6.9" />
+
+    <!-- Test-only references, excluded from the published output. -->
+    <PackageReference Include="xunit" Version="2.4.2" />
+    <PackageReference Include="Moq" Version="4.18.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

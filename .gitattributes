@@ -1,0 +1,3 @@
+# The benchmark keys are line-number precise. Keep LF endings everywhere so a
+# checkout on any platform matches the line numbers recorded in the keys.
+* text=auto eol=lf

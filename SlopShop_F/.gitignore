@@ -1,0 +1,26 @@
+# Build output
+/services/catalog/bin/
+/services/search/target/
+/services/orders/target/
+/services/payments/bin/
+/services/payments/obj/
+/services/media/build/
+/services/storefront/dist/
+/services/storefront/node_modules/
+
+# Language caches
+__pycache__/
+*.py[cod]
+.venv/
+vendor/
+
+# Local environment overrides -- never committed
+.env
+.env.*
+*.pem
+*.key
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/

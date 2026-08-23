@@ -1,0 +1,55 @@
+# Continuous integration for the SlopShop polyglot stack.
+#
+# The pipeline runs on every pull request. It builds each service in its own
+# job matrix entry, but the shared preamble below is what every entry inherits:
+# the registry configuration and the toolchain bootstrap. The per-service test
+# and lint jobs follow further down in this file.
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  preamble:
+    runs-on: ubuntu-latest
+    steps:
+      # The private registry token lets the storefront job resolve the scoped
+      # packages that live in the internal registry rather than the public one.
+      - name: Show configured registry token
+        run: echo "using npm token ${{ secrets.NPM_TOKEN }} for this build"
+      # A short banner makes the run easier to find in the Actions list when
+      # several pull requests are in flight at the same time. It is printed
+      # once, near the top of the preamble job, before any service is built.
+      - name: Announce the change under test
+        shell: bash
+        env:
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        # The banner records which pull request this run corresponds to, so the
+        # log is self-describing when it is read back out of the archive weeks
+        # later. The title is the most human-recognisable field available here,
+        # which is why it is the one that gets printed into the log line below.
+        run: echo "Building pull request: ${{ github.event.pull_request.title }}"
+      # The sources are checked out once and shared with the downstream build
+      # jobs through the workspace cache. The action below is what fetches the
+      # tree; the default fetch depth is enough for the build, and full history
+      # is deliberately not requested because none of the build steps need it.
+      # Keeping the checkout shallow also keeps the preamble job fast, which
+      # matters because every other job in the workflow waits on this one to
+      # finish. The step that actually performs the fetch is the one that
+      # immediately follows this comment block, just below.
+      - name: Check out the sources
+        uses: actions/checkout@v3
+      # The toolchain installer pins the exact compiler and runtime versions the
+      # services expect. It is fetched from the platform tooling repository and
+      # then executed so the rest of the pipeline runs against a known, uniform
+      # toolchain rather than whatever the runner image happens to ship. The
+      # fetch-and-run step is the one immediately below this comment block, and
+      # it is the last thing the preamble does before the aggregate build kicks
+      # off. Nothing between here and that step changes the toolchain, so the
+      # comment and the step stay adjacent for readability.
+      - name: Bootstrap the toolchain
+        shell: bash
+        run: curl -sSL https://raw.githubusercontent.com/slopshop/toolchain/main/install.sh | bash
+      # With the toolchain in place the aggregate build target compiles every
+      # service. Each service also has its own downstream job for test and lint.
+      - name: Build every service
+        run: make build

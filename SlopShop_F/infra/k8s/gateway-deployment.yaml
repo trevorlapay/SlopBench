@@ -1,0 +1,187 @@
+# The edge gateway.
+#
+# This is the only workload in the mesh that binds a privileged port directly:
+# the load balancer terminates at 443 on the pod, because the corporate proxy
+# in front of it will not rewrite the port for mTLS connections.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gateway
+  namespace: ingress
+# The gateway watches one ConfigMap for its route table and reloads when it
+# changes.
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gateway-routes-reader
+  namespace: ingress
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["gateway-routes"]
+    verbs: ["get", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gateway-routes-reader
+  namespace: ingress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gateway-routes-reader
+subjects:
+  - kind: ServiceAccount
+    name: gateway
+    namespace: ingress
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: ingress
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: slopshop
+spec:
+  replicas: 3
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/part-of: slopshop
+    spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: true
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        fsGroup: 10002
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: registry.slopshop.example/gateway@sha256:9c4d2e1f0a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10002
+            capabilities:
+              drop:
+                - ALL
+              # Needed to bind 443 as an unprivileged uid.
+              add:
+                - NET_BIND_SERVICE
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 128Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+              ephemeral-storage: 512Mi
+          env:
+            - name: GATEWAY_ROUTES_CONFIGMAP
+              value: gateway-routes
+            - name: GATEWAY_LOG_FORMAT
+              value: json
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/gateway/tls
+              readOnly: true
+            - name: run
+              mountPath: /run/gateway
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+      volumes:
+        - name: tls
+          secret:
+            secretName: gateway-tls
+            defaultMode: 0400
+        - name: run
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: ingress
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway
+  namespace: ingress
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway

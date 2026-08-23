@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SlopShop</title>
+  <script src="http://cdn.sketchy-scripts.example/analytics.js"></script>
+  <script src="http://widgets.slopshop.io/chat.js"></script>
+</head>
+<body>
+  <div id="welcome"></div>
+  <div id="profile"></div>
+  <a id="next" href="/">continue</a>
+  <iframe id="partner"></iframe>
+
+  <script src="app.js"></script>
+  <script>
+    document.getElementById("welcome").innerHTML =
+      "Welcome " + decodeURIComponent(location.hash.slice(1));
+
+    document.getElementById("next").href = new URLSearchParams(location.search).get("next");
+
+    document.getElementById("profile").innerHTML =
+      "<img src=x onerror='" + new URLSearchParams(location.search).get("cb") + "'>";
+
+    document.getElementById("partner").contentWindow.postMessage(
+      { token: localStorage.getItem("authToken") }, "*");
+
+    window.addEventListener("message", function (e) {
+      document.getElementById("profile").innerHTML = e.data.html;
+    });
+
+    localStorage.setItem("authToken", "eyJhbGciOiJIUzI1NiJ9.payload.sig");
+    const MAPS_KEY = "AIzaSyA-EXAMPLE-CLIENT-SIDE-KEY-1234567890";
+  </script>
+</body>
+</html>
