@@ -89,23 +89,90 @@ and score them against the matching key in `VulnerabilityKeys/`.
 
 ### Scoring
 
-For **Dense / Sparse**, match each reported finding to a key entry by file + line
-(± a couple of lines for manifest/multi-line-XML entries) + CWE:
+Have your scanner emit **SARIF** (the standard static-analysis result format;
+CodeQL, Semgrep, and most tools can, and it is easy to coerce an LLM into it), then:
 
-- **Recall** = keyed vulns found ÷ 411. Filter by `difficulty` to see how deep the
-  tool reaches; SCA/vulnerable-dependency entries are marked `exempt` (caught by a
-  version lookup, not code analysis) and are usually scored separately.
-- **Stealth** = of the 40 `stealth` findings (20 tagged `stealthed_hard`), how many
-  survived the evasion payload. Each `stealth` entry records the `technique` and the
-  decoded `payload`.
-- The named safe look-alikes (e.g. `crypto_safe.py`, `repository.py`, `catalog.go`)
-  are **not** in the key; flagging one is a false positive.
+```bash
+python scoring/score.py --bench dense --sarif run.sarif
+```
 
-For **_F**, a finding that lands on one of the 60 items (by file + ~10 lines, or by
-the `construct` string) is a lure hit; report the hit rate per tier (easy/medium/
-hard). Findings elsewhere are ordinary noise. For **Perfect**, every finding is a
-false positive — report the raw count and its per-language distribution; this is the
-tool's floor before any bait exists.
+`--bench` is one of `dense` / `sparse` / `f` / `perfect` / `actual`. The scorer
+loads the matching key from `VulnerabilityKeys/`, matches each SARIF result to a
+keyed location, and prints the metrics appropriate to that bench:
+
+- **Dense / Sparse** — recall over the 378 graded findings (SCA-`exempt` shown
+  separately), broken down by difficulty tier and by the stealth / `stealthed_hard`
+  subsets; precision, with a separate count of false positives that landed on the
+  named safe look-alikes.
+- **_F** — lure hits per tier (easy/medium/hard); every finding here is a false
+  positive, so it also reports total noise. Lower is better.
+- **Perfect** — every finding is a false positive; reports the count and its
+  distribution. The floor before any bait exists.
+- **Actual** — recall over the 150 CVEs, broken down by language. (Only one sink is
+  labelled per CVE, so no precision figure is reported.)
+
+**Matching is explicit and tunable, not a black box** (`python scoring/score.py -h`):
+
+- `--line-tol N` (default 3) — line-number tolerance. `_F`'s own guidance is ~10
+  lines; pass `--line-tol 10` there if you want its looser convention.
+- `--cwe {off,exact,family}` (default `family`) — how strict CWE matching is.
+  Scanners disagree on which CWE a bug "is" (89 vs 943, 22 vs 23, 78 vs 77), so
+  exact-string matching *undercounts* recall. `family` treats CWEs in the same
+  pragmatic group as interchangeable; the groups are defined and commented at the
+  top of `score.py`. The report always prints **location-only**, **CWE-family**, and
+  **CWE-exact** recall side by side so the spread is visible — cite whichever you
+  justify, but show all three.
+- Paths are matched by trailing-segment suffix, so it does not matter whether the
+  SARIF URIs are absolute, prefixed with the bench directory, or relative to it.
+- Findings are de-duplicated on (path, line, CWE) before scoring, so a tool that
+  reports the same line twice is not double-counted.
+
+### Reporting results and handling variance
+
+LLM-based scanners are **non-deterministic**: the same tool on the same file can
+report a different set of findings run to run, and small prompt changes move the
+numbers as much as real capability differences do
+([Snyk VulnBench JS asks exactly this](https://arxiv.org/pdf/2606.15762);
+[safety evaluators are not robust to artifacts](https://arxiv.org/pdf/2503.09347);
+[small LLMs show low answer consistency across repetitions](https://arxiv.org/pdf/2509.09705)).
+**A single run is an anecdote, not a score.** To report defensibly:
+
+1. **Fix everything you can** and record it: model + version, temperature, the exact
+   prompt/agent scaffold, tool version, and the scorer flags (`--line-tol`, `--cwe`).
+   Hold the prompt identical across every system you compare — prompt wording is a
+   confound, not a free variable.
+2. **Run each bench N≥3 times** (5 is better) as independent runs, and report
+   **mean ± standard deviation** or a **95% confidence interval** — the convention in
+   recent code-LLM work (e.g. mean ± std over 3 seeds on a fixed test set). Pass all
+   the runs to the scorer at once and it does this for you:
+
+   ```bash
+   python scoring/score.py --bench dense --sarif run1.sarif run2.sarif run3.sarif run4.sarif run5.sarif
+   ```
+
+   It prints the headline metric per run plus mean, sd, and a 95% CI.
+3. **Two systems differ only if their confidence intervals do not overlap.** A 2-point
+   gap inside overlapping CIs is noise. Report F1 alongside precision/recall when you
+   need one number (the field's standard for this task).
+4. **Choose an aggregation that matches your question, and name it:**
+   - *mean-of-N* — expected behaviour of one run. The default for "how good is it."
+   - *union / best-of-N* — the capability ceiling (did it *ever* find each vuln);
+     analogous to pass@k. Good for "could it, with retries."
+   - *majority-vote / self-consistency* across runs (optionally at mixed
+     temperatures) — closer to a hardened deployment, and a known variance-reducer
+     ([self-consistency sampling](https://arxiv.org/pdf/2401.16185)).
+5. **Report at your deployment temperature.** Lower temperature reduces variance but
+   can suppress recall; if you are characterising capability, report at both T≈0 and a
+   higher T rather than cherry-picking. Note that LLM judges/evaluators are themselves
+   inconsistent ([inconsistent and biased evaluators](https://arxiv.org/pdf/2405.01724)),
+   which is why this suite scores against a fixed mechanical key, not an LLM grader.
+
+Sources: [Snyk VulnBench JS](https://arxiv.org/pdf/2606.15762) ·
+[Safer or Luckier?](https://arxiv.org/pdf/2503.09347) ·
+[Non-Determinism of Small LLMs](https://arxiv.org/pdf/2509.09705) ·
+[LLM4Vuln](https://arxiv.org/pdf/2401.16185) ·
+[Inconsistent and Biased Evaluators](https://arxiv.org/pdf/2405.01724) ·
+[SastBench (agentic SAST triage)](https://arxiv.org/pdf/2601.02941).
 
 ### Verifying a key (evaluator side)
 
@@ -119,14 +186,39 @@ cd SlopShopSparse && python tools/verify_key.py   # also prints spacing + densit
 
 Both currently report `problems: 0`.
 
-## Caveats
+## Scope and caveats
 
+- **Internal tool, not a public leaderboard.** SlopBench is built for internal use.
+  The prompts and agent scaffolds you point at it may be proprietary, and its numbers
+  are meant for your own iteration and relative comparison — not for cross-vendor
+  "tool X scores Y%" claims. Treat scores as directional.
+- **Keep the keys out of the scan target.** Every answer lives in `VulnerabilityKeys/`,
+  but it sits in the *same repository* as the corpora. An agent given the repo root can
+  read it trivially. Copy only the bench subdirectory into your scan target (see *Using
+  a bench*); never run a scanner from the suite root.
+- **Baselines are your job.** This repo ships no reference tool scores. Establish your
+  own baseline (a config you trust, or an off-the-shelf scanner) so a new run has
+  something to be compared against; an absolute number here means little on its own.
+- **Feint calls can be arguable.** The 60 `_F` items are judged safe with a stated
+  reason (`why_it_is_not`), but "correct here" sometimes rests on a guard one hop away
+  that a cautious scanner may reasonably flag. Read the reason before counting a lure
+  hit against a tool; some are genuinely debatable.
+- **Difficulty tiers are author-assigned, not calibrated.** `high`/`medium`/`low` (and
+  `easy`/`medium`/`hard` in `_F`) reflect the author's judgement, not measured tool
+  performance. Use them to slice results, not as a validated hardness scale.
 - **Dependency drift.** The SCA entries and `_F`/`Perfect`'s pinned dependencies were
   accurate on the build date. A CVE published later can change what is true without any
-  code change — re-run a dependency audit before each round.
-- **In-code project identity.** `SlopShop_Actual` keeps upstream code verbatim, so real
-  project namespaces and copyright headers remain. That is only a leak for a scanner
-  with live web/tool access; see its README's threat model.
+  code change — re-run a dependency audit before each round. The `--hash=sha256:` values
+  in the `requirements.txt` files are correctly shaped placeholders, not real published
+  hashes, so those trees are not `pip install`-able as written.
+- **In-code project identity (Actual).** `SlopShop_Actual` keeps upstream code verbatim,
+  so real project namespaces and copyright headers remain, and its files are other
+  projects' code under their own licenses gathered under this repo's LICENSE. Verbatim
+  identity is only a *leak* for a scanner with live web/tool access; see its README's
+  threat model. Being real CVEs, the corpus also **decays** as models retrain past the
+  cutoff — refresh it (`tools/harvest.py`) for a later model.
+- **Language coverage in Actual is uneven** and it labels one primary sink per CVE;
+  multi-file fixes record only that sink. See its README.
 - These trees are **deliberately insecure** (except `Perfect`, which is deliberately
   correct). Do not deploy them, run them against real data, or copy the code. All
   secrets and keys are fake placeholders.
@@ -136,6 +228,7 @@ Both currently report `problems: 0`.
 ```
 SlopBench/
 ├── README.md            ← you are here (suite overview + how to score)
+├── scoring/score.py     ← SARIF in, metrics out: python scoring/score.py --bench dense --sarif run.sarif
 ├── VulnerabilityKeys/   ← every answer key, one per bench (keep OUT of scan targets)
 ├── SlopShopDense/       dense vulnerable app   (README app-facing; BENCHMARK.md + tools/ = evaluator-only)
 ├── SlopShopSparse/      sparse vulnerable app  (same 411 vulns, spread out)
