@@ -41,7 +41,7 @@ separates the things a single number cannot:
 `SlopShop_Actual` is a different construction (real advisories, verbatim upstream
 code, its own SASTBench harness and its own git history) and stands on its own; it
 answers "does the scanner work on vulnerabilities it has never seen," which the
-synthetic benches cannot. SlopShop_Actual may be the best actual verification tool we have for LLMs, as it is built on actual vulnerabilities discovered in the wild in 2026, well after GPT 5.5's curoff date. (This version is build for 5.5 because it is the frontier model being used with MDASH, as well as one commonly used as of this writing in Audust 2026).
+synthetic benches cannot. SlopShop_Actual may be the best actual verification tool we have for LLMs, as it is built on actual vulnerabilities discovered in the wild in 2026, well after GPT 5.5's cutoff date. (This version is built for 5.5 because it is the frontier model being used with MDASH, as well as one commonly used as of this writing in August 2026).
 
 ## Answer keys
 

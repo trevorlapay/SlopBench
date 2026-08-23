@@ -58,7 +58,7 @@ SASTBench/                       upstream SASTBench harness (unmodified)
 ## Rebuild from scratch
 
 ```bash
-python tools/harvest.py --target 150        # 1. harvest real post-cutoff vulns (resumable)
+python tools/harvest.py --target 164        # 1. harvest real post-cutoff vulns (resumable)
 python tools/build_workspace.py --name postcutoff   # 2. app-like, de-identified workspace
 python tools/build_corpus.py --strict       # 3. vulnerability key (+ flat bundle)
 ```
