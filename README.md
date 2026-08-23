@@ -1,10 +1,12 @@
 # SlopBench — a SAST benchmark suite for LLM-based scanners
 
 SlopBench is a family of related corpora for measuring how well a static-analysis
-tool — especially an LLM-based one — finds real vulnerabilities **and** resists
+tool, especially an LLM-based one, finds real vulnerabilities **and** resists
 crying wolf on code that only looks dangerous. The benches share one fictional
 polyglot marketplace ("SlopShop") so that recall and precision can be compared on
 the same application under different conditions.
+
+_IF YOU READ NOTHING ELSE IN THIS DOCUMENT, READ THIS: DO NOT LET YOUR LLM ACCIDENTALLY SCAN THE VULNERABILTY KEY FILES. IT WILL RUIN WHATEVER IT IS YOU ARE TRYING TO DO, UNLESS WHAT YOU'RE TRYING TO DO IS WASTE TOKENS!_
 
 Every bench is designed around one rule:
 
@@ -39,9 +41,11 @@ separates the things a single number cannot:
 `SlopShop_Actual` is a different construction (real advisories, verbatim upstream
 code, its own SASTBench harness and its own git history) and stands on its own; it
 answers "does the scanner work on vulnerabilities it has never seen," which the
-synthetic benches cannot.
+synthetic benches cannot. SlopShop_Actual may be the best actual verification tool we have for LLMs, as it is built on actual vulnerabilities discovered in the wild in 2026, well after GPT 5.5's curoff date. (This version is build for 5.5 because it is the frontier model being used with MDASH, as well as one commonly used as of this writing in Audust 2026).
 
 ## Using a bench
+
+_IF YOU READ NOTHING ELSE IN THIS DOCUMENT, READ THIS PART._
 
 Each bench keeps its scoring artifacts **in the repo** but they must be **removed
 before the tree is scanned** — anything left in the tree can be read by the tool
