@@ -9,7 +9,9 @@ import json
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KEY = os.path.join(ROOT, "vulnerability_key.json")
+# The key lives in the suite-level VulnerabilityKeys/ directory, outside this
+# tree, so the corpus a scanner sees carries no answer file.
+KEY = os.path.join(ROOT, os.pardir, "VulnerabilityKeys", "SlopShopDense.vulnerability_key.json")
 
 # The only finding whose sink legitimately IS a source comment.
 COMMENT_SINKS = {"VULN-0012"}

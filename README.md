@@ -43,39 +43,51 @@ code, its own SASTBench harness and its own git history) and stands on its own; 
 answers "does the scanner work on vulnerabilities it has never seen," which the
 synthetic benches cannot. SlopShop_Actual may be the best actual verification tool we have for LLMs, as it is built on actual vulnerabilities discovered in the wild in 2026, well after GPT 5.5's curoff date. (This version is build for 5.5 because it is the frontier model being used with MDASH, as well as one commonly used as of this writing in Audust 2026).
 
+## Answer keys
+
+**Every answer key lives in [`VulnerabilityKeys/`](VulnerabilityKeys/) at the suite
+root — never inside a bench directory.** So copying a bench directory to a scan
+target carries no answers, by construction:
+
+| Key | Bench |
+|-----|-------|
+| `VulnerabilityKeys/SlopShopDense.vulnerability_key.json`   | Dense |
+| `VulnerabilityKeys/SlopShopSparse.vulnerability_key.json`  | Sparse |
+| `VulnerabilityKeys/SlopShop_F.vulnerability_key.json`      | _F (60 planted feints) |
+| `VulnerabilityKeys/SlopShopPerfect.vulnerability_key.json` | Perfect (expected empty) |
+| `VulnerabilityKeys/SlopShop_Actual.vulnerability_key.json` (+ `.md`) | Actual (150 CVEs) |
+
 ## Using a bench
 
 _IF YOU READ NOTHING ELSE IN THIS DOCUMENT, READ THIS PART._
 
-Each bench keeps its scoring artifacts **in the repo** but they must be **removed
-before the tree is scanned** — anything left in the tree can be read by the tool
-under test and would both leak the answers and reveal that the tree is a benchmark.
+Point the scanner at the bench directory, but first remove the couple of
+**non-key** evaluator files that would still *announce* the tree is a benchmark
+(the answer keys themselves already live outside every bench, in
+`VulnerabilityKeys/`):
 
-**Dense / Sparse** — the evaluator files are `BENCHMARK.md` (the full spec),
-`vulnerability_key.json` (the answer key) and `tools/` (a read-only key verifier).
-Copy the tree, then strip them:
+**Dense / Sparse** — strip `BENCHMARK.md` (the full spec) and `tools/` (the key
+verifier). The key is already external, so nothing else has to be scrubbed:
 
 ```bash
 cp -r SlopShopDense /tmp/scan-target
 cd /tmp/scan-target
-rm BENCHMARK.md vulnerability_key.json && rm -rf tools
+rm BENCHMARK.md && rm -rf tools
 # what remains — README.md, services/, infra/, .github/ — is a plain application
 ```
 
-**_F / Perfect** — the only evaluator file is `vulnerability_key.json`; the
-in-tree `README.md` is already an innocuous application description.
+**_F / Perfect** — nothing to strip: the key is external and the in-tree
+`README.md` is already an innocuous application description. Point the scanner
+straight at the directory.
 
-```bash
-cp -r SlopShopPerfect /tmp/scan-target
-rm /tmp/scan-target/vulnerability_key.json
-```
+**SlopShop_Actual** — point the scanner at `workspaces/postcutoff/code/`. Its own
+in-tree ground truth stays isolated in `workspaces/evaluator_data/` (outside the
+scanned `code/`), and the suite-level key is
+`VulnerabilityKeys/SlopShop_Actual.vulnerability_key.json`. See its own
+[`README.md`](SlopShop_Actual/README.md).
 
-**SlopShop_Actual** — already isolates its ground truth: point the scanner at
-`workspaces/postcutoff/code/` and the answer key lives outside that directory in
-`workspaces/evaluator_data/`. See its own [`README.md`](SlopShop_Actual/README.md).
-
-Then run your scanner over the stripped copy, collect its findings (file + line +
-CWE), and score them against the key you set aside.
+Then run your scanner over the target, collect its findings (file + line + CWE),
+and score them against the matching key in `VulnerabilityKeys/`.
 
 ### Scoring
 
@@ -126,9 +138,10 @@ Both currently report `problems: 0`.
 ```
 SlopBench/
 ├── README.md            ← you are here (suite overview + how to score)
-├── SlopShopDense/       dense vulnerable app   (README app-facing; BENCHMARK.md + key = evaluator-only)
+├── VulnerabilityKeys/   ← every answer key, one per bench (keep OUT of scan targets)
+├── SlopShopDense/       dense vulnerable app   (README app-facing; BENCHMARK.md + tools/ = evaluator-only)
 ├── SlopShopSparse/      sparse vulnerable app  (same 411 vulns, spread out)
-├── SlopShop_F/          clean app + 60 feints  (README app-facing; key = evaluator-only)
-├── SlopShopPerfect/     clean app, no bait     (README app-facing; key = evaluator-only)
-└── SlopShop_Actual/     150 real post-cutoff CVEs (self-contained, own git + harness)
+├── SlopShop_F/          clean app + 60 feints  (README app-facing, no in-tree evaluator files)
+├── SlopShopPerfect/     clean app, no bait     (README app-facing, no in-tree evaluator files)
+└── SlopShop_Actual/     150 real post-cutoff CVEs (harness + corpus; ground truth isolated)
 ```

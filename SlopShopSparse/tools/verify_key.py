@@ -11,7 +11,9 @@ import os
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KEY = os.path.join(ROOT, "vulnerability_key.json")
+# The key lives in the suite-level VulnerabilityKeys/ directory, outside this
+# tree, so the corpus a scanner sees carries no answer file.
+KEY = os.path.join(ROOT, os.pardir, "VulnerabilityKeys", "SlopShopSparse.vulnerability_key.json")
 
 # Sparsity contract for this variant: within one file, consecutive findings are at
 # least this many lines apart. Findings in different files are independent.

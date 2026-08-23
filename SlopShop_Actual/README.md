@@ -45,8 +45,10 @@ tools/
   build_workspace.py             corpus -> app-like, de-identified scanner workspace
   build_corpus.py                corpus -> vulnerability key + (flat) SASTBench bundle
 build/
-  vulnerability_key.md / .json   THE KEY: CVE <-> neutral path <-> CWE <-> lines <-> advisory
   ground_truths.json             flat SASTBench custom-adapter bundle (secondary)
+  (vulnerability_key.md / .json regenerate here; the checked-in copy is the suite key below)
+../VulnerabilityKeys/
+  SlopShop_Actual.vulnerability_key.json / .md   THE KEY: CVE <-> neutral path <-> CWE <-> lines <-> advisory
 workspaces/
   postcutoff/code/               <-- point your scanner here
   evaluator_data/postcutoff/     isolated ground truth + neutral->CVE mapping

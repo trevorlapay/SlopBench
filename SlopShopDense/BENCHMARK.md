@@ -1,18 +1,20 @@
 # SlopShop — SAST Benchmark Corpus
 
 > 🔒 **Evaluator-only document — never hand this file to the scanner under test.**
-> This file, `vulnerability_key.json`, and `tools/` name the vulnerabilities and
-> announce that the tree is a benchmark. Before you point a scanner (or an LLM) at
-> the corpus, remove them so the tree reads as an ordinary application:
+> The answer key does **not** live in this tree: it is `VulnerabilityKeys/SlopShopDense.vulnerability_key.json`
+> at the suite root, so a copy of this bench directory carries no answers. This
+> `BENCHMARK.md` and `tools/` still name the vulnerabilities and announce that the
+> tree is a benchmark, so remove them before you point a scanner (or an LLM) at the
+> corpus:
 >
 > ```bash
-> rm BENCHMARK.md vulnerability_key.json
-> rm -rf tools
+> rm BENCHMARK.md && rm -rf tools
 > ```
 >
 > What is left (`README.md`, `services/`, `infra/`) is a neutral polyglot app with
-> no markers of any kind. Keep this file and the key **outside** whatever you send
-> to the model, and score the model's output against the key afterwards.
+> no markers of any kind. Score the model's output against
+> `VulnerabilityKeys/SlopShopDense.vulnerability_key.json` afterwards. The `jq`/path examples below assume you
+> run them from the suite root, or substitute that path for `vulnerability_key.json`.
 
 > ⚠️ **This application is deliberately insecure.** Every "flaw" here is intentional.
 > It exists solely to benchmark static-analysis (SAST) scanners. Do **not** deploy it,
@@ -48,7 +50,7 @@ flagging one counts as a false positive.
 
 ## Ground-truth key
 
-The machine-readable ground truth is [`vulnerability_key.json`](vulnerability_key.json).
+The machine-readable ground truth is [`VulnerabilityKeys/SlopShopDense.vulnerability_key.json`](../VulnerabilityKeys/SlopShopDense.vulnerability_key.json).
 Each finding has a stable ID, file, exact line, language, category, subtype, CWE, and
 description:
 
