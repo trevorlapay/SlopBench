@@ -1,67 +1,83 @@
-<?php
+@extends('layouts.librenmsv1')
 
-use YesWiki\Bazar\Service\BazarListService;
-use YesWiki\Bazar\Service\FormManager;
-use YesWiki\Bazar\Service\SearchManager;
-use YesWiki\Core\YesWikiHandler;
+@section('title', __('Port Groups'))
 
-class __WidgetHandler extends YesWikiHandler
-{
-    public function run()
-    {
-        $vSearchManager = $this->getService(SearchManager::class);
-        $formManager = $this->getService(FormManager::class);
-        $bazarListService = $this->getService(BazarListService::class);
+@section('content')
+    <div class="container-fluid">
+        <x-panel id="manage-port-groups-panel">
+            <x-slot name="title">
+                <i class="fa fa-th fa-fw fa-lg" aria-hidden="true"></i> {{ __('Port Groups') }}
+            </x-slot>
 
-        if (!isset($_GET['id'])) {
-            return null;
+            <div class="row">
+                <div class="col-md-12">
+                    <a type="button" class="btn btn-primary" href="{{ route('port-groups.create') }}">
+                        <i class="fa fa-plus"></i> {{ __('New Port Group') }}
+                    </a>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table id="manage-port-groups-table" class="table table-condensed table-hover">
+                    <thead>
+                    <tr>
+                        <th>{{ __('Name') }}</th>
+                        <th>{{ __('Description') }}</th>
+                        <th>{{ __('Ports') }}</th>
+                        <th>{{ __('Actions') }}</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    @foreach($port_groups as $port_group)
+                        <tr id="row_{{ $port_group->id }}">
+                            <td>{{ $port_group->name }}</td>
+                            <td>{{ $port_group->desc }}</td>
+                            <td><a href="{{ url("/ports/group=$port_group->id") }}">{{ $port_group->ports_count }}</a></td>
+                            <td>
+                                <a type="button" title="{{ __('edit Port Group') }}" class="btn btn-primary btn-sm" aria-label="{{ __('Edit') }}"
+                                   href="{{ route('port-groups.edit', $port_group->id) }}">
+                                    <i class="fa fa-pencil" aria-hidden="true"></i></a>
+                                <button type="button" class="btn btn-danger btn-sm" title="{{ __('delete Port Group') }}" aria-label="{{ __('Delete') }}"
+                                        onclick="delete_pg(this, '{{ $port_group->name }}', '{{ route('port-groups.destroy', $port_group->id) }}')">
+                                    <i
+                                        class="fa fa-trash" aria-hidden="true"></i></button>
+                            </td>
+                        </tr>
+                    @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </x-panel>
+    </div>
+@endsection
+
+@section('scripts')
+    <script>
+        function delete_pg(button, name, url) {
+            var index = button.parentNode.parentNode.rowIndex;
+
+            if (confirm('{{ __('Are you sure you want to delete ') }}' + name + '?')) {
+                $.ajax({
+                    url: url,
+                    type: 'DELETE',
+                    success: function (msg) {
+                        document.getElementById("manage-port-groups-table").deleteRow(index);
+                        toastr.success(msg);
+                    },
+                    error: function () {
+                        toastr.error('{{ __('The port group could not be deleted') }}');
+                    }
+                });
+            }
+
+            return false;
         }
+    </script>
+@endsection
 
-        $this->wiki->AddJavascriptFile('tools/bazar/presentation/javascripts/bazar.js', true, true);
-
-        ob_start();
-        echo '<div class="page">';
-        echo '<h1>' . _t('BAZ_WIDGET_HANDLER_TITLE') . '</h1>' . "\n";
-
-        $entries = $vSearchManager->search(['formsIds' => [!empty($_GET['id']) ? strip_tags($_GET['id']) : null], 'keywords' => (!empty($_GET['q']) ? strip_tags($_GET['q']) : null)], true, true);
-        $forms = $formManager->getAll();
-        $filters = $bazarListService->getFilters(['groups' => ['all']], $entries, $forms);
-
-        // Reproduce the sames variables from the new $filters, so the view does not need to be refactored
-        $labels = $facettes = $showTooltip = [];
-        foreach ($filters as $filter) {
-            $labels[$filter['propName']] = $filter['title'];
-            $facettes[$filter['propName']] = [
-                'label' => $filter['title'],
-                'source' => $filter['propName'],
-            ];
-            $showTooltip[$filter['propName']] = false;
+@section('css')
+    <style>
+        .table-responsive {
+            padding-top: 16px
         }
-
-        $params = [
-            'template' => $this->params->get('default_bazar_template'),
-            'provider' => $this->params->get('baz_provider'),
-            'zoom' => $this->params->get('baz_map_zoom'),
-            'latitude' => $this->params->get('baz_map_center_lat'),
-            'longitude' => $this->params->get('baz_map_center_lon'),
-            'width' => $this->params->get('baz_map_width'),
-            'height' => $this->params->get('baz_map_height'),
-        ];
-
-        $urlParams = 'id=' . strip_tags($_GET['id']) . (isset($_GET['query']) ? '&query=' . strip_tags($_GET['query']) : '') . (!empty($q) ? '&q=' . $q : '');
-
-        echo $this->render('@bazar/widget.tpl.html', [
-            'facettes' => $facettes,
-            'showtooltip' => $showTooltip,
-            'facettestext' => $labels,
-            'params' => $params,
-            'urlparams' => $urlParams,
-        ]);
-
-        echo '</div>';
-        $output = ob_get_contents();
-        ob_end_clean();
-        echo $this->wiki->Header() . $output . $this->wiki->Footer();
-        $this->wiki->exit();
-    }
-}
+    </style>
+@endsection

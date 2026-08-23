@@ -1,354 +1,445 @@
-import type { UpgradeWebSocket, WSContext } from 'hono/ws'
-import { defineWebSocketHelper } from 'hono/ws'
-import type { IncomingMessage } from 'node:http'
-import { STATUS_CODES } from 'node:http'
-import type { Duplex } from 'node:stream'
-import type { FetchCallback, ServerType } from './types'
-import type { WebSocketData, WebSocketLike, WebSocketServerLike } from './websocket-types'
+import {
+  auth as authCore,
+  constants,
+  context,
+  events,
+  utils as utilsCore,
+  configs,
+  cache,
+} from "@budibase/backend-core"
+import {
+  ConfigType,
+  User,
+  Ctx,
+  LoginRequest,
+  SSOUser,
+  PasswordResetRequest,
+  PasswordResetUpdateRequest,
+  GoogleInnerConfig,
+  DatasourceAuthCookie,
+  LogoutResponse,
+  UserCtx,
+  SetInitInfoRequest,
+  GetInitInfoResponse,
+  PasswordResetResponse,
+  PasswordResetUpdateResponse,
+  SetInitInfoResponse,
+  LoginResponse,
+} from "@budibase/types"
+import env from "../../../environment"
+import { Next } from "koa"
 
-interface CloseEventInit extends EventInit {
-  code?: number
-  reason?: string
-  wasClean?: boolean
+import * as authSdk from "../../../sdk/auth"
+import * as userSdk from "../../../sdk/users"
+
+const { Cookie, Header } = constants
+const { passport, ssoCallbackUrl, google, oidc } = authCore
+const { setCookie, getCookie, clearCookie } = utilsCore
+
+// LOGIN / LOGOUT
+
+const normalizeEmail = (e: string) => (e || "").toLowerCase()
+const failKey = (email: string) => `auth:login:fail:${normalizeEmail(email)}`
+const lockKey = (email: string) => `auth:login:lock:${normalizeEmail(email)}`
+const isLocked = async (email: string) => {
+  return !!(await cache.get(lockKey(email)))
 }
 
-/**
- * @link https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent
- */
-export const CloseEvent: typeof globalThis.CloseEvent =
-  globalThis.CloseEvent ??
-  class extends Event {
-    #eventInitDict
-
-    constructor(type: string, eventInitDict: CloseEventInit = {}) {
-      super(type, eventInitDict)
-      this.#eventInitDict = eventInitDict
-    }
-
-    get wasClean(): boolean {
-      return this.#eventInitDict.wasClean ?? false
-    }
-
-    get code(): number {
-      return this.#eventInitDict.code ?? 0
-    }
-
-    get reason(): string {
-      return this.#eventInitDict.reason ?? ''
-    }
-  }
-
-interface ErrorEventInit extends EventInit {
-  message?: string
-  filename?: string
-  lineno?: number
-  colno?: number
-  error?: unknown
-}
-
-/**
- * Node.js has no global `ErrorEvent`, unlike `Event`/`MessageEvent`/`CloseEvent`.
- * @link https://developer.mozilla.org/en-US/docs/Web/API/ErrorEvent
- */
-export const ErrorEvent: typeof globalThis.ErrorEvent =
-  globalThis.ErrorEvent ??
-  class extends Event {
-    #eventInitDict
-
-    constructor(type: string, eventInitDict: ErrorEventInit = {}) {
-      super(type, eventInitDict)
-      this.#eventInitDict = eventInitDict
-    }
-
-    get message(): string {
-      return this.#eventInitDict.message ?? ''
-    }
-
-    get filename(): string {
-      return this.#eventInitDict.filename ?? ''
-    }
-
-    get lineno(): number {
-      return this.#eventInitDict.lineno ?? 0
-    }
-
-    get colno(): number {
-      return this.#eventInitDict.colno ?? 0
-    }
-
-    get error(): unknown {
-      return this.#eventInitDict.error ?? null
-    }
-  }
-
-const generateConnectionSymbol = () => Symbol('connection')
-
-type WaitForWebSocket = (
-  request: IncomingMessage,
-  connectionSymbol: symbol
-) => Promise<WebSocketLike>
-
-const CONNECTION_SYMBOL_KEY: unique symbol = Symbol('CONNECTION_SYMBOL_KEY')
-const WAIT_FOR_WEBSOCKET_SYMBOL: unique symbol = Symbol('WAIT_FOR_WEBSOCKET_SYMBOL')
-
-export type UpgradeBindings = {
-  incoming: IncomingMessage
-  outgoing: undefined
-  wss: WebSocketServerLike
-  [CONNECTION_SYMBOL_KEY]?: symbol
-  [WAIT_FOR_WEBSOCKET_SYMBOL]?: WaitForWebSocket
-}
-
-type UpgradeWebSocketOptions = {
-  onError: (err: unknown) => void
-}
-
-// Hop-by-hop headers per RFC 9110 Section 7.6.1
-// (https://www.rfc-editor.org/rfc/rfc9110.html#name-connection) plus
-// `keep-alive` (commonly treated as hop-by-hop by HTTP implementations) and
-// WebSocket handshake headers managed by `ws` itself. These must not be
-// forwarded onto the upgrade response or the handshake will be corrupted.
-const responseHeadersToSkip = new Set([
-  'connection',
-  'content-length',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-  'sec-websocket-accept',
-  'sec-websocket-extensions',
-  'sec-websocket-protocol',
-])
-
-const appendResponseHeaders = (headers: string[], responseHeaders?: Headers) => {
-  if (!responseHeaders) {
-    return
-  }
-  responseHeaders.forEach((value, key) => {
-    if (responseHeadersToSkip.has(key.toLowerCase())) {
-      return
-    }
-    headers.push(`${key}: ${value}`)
-  })
-}
-
-const rejectUpgradeRequest = (socket: Duplex, status: number, responseHeaders?: Headers) => {
-  const responseLines = ['Connection: close', 'Content-Length: 0']
-  appendResponseHeaders(responseLines, responseHeaders)
-
-  socket.end(
-    `HTTP/1.1 ${status.toString()} ${STATUS_CODES[status] ?? ''}\r\n` +
-      `${responseLines.join('\r\n')}\r\n` +
-      '\r\n'
+const handleLockoutResponse = (ctx: Ctx, email: string) => {
+  ctx.set("X-Account-Locked", "1")
+  ctx.set("Retry-After", String(env.LOGIN_LOCKOUT_SECONDS))
+  console.log(
+    `[auth] login blocked (post-failure) due to lock email=${normalizeEmail(email)}`
   )
+  return ctx.throw(403, "Account temporarily locked. Try again later.")
 }
-
-const createUpgradeRequest = (request: IncomingMessage): Request => {
-  const protocol = (request.socket as { encrypted?: boolean }).encrypted ? 'https' : 'http'
-  const url = new URL(request.url ?? '/', `${protocol}://${request.headers.host ?? 'localhost'}`)
-  const headers = new Headers()
-  for (const key in request.headers) {
-    const value = request.headers[key]
-    if (!value) {
-      continue
-    }
-    headers.append(key, Array.isArray(value) ? value[0] : value)
+const onFailed = async (email: string) => {
+  if (!email) return
+  const key = failKey(email)
+  const currentAttempt = Number((await cache.get(key)) || 0) || 0
+  const nextAttempt = currentAttempt + 1
+  await cache.store(key, nextAttempt, env.LOGIN_LOCKOUT_SECONDS)
+  console.log(
+    `[auth] failed login email=${normalizeEmail(email)} count=${nextAttempt}`
+  )
+  if (nextAttempt >= env.LOGIN_MAX_FAILED_ATTEMPTS) {
+    await cache.store(lockKey(email), "1", env.LOGIN_LOCKOUT_SECONDS)
+    await cache.destroy(key)
+    console.log(
+      `[auth] account locked email=${normalizeEmail(email)} for ${env.LOGIN_LOCKOUT_SECONDS}s`
+    )
   }
-  return new Request(url, {
-    headers,
-  })
+}
+const clearFailureState = async (email: string) => {
+  if (!email) return
+  await cache.destroy(failKey(email))
+  await cache.destroy(lockKey(email))
 }
 
-export const setupWebSocket = (options: {
-  server: ServerType
-  fetchCallback: FetchCallback
-  wss: WebSocketServerLike
-}): void => {
-  const { server, fetchCallback, wss } = options
-
-  const waiterMap = new Map<
-    IncomingMessage,
-    { resolve: (ws: WebSocketLike) => void; connectionSymbol: symbol }
-  >()
-
-  wss.on('connection', (ws, request) => {
-    const waiter = waiterMap.get(request)
-    if (waiter) {
-      waiter.resolve(ws)
-      waiterMap.delete(request)
-    }
-  })
-
-  const waitForWebSocket: WaitForWebSocket = (request, connectionSymbol) => {
-    return new Promise<WebSocketLike>((resolve) => {
-      waiterMap.set(request, { resolve, connectionSymbol })
-    })
+async function passportCallback(
+  ctx: Ctx,
+  user: User,
+  err: any = null,
+  info: { message: string } | null = null
+) {
+  if (err) {
+    console.error("Authentication error", err)
+    console.trace(err)
+    return ctx.throw(403, info ? info : "Unauthorized")
+  }
+  if (!user) {
+    console.error("Authentication error - no user provided")
+    return ctx.throw(403, info ? info : "Unauthorized")
   }
 
-  server.on('upgrade', async (request, socket: Duplex, head) => {
-    if (request.headers.upgrade?.toLowerCase() !== 'websocket') {
-      return
-    }
+  const loginResult = await authSdk.loginUser(user)
 
-    const env: UpgradeBindings = {
-      incoming: request,
-      outgoing: undefined,
-      wss,
-      [WAIT_FOR_WEBSOCKET_SYMBOL]: waitForWebSocket,
-    }
+  // set a cookie for browser access
+  utilsCore.setAuthCookie(ctx, loginResult.token)
+  // set the token in a header as well for APIs
+  ctx.set(Header.TOKEN, loginResult.token)
 
-    let status = 400
-    let responseHeaders: Headers | undefined
-    try {
-      const response = (await fetchCallback(
-        createUpgradeRequest(request),
-        env as unknown as Parameters<FetchCallback>[1]
-      )) as Response
-      if (response instanceof Response) {
-        status = response.status
-        responseHeaders = response.headers
-      }
-    } catch {
-      if (server.listenerCount('upgrade') === 1) {
-        rejectUpgradeRequest(socket, 500)
-      }
-      return
-    }
-
-    const waiter = waiterMap.get(request)
-
-    if (!waiter || waiter.connectionSymbol !== env[CONNECTION_SYMBOL_KEY]) {
-      waiterMap.delete(request)
-      if (server.listenerCount('upgrade') === 1) {
-        rejectUpgradeRequest(socket, status, responseHeaders)
-      }
-      return
-    }
-
-    const addResponseHeaders = (headers: string[]) => {
-      appendResponseHeaders(headers, responseHeaders)
-    }
-
-    // `headers` is emitted synchronously inside `handleUpgrade`, so this
-    // listener cannot leak across concurrent upgrades on the shared `wss`.
-    wss.on('headers', addResponseHeaders)
-    try {
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        wss.emit('connection', ws, request)
-      })
-    } finally {
-      wss.off('headers', addResponseHeaders)
-    }
-  })
-
-  server.on('close', () => {
-    wss.close()
-  })
+  // add session invalidation info to response headers for frontend to handle
+  if (loginResult.invalidatedSessionCount > 0) {
+    ctx.set(
+      "X-Session-Invalidated-Count",
+      loginResult.invalidatedSessionCount.toString()
+    )
+  }
 }
 
-export const upgradeWebSocket: UpgradeWebSocket<WebSocketLike, UpgradeWebSocketOptions> =
-  defineWebSocketHelper(async (c, events, options) => {
-    if (c.req.header('upgrade')?.toLowerCase() !== 'websocket') {
-      return
+export const login = async (
+  ctx: Ctx<LoginRequest, LoginResponse>,
+  next: Next
+) => {
+  const email = ctx.request.body.username
+
+  const dbUser = await userSdk.db.getUserByEmail(email)
+  if (dbUser && (await userSdk.db.isPreventPasswordActions(dbUser))) {
+    console.log(
+      `[auth] login prevented due to sso enforcement email=${normalizeEmail(email)}`
+    )
+    ctx.throw(403, "Invalid credentials")
+  }
+
+  return passport.authenticate(
+    "local",
+    async (err: any, user: User, info: any) => {
+      if (err || !user) {
+        if (dbUser) {
+          await onFailed(email)
+        }
+        if (await isLocked(email)) {
+          return handleLockoutResponse(ctx, email)
+        }
+        const reason =
+          (info && info.message) || (err && err.message) || "unknown"
+        console.log(
+          `[auth] password auth failed email=${normalizeEmail(email)} reason=${reason}`
+        )
+        // delegate to shared passport failure handling to preserve specific messages (e.g. expired)
+        return passportCallback(ctx, user as any, err, info)
+      }
+
+      await clearFailureState(email)
+      console.log(
+        `[auth] password auth success email=${normalizeEmail(user.email)}`
+      )
+      await passportCallback(ctx, user, err, info)
+      await context.identity.doInUserContext(user, ctx, async () => {
+        await events.auth.login("local", user.email)
+      })
+      ctx.body = {
+        message: "Login successful",
+        userId: user.userId,
+      }
     }
+  )(ctx, next)
+}
 
-    const env = c.env as UpgradeBindings
-    const waitForWebSocket = env[WAIT_FOR_WEBSOCKET_SYMBOL]
+export const logout = async (ctx: UserCtx<void, LogoutResponse>) => {
+  if (ctx.user && ctx.user._id) {
+    await authSdk.logout({ ctx, userId: ctx.user._id })
+  }
+  ctx.body = { message: "User logged out." }
+}
 
-    if (!waitForWebSocket || !env.incoming) {
-      return new Response(null, { status: 500 })
+// INIT
+
+export const setInitInfo = (
+  ctx: UserCtx<SetInitInfoRequest, SetInitInfoResponse>
+) => {
+  const initInfo = ctx.request.body
+  setCookie(ctx, initInfo, Cookie.Init)
+  ctx.body = {
+    message: "Init info updated.",
+  }
+}
+
+export const getInitInfo = (ctx: UserCtx<void, GetInitInfoResponse>) => {
+  try {
+    ctx.body = getCookie(ctx, Cookie.Init) || {}
+  } catch (err) {
+    clearCookie(ctx, Cookie.Init)
+    ctx.body = {}
+  }
+}
+
+// PASSWORD MANAGEMENT
+
+/**
+ * Reset the user password, used as part of a forgotten password flow.
+ */
+export const reset = async (
+  ctx: Ctx<PasswordResetRequest, PasswordResetResponse>
+) => {
+  const { email } = ctx.request.body
+
+  const lcEmail = (email || "").toLowerCase()
+  const ip = (ctx.ip || "").toString()
+
+  // rate limit keys
+  const emailKey = `auth:pwdreset:email:${lcEmail}`
+  const ipKey = `auth:pwdreset:ip:${ip}`
+
+  const increment = async (key: string, windowSeconds: number) => {
+    const currentAttempt = Number((await cache.get(key)) || 0) || 0
+    const nextAttempt = currentAttempt + 1
+    await cache.store(key, nextAttempt, windowSeconds)
+    return nextAttempt
+  }
+
+  // apply per-email and per-ip rate limits
+  const nextEmail = await increment(
+    emailKey,
+    env.PASSWORD_RESET_RATE_EMAIL_WINDOW_SECONDS
+  )
+  const nextIp = await increment(
+    ipKey,
+    env.PASSWORD_RESET_RATE_IP_WINDOW_SECONDS
+  )
+
+  const emailLimited = nextEmail > env.PASSWORD_RESET_RATE_EMAIL_LIMIT
+  const ipLimited = nextIp > env.PASSWORD_RESET_RATE_IP_LIMIT
+
+  if (emailLimited || ipLimited) {
+    // surfaced for ui to display
+    ctx.set(
+      "X-RateLimit-Email-Limit",
+      String(env.PASSWORD_RESET_RATE_EMAIL_LIMIT)
+    )
+    ctx.set(
+      "X-RateLimit-Email-Remaining",
+      String(Math.max(env.PASSWORD_RESET_RATE_EMAIL_LIMIT - nextEmail, 0))
+    )
+    ctx.set("X-RateLimit-IP-Limit", String(env.PASSWORD_RESET_RATE_IP_LIMIT))
+    ctx.set(
+      "X-RateLimit-IP-Remaining",
+      String(Math.max(env.PASSWORD_RESET_RATE_IP_LIMIT - nextIp, 0))
+    )
+    // best-effort retry window
+    const retryAfter = Math.max(
+      env.PASSWORD_RESET_RATE_EMAIL_WINDOW_SECONDS,
+      env.PASSWORD_RESET_RATE_IP_WINDOW_SECONDS
+    )
+    ctx.set("Retry-After", String(retryAfter))
+    console.log(
+      `[auth] password reset rate limited email=${lcEmail} ip=${ip} emailCount=${nextEmail} ipCount=${nextIp}`
+    )
+    return ctx.throw(429, "Too many password reset requests. Try again later.")
+  }
+
+  await authSdk.reset(email)
+
+  ctx.body = {
+    message: "Please check your email for a reset link.",
+  }
+}
+
+/**
+ * Perform the user password update if the provided reset code is valid.
+ */
+export const resetUpdate = async (
+  ctx: Ctx<PasswordResetUpdateRequest, PasswordResetUpdateResponse>
+) => {
+  const { resetCode, password } = ctx.request.body
+  try {
+    await authSdk.resetUpdate(resetCode, password)
+    ctx.body = {
+      message: "password reset successfully.",
     }
+  } catch (err: any) {
+    console.warn(err)
+    // hide any details of the error for security
+    ctx.throw(400, err.message || "Cannot reset password.")
+  }
+}
 
-    const connectionSymbol = generateConnectionSymbol()
-    env[CONNECTION_SYMBOL_KEY] = connectionSymbol
-    ;(async () => {
-      const ws = await waitForWebSocket(env.incoming, connectionSymbol)
+// DATASOURCE
 
-      const messagesReceivedInStarting: [data: WebSocketData, isBinary: boolean][] = []
-      const bufferMessage = (data: WebSocketData, isBinary: boolean) => {
-        messagesReceivedInStarting.push([data, isBinary])
-      }
-      ws.on('message', bufferMessage)
+export const datasourcePreAuth = async (
+  ctx: UserCtx<void, void>,
+  next: Next
+) => {
+  const provider = ctx.params.provider
+  const returnPath =
+    typeof ctx.query.returnPath === "string" ? ctx.query.returnPath : undefined
+  const { middleware } = require(`@budibase/backend-core`)
+  const handler = middleware.datasource[provider]
+  if (!handler) {
+    ctx.throw(400, "Unsupported datasource provider")
+  }
 
-      const ctx: WSContext<WebSocketLike> = {
-        binaryType: 'arraybuffer',
-        close(code, reason) {
-          ws.close(code, reason)
-        },
-        protocol: ws.protocol,
-        raw: ws,
-        get readyState() {
-          return ws.readyState
-        },
-        send(source, opts) {
-          ws.send(source, {
-            compress: opts?.compress,
-          })
-        },
-        url: new URL(c.req.url),
-      }
+  setCookie(
+    ctx,
+    {
+      provider,
+      appId: ctx.query.appId,
+      returnPath,
+    },
+    Cookie.DatasourceAuth
+  )
 
-      try {
-        events?.onOpen?.(new Event('open'), ctx)
-      } catch (e) {
-        ;(options?.onError ?? console.error)(e)
-      }
+  return handler.preAuth(passport, ctx, next)
+}
 
-      const handleMessage = (data: WebSocketData, isBinary: boolean) => {
-        const datas = Array.isArray(data) ? data : [data]
-        for (const data of datas) {
-          try {
-            events?.onMessage?.(
-              new MessageEvent('message', {
-                data: isBinary
-                  ? data instanceof ArrayBuffer
-                    ? data
-                    : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
-                  : typeof data === 'string'
-                    ? data
-                    : Buffer.from(data).toString('utf-8'),
-              }),
-              ctx
-            )
-          } catch (e) {
-            ;(options?.onError ?? console.error)(e)
-          }
-        }
-      }
+export const datasourceAuth = async (ctx: UserCtx<void, void>, next: Next) => {
+  const authStateCookie = getCookie<DatasourceAuthCookie>(
+    ctx,
+    Cookie.DatasourceAuth
+  )
+  if (!authStateCookie) {
+    throw new Error("Unable to retrieve datasource authentication cookie")
+  }
+  const provider = authStateCookie.provider
+  const { middleware } = require(`@budibase/backend-core`)
+  const handler = middleware.datasource[provider]
+  if (!handler) {
+    ctx.throw(400, "Unsupported datasource provider")
+  }
+  return handler.postAuth(passport, ctx, next)
+}
 
-      ws.off('message', bufferMessage)
-      for (const message of messagesReceivedInStarting) {
-        handleMessage(...message)
-      }
+// GOOGLE SSO
 
-      ws.on('message', (data, isBinary) => {
-        handleMessage(data, isBinary)
+export async function googleCallbackUrl(config?: GoogleInnerConfig) {
+  return ssoCallbackUrl(ConfigType.GOOGLE, config)
+}
+
+/**
+ * The initial call that google authentication makes to take you to the google login screen.
+ * On a successful login, you will be redirected to the googleAuth callback route.
+ */
+export const googlePreAuth = async (ctx: Ctx<void, void>, next: Next) => {
+  const config = await configs.getGoogleConfig()
+  if (!config) {
+    return ctx.throw(400, "Google config not found")
+  }
+  let callbackUrl = await googleCallbackUrl(config)
+  const strategy = await google.strategyFactory(
+    config,
+    callbackUrl,
+    userSdk.db.save
+  )
+
+  return passport.authenticate(strategy, {
+    scope: ["profile", "email"],
+    accessType: "offline",
+    prompt: "consent",
+  })(ctx, next)
+}
+
+export const googleCallback = async (ctx: Ctx<void, void>, next: Next) => {
+  const config = await configs.getGoogleConfig()
+  if (!config) {
+    return ctx.throw(400, "Google config not found")
+  }
+  const callbackUrl = await googleCallbackUrl(config)
+  const strategy = await google.strategyFactory(
+    config,
+    callbackUrl,
+    userSdk.db.save
+  )
+
+  return passport.authenticate(
+    strategy,
+    {
+      successRedirect: env.PASSPORT_GOOGLEAUTH_SUCCESS_REDIRECT,
+      failureRedirect: env.PASSPORT_GOOGLEAUTH_FAILURE_REDIRECT,
+    },
+    async (err: any, user: SSOUser, info: any) => {
+      await passportCallback(ctx, user, err, info)
+      await context.identity.doInUserContext(user, ctx, async () => {
+        await events.auth.login("google-internal", user.email)
       })
+      ctx.redirect(env.PASSPORT_GOOGLEAUTH_SUCCESS_REDIRECT)
+    }
+  )(ctx, next)
+}
 
-      ws.on('close', (code, reason) => {
-        try {
-          events?.onClose?.(new CloseEvent('close', { code, reason: reason.toString() }), ctx)
-        } catch (e) {
-          ;(options?.onError ?? console.error)(e)
-        }
+// OIDC SSO
+
+export async function oidcCallbackUrl() {
+  return ssoCallbackUrl(ConfigType.OIDC)
+}
+
+export const oidcStrategyFactory = async (ctx: any) => {
+  const config = await configs.getOIDCConfig()
+  if (!config) {
+    return ctx.throw(400, "OIDC config not found")
+  }
+
+  let callbackUrl = await oidcCallbackUrl()
+
+  //Remote Config
+  const enrichedConfig = await oidc.fetchStrategyConfig(config, callbackUrl)
+  return oidc.strategyFactory(enrichedConfig, userSdk.db.save)
+}
+
+/**
+ * The initial call that OIDC authentication makes to take you to the configured OIDC login screen.
+ * On a successful login, you will be redirected to the oidcAuth callback route.
+ */
+export const oidcPreAuth = async (ctx: Ctx<void, void>, next: Next) => {
+  const { configId } = ctx.params
+  if (!configId) {
+    ctx.throw(400, "OIDC config id is required")
+  }
+  const strategy = await oidcStrategyFactory(ctx)
+
+  setCookie(ctx, configId, Cookie.OIDC_CONFIG)
+
+  const config = await configs.getOIDCConfigById(configId)
+  if (!config) {
+    return ctx.throw(400, "OIDC config not found")
+  }
+
+  let authScopes =
+    config.scopes?.length > 0
+      ? config.scopes
+      : ["profile", "email", "offline_access"]
+
+  return passport.authenticate(strategy, {
+    // required 'openid' scope is added by oidc strategy factory
+    scope: authScopes,
+  })(ctx, next)
+}
+
+export const oidcCallback = async (ctx: Ctx<void, void>, next: Next) => {
+  const strategy = await oidcStrategyFactory(ctx)
+
+  return passport.authenticate(
+    strategy,
+    {
+      successRedirect: env.PASSPORT_OIDCAUTH_SUCCESS_REDIRECT,
+      failureRedirect: env.PASSPORT_OIDCAUTH_FAILURE_REDIRECT,
+    },
+    async (err: any, user: SSOUser, info: any) => {
+      await passportCallback(ctx, user, err, info)
+      await context.identity.doInUserContext(user, ctx, async () => {
+        await events.auth.login("oidc", user.email)
       })
-
-      ws.on('error', (error) => {
-        try {
-          events?.onError?.(
-            new ErrorEvent('error', {
-              error,
-            }),
-            ctx
-          )
-        } catch (e) {
-          ;(options?.onError ?? console.error)(e)
-        }
-      })
-    })()
-
-    return new Response()
-  })
+      ctx.redirect(env.PASSPORT_OIDCAUTH_SUCCESS_REDIRECT)
+    }
+  )(ctx, next)
+}

@@ -1,228 +1,73 @@
-package org.bouncycastle.crypto.modes;
+/*
+ * Copyright 2002-present the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
-import org.bouncycastle.crypto.BlockCipher;
-import org.bouncycastle.crypto.CipherParameters;
-import org.bouncycastle.crypto.DataLengthException;
-import org.bouncycastle.crypto.StreamBlockCipher;
-import org.bouncycastle.crypto.params.ParametersWithIV;
-import org.bouncycastle.util.Arrays;
+package org.springframework.graphql;
+
+import java.util.Map;
+
+import org.jspecify.annotations.Nullable;
+
 
 /**
- * implements the GOST 3412 2015 CTR counter mode (GCTR).
+ * Represents a GraphQL request with the inputs to pass to a GraphQL service
+ * including a {@link #getDocument() document}, {@link #getOperationName()
+ * operationName}, and {@link #getVariables() variables}.
+ *
+ * <p>The request can be turned to a Map via {@link #toMap()} and to be
+ * submitted as JSON over HTTP or WebSocket.
+ *
+ * @author Rossen Stoyanchev
+ * @since 1.0.0
  */
-public class G3413CTRBlockCipher
-    extends StreamBlockCipher
-{
+public interface GraphQlRequest {
 
+	/**
+	 * Return the GraphQL document which is the textual representation of an
+	 * operation (or operations) to perform, including any selection sets and
+	 * fragments.
+	 */
+	String getDocument();
 
-    private final int s;
-    private byte[] CTR;
-    private byte[] IV;
-    private byte[] buf;
-    private final int blockSize;
-    private final BlockCipher cipher;
-    private int byteCount = 0;
-    private boolean initialized;
+	/**
+	 * Return the name of the operation in the {@link #getDocument() document}
+	 * to execute, if the document contains multiple operations.
+	 */
+	@Nullable String getOperationName();
 
+	/**
+	 * Return values for variables defined by the operation.
+	 */
+	Map<String, Object> getVariables();
 
-    /**
-     * Basic constructor.
-     *
-     * @param cipher the block cipher to be used as the basis of the
-     *               counter mode (must have a 64 bit block size).
-     */
-    public G3413CTRBlockCipher(
-        BlockCipher cipher)
-    {
-        this(cipher, cipher.getBlockSize() * 8);
-    }
+	/**
+	 * Return implementor specific, protocol extensions, if any.
+	 */
+	Map<String, Object> getExtensions();
 
-    /**
-     * Basic constructor.
-     *
-     * @param cipher       the block cipher to be used as the basis of the
-     *                     counter mode (must have a 64 bit block size).
-     * @param bitBlockSize basic unit (defined as s)
-     */
-    public G3413CTRBlockCipher(BlockCipher cipher, int bitBlockSize)
-    {
-        super(cipher);
+	/**
+	 * Convert the request to a {@link Map} as defined in
+	 * <a href="https://github.com/graphql/graphql-over-http/blob/main/spec/GraphQLOverHTTP.md">GraphQL over HTTP</a> and
+	 * <a href="https://github.com/enisdenjo/graphql-ws/blob/master/PROTOCOL.md">GraphQL over WebSocket</a>.
+	 * <table>
+	 * <tr><th>Key</th><th>Value</th></tr>
+	 * <tr><td>query</td><td>{@link #getDocument() document}</td></tr>
+	 * <tr><td>operationName</td><td>{@link #getOperationName() operationName}</td></tr>
+	 * <tr><td>variables</td><td>{@link #getVariables() variables}</td></tr>
+	 * </table>
+	 */
+	Map<String, Object> toMap();
 
-        if (bitBlockSize < 0 || bitBlockSize > cipher.getBlockSize() * 8)
-        {
-            throw new IllegalArgumentException("Parameter bitBlockSize must be in range 0 < bitBlockSize <= "
-                            + cipher.getBlockSize() * 8);
-        }
-
-        this.cipher = cipher;
-        this.blockSize = cipher.getBlockSize();
-        this.s = bitBlockSize / 8;
-        CTR = new byte[blockSize];
-    }
-
-    /**
-     * Initialise the cipher and, possibly, the initialisation vector (IV).
-     * If an IV isn't passed as part of the parameter, the IV will be all zeros.
-     * An IV which is too short is handled in FIPS compliant fashion.
-     *
-     * @param encrypting if true the cipher is initialised for
-     *                   encryption, if false for decryption.
-     * @param params     the key and other data required by the cipher.
-     * @throws IllegalArgumentException if the params argument is
-     * inappropriate.
-     */
-    public void init(
-        boolean encrypting, //ignored by this CTR mode
-        CipherParameters params)
-        throws IllegalArgumentException
-    {
-
-        if (params instanceof ParametersWithIV)
-        {
-            ParametersWithIV ivParam = (ParametersWithIV)params;
-
-            initArrays();
-
-            IV = Arrays.clone(ivParam.getIV());
-
-            if (IV.length != blockSize / 2)
-            {
-                throw new IllegalArgumentException("Parameter IV length must be == blockSize/2");
-            }
-
-            System.arraycopy(IV, 0, CTR, 0, IV.length);
-            for (int i = IV.length; i < blockSize; i++)
-            {
-                CTR[i] = 0;
-            }
-
-            // if null it's an IV changed only.
-            if (ivParam.getParameters() != null)
-            {
-                cipher.init(true, ivParam.getParameters());
-            }
-        }
-        else
-        {
-            initArrays();
-
-            // if it's null, key is to be reused.
-            if (params != null)
-            {
-                cipher.init(true, params);
-            }
-        }
-
-        initialized = true;
-    }
-    
-    private void initArrays()
-    {
-        IV = new byte[blockSize / 2];
-        CTR = new byte[blockSize];
-        buf = new byte[s];
-    }
-
-    /**
-     * return the algorithm name and mode.
-     *
-     * @return the name of the underlying algorithm followed by "/GCTR"
-     * and the block size in bits
-     */
-    public String getAlgorithmName()
-    {
-        return cipher.getAlgorithmName() + "/GCTR";
-    }
-
-    /**
-     * return the block size we are operating at (in bytes).
-     *
-     * @return the block size we are operating at (in bytes).
-     */
-    public int getBlockSize()
-    {
-        return s;
-    }
-
-    /**
-     * Process one block of input from the array in and write it to
-     * the out array.
-     *
-     * @param in     the array containing the input data.
-     * @param inOff  offset into the in array the data starts at.
-     * @param out    the array the output data will be copied into.
-     * @param outOff the offset into the out array the output will start at.
-     * @return the number of bytes processed and produced.
-     * @throws DataLengthException if there isn't enough data in in, or
-     * space in out.
-     * @throws IllegalStateException if the cipher isn't initialised.
-     */
-    public int processBlock(
-        byte[] in,
-        int inOff,
-        byte[] out,
-        int outOff)
-        throws DataLengthException, IllegalStateException
-    {
-
-        processBytes(in, inOff, s, out, outOff);
-
-        return s;
-    }
-
-    protected byte calculateByte(byte in)
-    {
-
-        if (byteCount == 0)
-        {
-            buf = generateBuf();
-        }
-
-        byte rv = (byte)(buf[byteCount] ^ in);
-        byteCount++;
-
-        if (byteCount == s)
-        {
-            byteCount = 0;
-            generateCRT();
-        }
-
-        return rv;
-
-    }
-
-    private void generateCRT()
-    {
-        CTR[CTR.length - 1]++;
-    }
-
-
-    private byte[] generateBuf()
-    {
-
-        byte[] encryptedCTR = new byte[CTR.length];
-        cipher.processBlock(CTR, 0, encryptedCTR, 0);
-
-        return GOST3413CipherUtil.MSB(encryptedCTR, s);
-
-    }
-
-
-    /**
-     * reset the feedback vector back to the IV and reset the underlying
-     * cipher.
-     */
-    public void reset()
-    {
-        if (initialized)
-        {
-            System.arraycopy(IV, 0, CTR, 0, IV.length);
-            for (int i = IV.length; i < blockSize; i++)
-            {
-                CTR[i] = 0;
-            }
-            byteCount = 0;
-            cipher.reset();
-        }
-    }
 }

@@ -26,7 +26,7 @@ Every bench is designed around one rule:
 | [`SlopShopSparse/`](SlopShopSparse/) | The *same 411 vulns*, spread across ~2.4× as much clean code (no two findings within 10 lines) | 411 (same IDs as Dense) | Whether recall came from density or from reading the code |
 | [`SlopShop_F/`](SlopShop_F/) | Clean app carrying **60 "feints"** — constructs that pattern-match a bug class but are correct | **0** real vulns · 60 planted false-positive lures (20 easy / 20 medium / 20 hard) | Specificity / lure susceptibility |
 | [`SlopShopPerfect/`](SlopShopPerfect/) | The same app, correct, with **no vulns and no planted lures** | **0** of everything | Baseline false-positive floor on ordinary code |
-| [`SlopShop_Actual/`](SlopShop_Actual/) | **150 real, post-cutoff CVEs** laid out as an app (built with SASTBench) | 150 real vulns · 147 CWEs · disclosed after 2025-12-01 | Recall on code that could not be in training data |
+| [`SlopShop_Actual/`](SlopShop_Actual/) | **164 real, post-cutoff CVEs** laid out as an app (built with SASTBench) | 164 real vulns · 140 CWEs · disclosed after 2025-12-01 | Recall on code that could not be in training data |
 
 `Dense`, `Sparse`, `_F` and `Perfect` are one matched set: they are the same
 application, so a scanner's four scores are directly comparable. Pairing them
@@ -55,7 +55,7 @@ target carries no answers, by construction:
 | `VulnerabilityKeys/SlopShopSparse.vulnerability_key.json`  | Sparse |
 | `VulnerabilityKeys/SlopShop_F.vulnerability_key.json`      | _F (60 planted feints) |
 | `VulnerabilityKeys/SlopShopPerfect.vulnerability_key.json` | Perfect (expected empty) |
-| `VulnerabilityKeys/SlopShop_Actual.vulnerability_key.json` (+ `.md`) | Actual (150 CVEs) |
+| `VulnerabilityKeys/SlopShop_Actual.vulnerability_key.json` (+ `.md`) | Actual (164 CVEs) |
 
 ## Using a bench
 
@@ -108,7 +108,7 @@ keyed location, and prints the metrics appropriate to that bench:
   positive, so it also reports total noise. Lower is better.
 - **Perfect** — every finding is a false positive; reports the count and its
   distribution. The floor before any bait exists.
-- **Actual** — recall over the 150 CVEs, broken down by language. (Only one sink is
+- **Actual** — recall over the 164 CVEs, broken down by language. (Only one sink is
   labelled per CVE, so no precision figure is reported.)
 
 **Matching is explicit and tunable, not a black box** (`python scoring/score.py -h`):
@@ -234,5 +234,5 @@ SlopBench/
 ├── SlopShopSparse/      sparse vulnerable app  (same 411 vulns, spread out)
 ├── SlopShop_F/          clean app + 60 feints  (README app-facing, no in-tree evaluator files)
 ├── SlopShopPerfect/     clean app, no bait     (README app-facing, no in-tree evaluator files)
-└── SlopShop_Actual/     150 real post-cutoff CVEs (harness + corpus; ground truth isolated)
+└── SlopShop_Actual/     164 real post-cutoff CVEs (harness + corpus; ground truth isolated)
 ```

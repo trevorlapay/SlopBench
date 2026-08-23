@@ -11,7 +11,7 @@ been in its training data.
 workspaces/postcutoff/code/
 ```
 
-150 real vulnerable files laid out as a plausible polyglot platform
+164 real vulnerable files laid out as a plausible polyglot platform
 (`code/services/<service>/...`). **Nothing in that tree identifies a vulnerability** — no CVE,
 no CWE, no project name, no vuln title, in paths, file names, or file contents. The scanner
 writes findings to `workspaces/postcutoff/output/findings.json` (see the workspace `AGENTS.md`).

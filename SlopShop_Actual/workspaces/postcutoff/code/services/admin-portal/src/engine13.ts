@@ -1,213 +1,467 @@
-import { error } from '@vltpkg/error-cause'
-import { randomBytes } from 'node:crypto'
-import { lstat, mkdir, rename, writeFile } from 'node:fs/promises'
-import { basename, dirname, parse, resolve } from 'node:path'
-import { rimraf } from 'rimraf'
-import { Header } from 'tar/header'
-import type { HeaderData } from 'tar/header'
-import { Pax } from 'tar/pax'
-import { unzip as unzipCB } from 'node:zlib'
-import { findTarDir } from './find-tar-dir.ts'
+import {
+  DEFAULT_SAFE_BINS,
+  analyzeShellCommand,
+  isWindowsPlatform,
+  matchAllowlist,
+  resolveAllowlistCandidatePath,
+  splitCommandChain,
+  type ExecCommandAnalysis,
+  type CommandResolution,
+  type ExecCommandSegment,
+} from "./exec-approvals-analysis.js";
+import type { ExecAllowlistEntry } from "./exec-approvals.js";
+import {
+  SAFE_BIN_PROFILES,
+  type SafeBinProfile,
+  validateSafeBinArgv,
+} from "./exec-safe-bin-policy.js";
+import { isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
 
-const unzip = async (input: Buffer) =>
-  new Promise<Buffer>(
-    (res, rej) =>
-      /* c8 ignore start */
-      unzipCB(input, (er, result) => (er ? rej(er) : res(result))),
-    /* c8 ignore stop */
-  )
+function hasShellLineContinuation(command: string): boolean {
+  return /\\(?:\r\n|\n|\r)/.test(command);
+}
 
-const exists = async (path: string): Promise<boolean> => {
-  try {
-    await lstat(path)
-    return true
-  } catch {
-    return false
+export function normalizeSafeBins(entries?: string[]): Set<string> {
+  if (!Array.isArray(entries)) {
+    return new Set();
   }
+  const normalized = entries
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0);
+  return new Set(normalized);
 }
 
-let id = 1
-const tmp = randomBytes(6).toString('hex') + '.'
-const tmpSuffix = () => tmp + String(id++)
-
-const checkFs = (
-  h: Header,
-  tarDir: string | undefined,
-): h is Header & { path: string } => {
-  /* c8 ignore start - impossible */
-  if (!h.path) return false
-  if (!tarDir) return false
-  /* c8 ignore stop */
-  h.path = h.path.replace(/[\\/]+/g, '/')
-  const parsed = parse(h.path)
-  if (parsed.root) return false
-  const p = h.path.replace(/\\/, '/')
-  // any .. at the beginning, end, or middle = no good
-  if (/(\/|)^\.\.(\/|$)/.test(p)) return false
-  // packages should always be in a 'package' tarDir in the archive
-  if (!p.startsWith(tarDir)) return false
-  return true
-}
-
-const write = async (
-  path: string,
-  body: Buffer,
-  executable = false,
-) => {
-  await mkdirp(dirname(path))
-  // if the mode is world-executable, then make it executable
-  // this is needed for some packages that have a file that is
-  // not a declared bin, but still used as a cli executable.
-  await writeFile(path, body, {
-    mode: executable ? 0o777 : 0o666,
-  })
-}
-
-const made = new Set<string>()
-const making = new Map<string, Promise<boolean>>()
-const mkdirp = async (d: string) => {
-  if (!made.has(d)) {
-    const m =
-      making.get(d) ??
-      mkdir(d, { recursive: true, mode: 0o777 }).then(() =>
-        making.delete(d),
-      )
-    making.set(d, m)
-    await m
-    made.add(d)
+export function resolveSafeBins(entries?: string[] | null): Set<string> {
+  if (entries === undefined) {
+    return normalizeSafeBins(DEFAULT_SAFE_BINS);
   }
+  return normalizeSafeBins(entries ?? []);
 }
 
-export const unpack = async (
-  tarData: Buffer,
-  target: string,
-): Promise<void> => {
-  const isGzip = tarData[0] === 0x1f && tarData[1] === 0x8b
-  await unpackUnzipped(
-    isGzip ? await unzip(tarData) : tarData,
-    target,
-  )
-}
-
-const unpackUnzipped = async (
-  buffer: Buffer,
-  target: string,
-): Promise<void> => {
-  /* c8 ignore start */
-  const isGzip = buffer[0] === 0x1f && buffer[1] === 0x8b
-  if (isGzip) {
-    throw error('still gzipped after unzipping', {
-      found: isGzip,
-      wanted: false,
+export function isSafeBinUsage(params: {
+  argv: string[];
+  resolution: CommandResolution | null;
+  safeBins: Set<string>;
+  platform?: string | null;
+  trustedSafeBinDirs?: ReadonlySet<string>;
+  safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
+  isTrustedSafeBinPathFn?: typeof isTrustedSafeBinPath;
+}): boolean {
+  // Windows host exec uses PowerShell, which has different parsing/expansion rules.
+  // Keep safeBins conservative there (require explicit allowlist entries).
+  if (isWindowsPlatform(params.platform ?? process.platform)) {
+    return false;
+  }
+  if (params.safeBins.size === 0) {
+    return false;
+  }
+  const resolution = params.resolution;
+  const execName = resolution?.executableName?.toLowerCase();
+  if (!execName) {
+    return false;
+  }
+  const matchesSafeBin = params.safeBins.has(execName);
+  if (!matchesSafeBin) {
+    return false;
+  }
+  if (!resolution?.resolvedPath) {
+    return false;
+  }
+  const isTrustedPath = params.isTrustedSafeBinPathFn ?? isTrustedSafeBinPath;
+  if (
+    !isTrustedPath({
+      resolvedPath: resolution.resolvedPath,
+      trustedDirs: params.trustedSafeBinDirs,
     })
+  ) {
+    return false;
   }
-  /* c8 ignore stop */
+  const argv = params.argv.slice(1);
+  const safeBinProfiles = params.safeBinProfiles ?? SAFE_BIN_PROFILES;
+  const profile = safeBinProfiles[execName];
+  if (!profile) {
+    return false;
+  }
+  return validateSafeBinArgv(argv, profile);
+}
 
-  // another real quick gutcheck before we get started
-  if (buffer.length % 512 !== 0) {
-    throw error('Invalid tarball: length not divisible by 512', {
-      found: buffer.length,
-    })
+export type ExecAllowlistEvaluation = {
+  allowlistSatisfied: boolean;
+  allowlistMatches: ExecAllowlistEntry[];
+  segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
+};
+
+export type ExecSegmentSatisfiedBy = "allowlist" | "safeBins" | "skills" | null;
+
+function evaluateSegments(
+  segments: ExecCommandSegment[],
+  params: {
+    allowlist: ExecAllowlistEntry[];
+    safeBins: Set<string>;
+    safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
+    cwd?: string;
+    platform?: string | null;
+    trustedSafeBinDirs?: ReadonlySet<string>;
+    skillBins?: Set<string>;
+    autoAllowSkills?: boolean;
+  },
+): {
+  satisfied: boolean;
+  matches: ExecAllowlistEntry[];
+  segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
+} {
+  const matches: ExecAllowlistEntry[] = [];
+  const allowSkills = params.autoAllowSkills === true && (params.skillBins?.size ?? 0) > 0;
+  const segmentSatisfiedBy: ExecSegmentSatisfiedBy[] = [];
+
+  const satisfied = segments.every((segment) => {
+    const candidatePath = resolveAllowlistCandidatePath(segment.resolution, params.cwd);
+    const candidateResolution =
+      candidatePath && segment.resolution
+        ? { ...segment.resolution, resolvedPath: candidatePath }
+        : segment.resolution;
+    const match = matchAllowlist(params.allowlist, candidateResolution);
+    if (match) {
+      matches.push(match);
+    }
+    const safe = isSafeBinUsage({
+      argv: segment.argv,
+      resolution: segment.resolution,
+      safeBins: params.safeBins,
+      safeBinProfiles: params.safeBinProfiles,
+      platform: params.platform,
+      trustedSafeBinDirs: params.trustedSafeBinDirs,
+    });
+    const skillAllow =
+      allowSkills && segment.resolution?.executableName
+        ? params.skillBins?.has(segment.resolution.executableName)
+        : false;
+    const by: ExecSegmentSatisfiedBy = match
+      ? "allowlist"
+      : safe
+        ? "safeBins"
+        : skillAllow
+          ? "skills"
+          : null;
+    segmentSatisfiedBy.push(by);
+    return Boolean(by);
+  });
+
+  return { satisfied, matches, segmentSatisfiedBy };
+}
+
+export function evaluateExecAllowlist(params: {
+  analysis: ExecCommandAnalysis;
+  allowlist: ExecAllowlistEntry[];
+  safeBins: Set<string>;
+  safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
+  cwd?: string;
+  platform?: string | null;
+  trustedSafeBinDirs?: ReadonlySet<string>;
+  skillBins?: Set<string>;
+  autoAllowSkills?: boolean;
+}): ExecAllowlistEvaluation {
+  const allowlistMatches: ExecAllowlistEntry[] = [];
+  const segmentSatisfiedBy: ExecSegmentSatisfiedBy[] = [];
+  if (!params.analysis.ok || params.analysis.segments.length === 0) {
+    return { allowlistSatisfied: false, allowlistMatches, segmentSatisfiedBy };
   }
-  if (buffer.length < 1024) {
-    throw error(
-      'Invalid tarball: not terminated by 1024 null bytes',
-      { found: buffer.length },
-    )
+
+  // If the analysis contains chains, evaluate each chain part separately
+  if (params.analysis.chains) {
+    for (const chainSegments of params.analysis.chains) {
+      const result = evaluateSegments(chainSegments, {
+        allowlist: params.allowlist,
+        safeBins: params.safeBins,
+        safeBinProfiles: params.safeBinProfiles,
+        cwd: params.cwd,
+        platform: params.platform,
+        trustedSafeBinDirs: params.trustedSafeBinDirs,
+        skillBins: params.skillBins,
+        autoAllowSkills: params.autoAllowSkills,
+      });
+      if (!result.satisfied) {
+        return { allowlistSatisfied: false, allowlistMatches: [], segmentSatisfiedBy: [] };
+      }
+      allowlistMatches.push(...result.matches);
+      segmentSatisfiedBy.push(...result.segmentSatisfiedBy);
+    }
+    return { allowlistSatisfied: true, allowlistMatches, segmentSatisfiedBy };
   }
-  // make sure the last kb is all zeros
-  for (let i = buffer.length - 1024; i < buffer.length; i++) {
-    if (buffer[i] !== 0) {
-      throw error(
-        'Invalid tarball: not terminated by 1024 null bytes',
-        { found: buffer.subarray(i, i + 10) },
-      )
+
+  // No chains, evaluate all segments together
+  const result = evaluateSegments(params.analysis.segments, {
+    allowlist: params.allowlist,
+    safeBins: params.safeBins,
+    safeBinProfiles: params.safeBinProfiles,
+    cwd: params.cwd,
+    platform: params.platform,
+    trustedSafeBinDirs: params.trustedSafeBinDirs,
+    skillBins: params.skillBins,
+    autoAllowSkills: params.autoAllowSkills,
+  });
+  return {
+    allowlistSatisfied: result.satisfied,
+    allowlistMatches: result.matches,
+    segmentSatisfiedBy: result.segmentSatisfiedBy,
+  };
+}
+
+export type ExecAllowlistAnalysis = {
+  analysisOk: boolean;
+  allowlistSatisfied: boolean;
+  allowlistMatches: ExecAllowlistEntry[];
+  segments: ExecCommandSegment[];
+  segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
+};
+
+const SHELL_WRAPPER_EXECUTABLES = new Set([
+  "ash",
+  "bash",
+  "cmd",
+  "cmd.exe",
+  "dash",
+  "fish",
+  "ksh",
+  "powershell",
+  "powershell.exe",
+  "pwsh",
+  "pwsh.exe",
+  "sh",
+  "zsh",
+]);
+
+function normalizeExecutableName(name: string | undefined): string {
+  return (name ?? "").trim().toLowerCase();
+}
+
+function isShellWrapperSegment(segment: ExecCommandSegment): boolean {
+  const candidates = [
+    normalizeExecutableName(segment.resolution?.executableName),
+    normalizeExecutableName(segment.resolution?.rawExecutable),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    if (SHELL_WRAPPER_EXECUTABLES.has(candidate)) {
+      return true;
+    }
+    const base = candidate.split(/[\\/]/).pop();
+    if (base && SHELL_WRAPPER_EXECUTABLES.has(base)) {
+      return true;
     }
   }
+  return false;
+}
 
-  const tmp =
-    dirname(target) + '/.' + basename(target) + '.' + tmpSuffix()
-  const og = tmp + '.ORIGINAL'
-  await Promise.all([rimraf(tmp), rimraf(og)])
-
-  let succeeded = false
-  try {
-    let tarDir: string | undefined = undefined
-    let offset = 0
-    let h: Header
-    let ex: HeaderData | undefined = undefined
-    let gex: HeaderData | undefined = undefined
-    while (
-      offset < buffer.length &&
-      !(h = new Header(buffer, offset, ex, gex)).nullBlock
+function extractShellInlineCommand(argv: string[]): string | null {
+  for (let i = 1; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (!token) {
+      continue;
+    }
+    const lower = token.toLowerCase();
+    if (lower === "--") {
+      break;
+    }
+    if (
+      lower === "-c" ||
+      lower === "--command" ||
+      lower === "-command" ||
+      lower === "/c" ||
+      lower === "/k"
     ) {
-      offset += 512
-      ex = undefined
-      gex = undefined
-      const size = h.size ?? 0
-      const body = buffer.subarray(offset, offset + size)
-      // skip invalid headers
-      if (!h.cksumValid) continue
-      offset += 512 * Math.ceil(size / 512)
-
-      // TODO: tarDir might not be named "package/"
-      // find the first tarDir in the first entry, and use that.
-      switch (h.type) {
-        case 'File':
-          if (!tarDir) tarDir = findTarDir(h.path, tarDir)
-          /* c8 ignore next */
-          if (!tarDir) continue
-          if (!checkFs(h, tarDir)) continue
-          await write(
-            resolve(tmp, h.path.substring(tarDir.length)),
-            body,
-            // if it's world-executable, it's an executable
-            // otherwise, make it read-only.
-            1 === ((h.mode ?? 0x666) & 1),
-          )
-          break
-
-        case 'Directory':
-          /* c8 ignore next 2 */
-          if (!tarDir) tarDir = findTarDir(h.path, tarDir)
-          if (!tarDir) continue
-          if (!checkFs(h, tarDir)) continue
-          await mkdirp(resolve(tmp, h.path.substring(tarDir.length)))
-          break
-
-        case 'GlobalExtendedHeader':
-          gex = Pax.parse(body.toString(), gex, true)
-          break
-
-        case 'ExtendedHeader':
-        case 'OldExtendedHeader':
-          ex = Pax.parse(body.toString(), ex, false)
-          break
-
-        case 'NextFileHasLongPath':
-        case 'OldGnuLongPath':
-          ex ??= Object.create(null) as HeaderData
-          ex.path = body.toString().replace(/\0.*/, '')
-          break
-      }
+      const next = argv[i + 1]?.trim();
+      return next ? next : null;
     }
-
-    const targetExists = await exists(target)
-    if (targetExists) await rename(target, og)
-    await rename(tmp, target)
-    if (targetExists) await rimraf(og)
-    succeeded = true
-  } finally {
-    // do not handle error or obscure throw site, just do the cleanup
-    // if it didn't complete successfully.
-    if (!succeeded) {
-      /* c8 ignore start */
-      if (await exists(og)) {
-        await rimraf(target)
-        await rename(og, target)
+    if (/^-[^-]*c[^-]*$/i.test(token)) {
+      const commandIndex = lower.indexOf("c");
+      const inline = token.slice(commandIndex + 1).trim();
+      if (inline) {
+        return inline;
       }
-      /* c8 ignore stop */
-      await rimraf(tmp)
+      const next = argv[i + 1]?.trim();
+      return next ? next : null;
     }
   }
+  return null;
+}
+
+function collectAllowAlwaysPatterns(params: {
+  segment: ExecCommandSegment;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  platform?: string | null;
+  depth: number;
+  out: Set<string>;
+}) {
+  const candidatePath = resolveAllowlistCandidatePath(params.segment.resolution, params.cwd);
+  if (!candidatePath) {
+    return;
+  }
+  if (!isShellWrapperSegment(params.segment)) {
+    params.out.add(candidatePath);
+    return;
+  }
+  if (params.depth >= 3) {
+    return;
+  }
+  const inlineCommand = extractShellInlineCommand(params.segment.argv);
+  if (!inlineCommand) {
+    return;
+  }
+  const nested = analyzeShellCommand({
+    command: inlineCommand,
+    cwd: params.cwd,
+    env: params.env,
+    platform: params.platform,
+  });
+  if (!nested.ok) {
+    return;
+  }
+  for (const nestedSegment of nested.segments) {
+    collectAllowAlwaysPatterns({
+      segment: nestedSegment,
+      cwd: params.cwd,
+      env: params.env,
+      platform: params.platform,
+      depth: params.depth + 1,
+      out: params.out,
+    });
+  }
+}
+
+/**
+ * Derive persisted allowlist patterns for an "allow always" decision.
+ * When a command is wrapped in a shell (for example `zsh -lc "<cmd>"`),
+ * persist the inner executable(s) rather than the shell binary.
+ */
+export function resolveAllowAlwaysPatterns(params: {
+  segments: ExecCommandSegment[];
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  platform?: string | null;
+}): string[] {
+  const patterns = new Set<string>();
+  for (const segment of params.segments) {
+    collectAllowAlwaysPatterns({
+      segment,
+      cwd: params.cwd,
+      env: params.env,
+      platform: params.platform,
+      depth: 0,
+      out: patterns,
+    });
+  }
+  return Array.from(patterns);
+}
+
+/**
+ * Evaluates allowlist for shell commands (including &&, ||, ;) and returns analysis metadata.
+ */
+export function evaluateShellAllowlist(params: {
+  command: string;
+  allowlist: ExecAllowlistEntry[];
+  safeBins: Set<string>;
+  safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  trustedSafeBinDirs?: ReadonlySet<string>;
+  skillBins?: Set<string>;
+  autoAllowSkills?: boolean;
+  platform?: string | null;
+}): ExecAllowlistAnalysis {
+  const analysisFailure = (): ExecAllowlistAnalysis => ({
+    analysisOk: false,
+    allowlistSatisfied: false,
+    allowlistMatches: [],
+    segments: [],
+    segmentSatisfiedBy: [],
+  });
+
+  // Keep allowlist analysis conservative: line-continuation semantics are shell-dependent
+  // and can rewrite token boundaries at runtime.
+  if (hasShellLineContinuation(params.command)) {
+    return analysisFailure();
+  }
+
+  const chainParts = isWindowsPlatform(params.platform) ? null : splitCommandChain(params.command);
+  if (!chainParts) {
+    const analysis = analyzeShellCommand({
+      command: params.command,
+      cwd: params.cwd,
+      env: params.env,
+      platform: params.platform,
+    });
+    if (!analysis.ok) {
+      return analysisFailure();
+    }
+    const evaluation = evaluateExecAllowlist({
+      analysis,
+      allowlist: params.allowlist,
+      safeBins: params.safeBins,
+      safeBinProfiles: params.safeBinProfiles,
+      cwd: params.cwd,
+      platform: params.platform,
+      trustedSafeBinDirs: params.trustedSafeBinDirs,
+      skillBins: params.skillBins,
+      autoAllowSkills: params.autoAllowSkills,
+    });
+    return {
+      analysisOk: true,
+      allowlistSatisfied: evaluation.allowlistSatisfied,
+      allowlistMatches: evaluation.allowlistMatches,
+      segments: analysis.segments,
+      segmentSatisfiedBy: evaluation.segmentSatisfiedBy,
+    };
+  }
+
+  const allowlistMatches: ExecAllowlistEntry[] = [];
+  const segments: ExecCommandSegment[] = [];
+  const segmentSatisfiedBy: ExecSegmentSatisfiedBy[] = [];
+
+  for (const part of chainParts) {
+    const analysis = analyzeShellCommand({
+      command: part,
+      cwd: params.cwd,
+      env: params.env,
+      platform: params.platform,
+    });
+    if (!analysis.ok) {
+      return analysisFailure();
+    }
+
+    segments.push(...analysis.segments);
+    const evaluation = evaluateExecAllowlist({
+      analysis,
+      allowlist: params.allowlist,
+      safeBins: params.safeBins,
+      safeBinProfiles: params.safeBinProfiles,
+      cwd: params.cwd,
+      platform: params.platform,
+      trustedSafeBinDirs: params.trustedSafeBinDirs,
+      skillBins: params.skillBins,
+      autoAllowSkills: params.autoAllowSkills,
+    });
+    allowlistMatches.push(...evaluation.allowlistMatches);
+    segmentSatisfiedBy.push(...evaluation.segmentSatisfiedBy);
+    if (!evaluation.allowlistSatisfied) {
+      return {
+        analysisOk: true,
+        allowlistSatisfied: false,
+        allowlistMatches,
+        segments,
+        segmentSatisfiedBy,
+      };
+    }
+  }
+
+  return {
+    analysisOk: true,
+    allowlistSatisfied: true,
+    allowlistMatches,
+    segments,
+    segmentSatisfiedBy,
+  };
 }

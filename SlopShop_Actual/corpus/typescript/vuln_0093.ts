@@ -1,259 +1,139 @@
-import pify from 'pify'
-import type { H3Event as H3V1Event } from 'h3'
-import type { H3Event as H3V2Event } from 'h3-next'
-import type { IncomingMessage, MultiWatching, ServerResponse } from 'webpack-dev-middleware'
-import webpackDevMiddleware from 'webpack-dev-middleware'
-import webpackHotMiddleware from 'webpack-hot-middleware'
-import type { Compiler, Stats, Watching } from 'webpack'
-import { defu } from 'defu'
-import type { NuxtBuilder } from '@nuxt/schema'
-import { joinURL } from 'ufo'
-import { logger, useNitro, useNuxt } from '@nuxt/kit'
-import type { InputPluginOption } from 'rollup'
+// Evaluation Related Interfaces
+import { Evaluator } from './database/entities/Evaluator'
 
-import { DynamicBasePlugin } from './plugins/dynamic-base.ts'
-import { ChunkErrorPlugin } from './plugins/chunk.ts'
-import { SSRStylesPlugin } from './plugins/ssr-styles.ts'
-import { createMFS } from './utils/mfs.ts'
-import { client, server } from './configs/index.ts'
-import { applyPresets, createWebpackConfigContext } from './utils/config.ts'
-
-import { builder, webpack } from '#builder'
-
-// TODO: Support plugins
-// const plugins: string[] = []
-
-export const bundle: NuxtBuilder['bundle'] = async (nuxt) => {
-  const webpackConfigs = await Promise.all([client, ...(nuxt.options.ssr ? [server] : [])].map(async (preset) => {
-    const ctx = createWebpackConfigContext(nuxt)
-    ctx.userConfig = defu(nuxt.options.webpack[`$${preset.name as 'client' | 'server'}`], ctx.userConfig)
-    await applyPresets(ctx, preset)
-    return ctx.config
-  }))
-
-  /** Remove Nitro rollup plugin for handling dynamic imports from webpack chunks */
-  if (!nuxt.options.dev) {
-    const nitro = useNitro()
-    nitro.hooks.hook('rollup:before', (_nitro, config) => {
-      const plugins = config.plugins as InputPluginOption[]
-
-      const existingPlugin = plugins.findIndex(i => i && 'name' in i && i.name === 'dynamic-require')
-      if (existingPlugin >= 0) {
-        plugins.splice(existingPlugin, 1)
-      }
-    })
-  }
-
-  await nuxt.callHook(`${builder}:config`, webpackConfigs)
-
-  // Initialize shared MFS for dev
-  const mfs = nuxt.options.dev ? createMFS() : null
-
-  const ssrStylesPlugin = nuxt.options.ssr && !nuxt.options.dev ? new SSRStylesPlugin(nuxt) : null
-
-  for (const config of webpackConfigs) {
-    config.plugins!.push(DynamicBasePlugin.webpack({
-      sourcemap: !!nuxt.options.sourcemap[config.name as 'client' | 'server'],
-    }))
-    // Emit chunk errors if the user has opted in to `experimental.emitRouteChunkError`
-    if (config.name === 'client' && nuxt.options.experimental.emitRouteChunkError && nuxt.options.builder !== '@nuxt/rspack-builder') {
-      config.plugins!.push(new ChunkErrorPlugin())
-    }
-    if (ssrStylesPlugin) {
-      config.plugins!.push(ssrStylesPlugin)
-    }
-  }
-
-  await nuxt.callHook(`${builder}:configResolved`, webpackConfigs)
-
-  // Configure compilers
-  const compilers = webpackConfigs.map((config) => {
-    // Create compiler
-    const compiler = webpack(config)
-
-    // In dev, write files in memory FS
-    if (nuxt.options.dev && compiler) {
-      compiler.outputFileSystem = mfs! as unknown as Compiler['outputFileSystem']
-    }
-
-    return compiler
-  })
-
-  nuxt.hook('close', async () => {
-    for (const compiler of compilers) {
-      await new Promise(resolve => compiler.close(resolve))
-    }
-  })
-
-  // Start Builds
-  if (nuxt.options.dev) {
-    await Promise.all(compilers.map(c => compile(c)))
-    return
-  }
-
-  for (const c of compilers) {
-    await compile(c)
-  }
+export interface IDataset {
+    id: string
+    name: string
+    description: string
+    createdDate: Date
+    updatedDate: Date
+    workspaceId?: string
+}
+export interface IDatasetRow {
+    id: string
+    datasetId: string
+    input: string
+    output: string
+    updatedDate: Date
+    sequenceNo: number
 }
 
-async function createDevMiddleware (compiler: Compiler) {
-  const nuxt = useNuxt()
-
-  logger.debug('Creating webpack middleware...')
-
-  // Create webpack dev middleware
-  const devMiddleware = webpackDevMiddleware(compiler, {
-    publicPath: joinURL(nuxt.options.app.baseURL, nuxt.options.app.buildAssetsDir),
-    outputFileSystem: compiler.outputFileSystem as any,
-    stats: 'none',
-    ...nuxt.options.webpack.devMiddleware,
-  })
-
-  // @ts-expect-error need better types for `pify`
-  nuxt.hook('close', () => pify(devMiddleware.close.bind(devMiddleware))())
-
-  const { client: _client, ...hotMiddlewareOptions } = nuxt.options.webpack.hotMiddleware || {}
-  const hotMiddleware = webpackHotMiddleware(compiler, {
-    log: false,
-    heartbeat: 10000,
-    path: joinURL(nuxt.options.app.baseURL, '__webpack_hmr', compiler.options.name!),
-    ...hotMiddlewareOptions,
-  })
-
-  // Register devMiddleware on server
-  const devHandler = wdmToH3Handler(devMiddleware)
-  await nuxt.callHook('server:devHandler', defineEventHandler(async (event) => {
-    const body = await devHandler(event)
-    if (body !== undefined) {
-      return body
-    }
-    const { req, res } = 'runtime' in event ? event.runtime!.node! : event.node
-    await new Promise<void>((resolve, reject) => hotMiddleware(req as IncomingMessage, res as ServerResponse, err => err ? reject(err) : resolve()))
-  }), { cors: () => true })
-
-  return devMiddleware
+export enum EvaluationStatus {
+    PENDING = 'pending',
+    COMPLETED = 'completed',
+    ERROR = 'error'
 }
 
-// TODO: implement upstream in `webpack-dev-middleware`
-function wdmToH3Handler (devMiddleware: webpackDevMiddleware.API<IncomingMessage, ServerResponse>) {
-  return defineEventHandler(async (event) => {
-    const { req, res } = 'runtime' in event ? event.runtime!.node! : event.node
-    if (!isSameOriginRequest(req)) {
-      res!.statusCode = 403
-      res!.end('Forbidden')
-      return
-    }
+export interface IEvaluation {
+    id: string
+    name: string
+    chatflowId: string
+    chatflowName: string
+    datasetId: string
+    datasetName: string
+    evaluationType: string
+    additionalConfig: string //json
+    average_metrics: string //json
+    status: string
+    runDate: Date
+    workspaceId?: string
+}
 
-    const body = await new Promise((resolve, reject) => {
-      // @ts-expect-error handle injected methods
-      res.stream = (stream) => {
-        resolve(stream)
-      }
-      // @ts-expect-error handle injected methods
-      res.send = (data) => {
-        resolve(data)
-      }
-      // @ts-expect-error handle injected methods
-      res.finish = (data) => {
-        resolve(data)
-      }
-      devMiddleware(req as IncomingMessage, res as ServerResponse, (err) => {
-        if (err) {
-          reject(err)
+export interface IEvaluationResult extends IEvaluation {
+    latestEval: boolean
+    version: number
+}
+
+export interface IEvaluationRun {
+    id: string
+    evaluationId: string
+    input: string
+    expectedOutput: string
+    actualOutput: string // JSON
+    metrics: string // JSON
+    runDate: Date
+    llmEvaluators?: string // JSON
+    evaluators?: string // JSON
+    errors?: string // JSON
+}
+
+export interface IEvaluator {
+    id: string
+    name: string
+    type: string
+    config: string // JSON
+    updatedDate: Date
+    createdDate: Date
+    workspaceId?: string
+}
+
+export class EvaluatorDTO {
+    id: string
+    name: string
+    type: string
+    measure?: string
+    operator?: string
+    value?: string
+    prompt?: string
+    evaluatorType?: string
+    outputSchema?: []
+    updatedDate: Date
+    createdDate: Date
+
+    static toEntity(body: any): Evaluator {
+        const newDs = new Evaluator()
+        Object.assign(newDs, body)
+        let config: any = {}
+        if (body.type === 'llm') {
+            config = {
+                prompt: body.prompt,
+                outputSchema: body.outputSchema
+            }
+        } else if (body.type === 'text') {
+            config = {
+                operator: body.operator,
+                value: body.value
+            }
+        } else if (body.type === 'json') {
+            config = {
+                operator: body.operator
+            }
+        } else if (body.type === 'numeric') {
+            config = {
+                operator: body.operator,
+                value: body.value,
+                measure: body.measure
+            }
         } else {
-          resolve(undefined)
+            throw new Error('Invalid evaluator type')
         }
-      })
-    })
-    return body
-  })
-}
-
-// `Sec-Fetch-Site` is not sent in every context, so fall back to comparing the
-// initiator (`Origin` / `Referer`) host against the request's `Host`.
-function isSameOriginRequest (req: { headers: Record<string, string | string[] | undefined> }): boolean {
-  const site = firstHeader(req.headers['sec-fetch-site'])
-  if (site !== undefined) {
-    return site === 'same-origin' || site === 'none'
-  }
-
-  const initiator = firstHeader(req.headers.origin) || firstHeader(req.headers.referer)
-  if (!initiator) {
-    return true
-  }
-
-  try {
-    return new URL(initiator).host === firstHeader(req.headers.host)
-  } catch {
-    return false
-  }
-}
-
-function firstHeader (value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value
-}
-
-async function compile (compiler: Compiler) {
-  const nuxt = useNuxt()
-
-  await nuxt.callHook(`${builder}:compile`, { name: compiler.options.name!, compiler })
-
-  // Load renderer resources after build
-  compiler.hooks.done.tap('load-resources', async (stats) => {
-    await nuxt.callHook(`${builder}:compiled`, { name: compiler.options.name!, compiler, stats })
-  })
-
-  // --- Dev Build ---
-  if (nuxt.options.dev) {
-    const compilersWatching: Array<Watching | MultiWatching> = []
-
-    nuxt.hook('close', async () => {
-      await Promise.all(compilersWatching.map(watching => watching && pify(watching.close.bind(watching))()))
-    })
-
-    // Client build
-    if (compiler.options.name === 'client') {
-      return new Promise((resolve, reject) => {
-        compiler.hooks.done.tap('nuxt-dev', () => { resolve(null) })
-        compiler.hooks.failed.tap('nuxt-errorlog', (err) => { reject(err) })
-        // Start watch
-        createDevMiddleware(compiler).then((devMiddleware) => {
-          if (devMiddleware.context.watching) {
-            compilersWatching.push(devMiddleware.context.watching)
-          }
-        })
-      })
+        newDs.config = JSON.stringify(config)
+        return newDs
     }
 
-    // Server, build and watch for changes
-    return new Promise((resolve, reject) => {
-      const watching = compiler.watch(nuxt.options.watchers.webpack, (err) => {
-        if (err) { return reject(err) }
-        resolve(null)
-      })
-
-      compilersWatching.push(watching)
-    })
-  }
-
-  // --- Production Build ---
-  const stats = await new Promise<Stats>((resolve, reject) => compiler.run((err, stats) => err ? reject(err) : resolve(stats!)))
-
-  if (stats.hasErrors()) {
-    const formatted = stats.toString({ errors: true, warnings: false, colors: false, errorDetails: true })
-    const compilationErrors = stats.compilation?.errors ?? []
-    logger.error(formatted || '(no formatted errors emitted; see compilation errors below)')
-    for (const err of compilationErrors) {
-      logger.error(err)
+    static fromEntity(entity: Evaluator): EvaluatorDTO {
+        const newDs = new EvaluatorDTO()
+        Object.assign(newDs, entity)
+        const config = JSON.parse(entity.config)
+        if (entity.type === 'llm') {
+            newDs.prompt = config.prompt
+            newDs.outputSchema = config.outputSchema
+        } else if (entity.type === 'text') {
+            newDs.operator = config.operator
+            newDs.value = config.value
+        } else if (entity.type === 'json') {
+            newDs.operator = config.operator
+            newDs.value = config.value
+        } else if (entity.type === 'numeric') {
+            newDs.operator = config.operator
+            newDs.value = config.value
+            newDs.measure = config.measure
+        }
+        delete (newDs as any).config
+        return newDs
     }
-    const error = new Error('Nuxt build error')
-    error.stack = formatted || compilationErrors.map(e => e.stack || e.message || String(e)).join('\n\n') || error.stack
-    throw error
-  }
-}
 
-type GenericHandler = (event: H3V1Event | H3V2Event) => unknown | Promise<unknown>
-
-function defineEventHandler (handler: GenericHandler): GenericHandler {
-  return Object.assign(handler, { __is_handler__: true })
+    static fromEntities(entities: Evaluator[]): EvaluatorDTO[] {
+        return entities.map((entity) => this.fromEntity(entity))
+    }
 }

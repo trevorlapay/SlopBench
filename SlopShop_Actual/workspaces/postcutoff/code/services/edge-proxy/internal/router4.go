@@ -1,801 +1,1453 @@
-// Copyright 2025 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-package server
+package query
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
+	"database/sql"
+	_ "embed"
 	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"sync"
+	"slices"
+	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/render"
-	"github.com/google/uuid"
-	"github.com/googleapis/mcp-toolbox/internal/auth/generic"
-	"github.com/googleapis/mcp-toolbox/internal/server/mcp"
-	"github.com/googleapis/mcp-toolbox/internal/server/mcp/jsonrpc"
-	mcputil "github.com/googleapis/mcp-toolbox/internal/server/mcp/util"
-	v20241105 "github.com/googleapis/mcp-toolbox/internal/server/mcp/v20241105"
-	v20250326 "github.com/googleapis/mcp-toolbox/internal/server/mcp/v20250326"
-	"github.com/googleapis/mcp-toolbox/internal/util"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/trace"
+	sq "github.com/Masterminds/squirrel"
+	"golang.org/x/text/language"
+
+	"github.com/zitadel/zitadel/internal/api/authz"
+	"github.com/zitadel/zitadel/internal/database"
+	"github.com/zitadel/zitadel/internal/domain"
+	"github.com/zitadel/zitadel/internal/query/projection"
+	"github.com/zitadel/zitadel/internal/telemetry/tracing"
+	"github.com/zitadel/zitadel/internal/zerrors"
 )
 
-type sseSession struct {
-	writer     http.ResponseWriter
-	flusher    http.Flusher
-	done       chan struct{}
-	eventQueue chan string
-	lastActive time.Time
+type Users struct {
+	SearchResponse
+	Users []*User
 }
 
-// sseManager manages and control access to sse sessions
-type sseManager struct {
-	mu          sync.Mutex
-	sseSessions map[string]*sseSession
+type User struct {
+	ID                 string                     `json:"id,omitempty"`
+	CreationDate       time.Time                  `json:"creation_date,omitempty"`
+	ChangeDate         time.Time                  `json:"change_date,omitempty"`
+	ResourceOwner      string                     `json:"resource_owner,omitempty"`
+	Sequence           uint64                     `json:"sequence,omitempty"`
+	State              domain.UserState           `json:"state,omitempty"`
+	Type               domain.UserType            `json:"type,omitempty"`
+	Username           string                     `json:"username,omitempty"`
+	LoginNames         database.TextArray[string] `json:"login_names,omitempty"`
+	PreferredLoginName string                     `json:"preferred_login_name,omitempty"`
+	Human              *Human                     `json:"human,omitempty"`
+	Machine            *Machine                   `json:"machine,omitempty"`
 }
 
-func (m *sseManager) get(id string) (*sseSession, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	session, ok := m.sseSessions[id]
-	if !ok || session == nil {
-		// Be defensive: a nil session entry should be treated as unavailable.
-		if ok && session == nil {
-			delete(m.sseSessions, id)
-		}
-		return nil, false
+type Human struct {
+	FirstName              string              `json:"first_name,omitempty"`
+	LastName               string              `json:"last_name,omitempty"`
+	NickName               string              `json:"nick_name,omitempty"`
+	DisplayName            string              `json:"display_name,omitempty"`
+	AvatarKey              string              `json:"avatar_key,omitempty"`
+	PreferredLanguage      language.Tag        `json:"preferred_language,omitempty"`
+	Gender                 domain.Gender       `json:"gender,omitempty"`
+	Email                  domain.EmailAddress `json:"email,omitempty"`
+	IsEmailVerified        bool                `json:"is_email_verified,omitempty"`
+	Phone                  domain.PhoneNumber  `json:"phone,omitempty"`
+	IsPhoneVerified        bool                `json:"is_phone_verified,omitempty"`
+	PasswordChangeRequired bool                `json:"password_change_required,omitempty"`
+	PasswordChanged        time.Time           `json:"password_changed,omitempty"`
+	MFAInitSkipped         time.Time           `json:"mfa_init_skipped,omitempty"`
+}
+
+type Profile struct {
+	ID                string
+	CreationDate      time.Time
+	ChangeDate        time.Time
+	ResourceOwner     string
+	Sequence          uint64
+	FirstName         string
+	LastName          string
+	NickName          string
+	DisplayName       string
+	AvatarKey         string
+	PreferredLanguage language.Tag
+	Gender            domain.Gender
+}
+
+type Email struct {
+	ID            string
+	CreationDate  time.Time
+	ChangeDate    time.Time
+	ResourceOwner string
+	Sequence      uint64
+	Email         domain.EmailAddress
+	IsVerified    bool
+}
+
+type Phone struct {
+	ID            string
+	CreationDate  time.Time
+	ChangeDate    time.Time
+	ResourceOwner string
+	Sequence      uint64
+	Phone         string
+	IsVerified    bool
+}
+
+type Machine struct {
+	Name            string               `json:"name,omitempty"`
+	Description     string               `json:"description,omitempty"`
+	EncodedSecret   string               `json:"encoded_hash,omitempty"`
+	AccessTokenType domain.OIDCTokenType `json:"access_token_type,omitempty"`
+}
+
+type NotifyUser struct {
+	ID                 string
+	CreationDate       time.Time
+	ChangeDate         time.Time
+	ResourceOwner      string
+	Sequence           uint64
+	State              domain.UserState
+	Type               domain.UserType
+	Username           string
+	LoginNames         database.TextArray[string]
+	PreferredLoginName string
+	FirstName          string
+	LastName           string
+	NickName           string
+	DisplayName        string
+	AvatarKey          string
+	PreferredLanguage  language.Tag
+	Gender             domain.Gender
+	LastEmail          string
+	VerifiedEmail      string
+	LastPhone          string
+	VerifiedPhone      string
+	PasswordSet        bool
+}
+
+func usersCheckPermission(ctx context.Context, users *Users, permissionCheck domain.PermissionCheck) {
+	users.Users = slices.DeleteFunc(users.Users,
+		func(user *User) bool {
+			return userCheckPermission(ctx, user.ResourceOwner, user.ID, permissionCheck) != nil
+		},
+	)
+}
+
+func userPermissionCheckV2(ctx context.Context, query sq.SelectBuilder, enabled bool, filters []SearchQuery) sq.SelectBuilder {
+	return userPermissionCheckV2WithCustomColumns(ctx, query, enabled, filters, UserResourceOwnerCol, UserIDCol)
+}
+
+func userPermissionCheckV2WithCustomColumns(ctx context.Context, query sq.SelectBuilder, enabled bool, filters []SearchQuery, userResourceOwnerCol, userID Column) sq.SelectBuilder {
+	if !enabled {
+		return query
 	}
-	session.lastActive = time.Now()
-	return session, true
+	join, args := PermissionClause(
+		ctx,
+		userResourceOwnerCol,
+		domain.PermissionUserRead,
+		SingleOrgPermissionOption(filters),
+		OwnedRowsPermissionOption(userID),
+	)
+	return query.JoinClause(join, args...)
 }
 
-func newSseManager(ctx context.Context) *sseManager {
-	sseM := &sseManager{
-		mu:          sync.Mutex{},
-		sseSessions: make(map[string]*sseSession),
+type UserSearchQueries struct {
+	SearchRequest
+	Queries []SearchQuery
+}
+
+var (
+	userTable = table{
+		name:          projection.UserTable,
+		instanceIDCol: projection.UserInstanceIDCol,
 	}
-	go sseM.cleanupRoutine(ctx)
-	return sseM
-}
-
-func (m *sseManager) add(id string, session *sseSession) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sseSessions[id] = session
-	session.lastActive = time.Now()
-}
-
-func (m *sseManager) remove(id string) {
-	m.mu.Lock()
-	delete(m.sseSessions, id)
-	m.mu.Unlock()
-}
-
-func (m *sseManager) cleanupRoutine(ctx context.Context) {
-	timeout := 10 * time.Minute
-	ticker := time.NewTicker(timeout)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			func() {
-				m.mu.Lock()
-				defer m.mu.Unlock()
-				now := time.Now()
-				for id, sess := range m.sseSessions {
-					if now.Sub(sess.lastActive) > timeout {
-						delete(m.sseSessions, id)
-					}
-				}
-			}()
-		}
+	UserIDCol = Column{
+		name:  projection.UserIDCol,
+		table: userTable,
 	}
-}
-
-type stdioSession struct {
-	protocol string
-	server   *Server
-	reader   *bufio.Reader
-	writer   io.Writer
-}
-
-// traceContextCarrier implements propagation.TextMapCarrier for extracting trace context from _meta
-type traceContextCarrier map[string]string
-
-func (c traceContextCarrier) Get(key string) string {
-	return c[key]
-}
-
-func (c traceContextCarrier) Set(key, value string) {
-	c[key] = value
-}
-
-func (c traceContextCarrier) Keys() []string {
-	keys := make([]string, 0, len(c))
-	for k := range c {
-		keys = append(keys, k)
+	UserCreationDateCol = Column{
+		name:  projection.UserCreationDateCol,
+		table: userTable,
 	}
-	return keys
-}
-
-// extractTraceContext extracts W3C Trace Context from params._meta
-func extractTraceContext(ctx context.Context, body []byte) context.Context {
-	// Try to parse the request to extract _meta
-	var req struct {
-		Params struct {
-			Meta struct {
-				Traceparent string `json:"traceparent,omitempty"`
-				Tracestate  string `json:"tracestate,omitempty"`
-			} `json:"_meta,omitempty"`
-		} `json:"params,omitempty"`
+	UserChangeDateCol = Column{
+		name:  projection.UserChangeDateCol,
+		table: userTable,
+	}
+	UserResourceOwnerCol = Column{
+		name:  projection.UserResourceOwnerCol,
+		table: userTable,
+	}
+	UserInstanceIDCol = Column{
+		name:  projection.UserInstanceIDCol,
+		table: userTable,
+	}
+	UserStateCol = Column{
+		name:  projection.UserStateCol,
+		table: userTable,
+	}
+	UserSequenceCol = Column{
+		name:  projection.UserSequenceCol,
+		table: userTable,
+	}
+	UserUsernameCol = Column{
+		name:           projection.UserUsernameCol,
+		table:          userTable,
+		isOrderByLower: true,
+	}
+	UserTypeCol = Column{
+		name:  projection.UserTypeCol,
+		table: userTable,
 	}
 
-	if err := json.Unmarshal(body, &req); err != nil {
-		return ctx
+	userLoginNamesTable         = loginNameTable.setAlias("login_names")
+	userLoginNamesUserIDCol     = LoginNameUserIDCol.setTable(userLoginNamesTable)
+	userLoginNamesInstanceIDCol = LoginNameInstanceIDCol.setTable(userLoginNamesTable)
+	userLoginNamesListCol       = Column{
+		name:  "login_names",
+		table: userLoginNamesTable,
+	}
+	userPreferredLoginNameCol = Column{
+		name:  "preferred_login_name",
+		table: userLoginNamesTable,
+	}
+)
+
+var (
+	humanTable = table{
+		name:          projection.UserHumanTable,
+		instanceIDCol: projection.HumanUserInstanceIDCol,
+	}
+	// profile
+	HumanUserIDCol = Column{
+		name:  projection.HumanUserIDCol,
+		table: humanTable,
+	}
+	HumanFirstNameCol = Column{
+		name:           projection.HumanFirstNameCol,
+		table:          humanTable,
+		isOrderByLower: true,
+	}
+	HumanLastNameCol = Column{
+		name:           projection.HumanLastNameCol,
+		table:          humanTable,
+		isOrderByLower: true,
+	}
+	HumanNickNameCol = Column{
+		name:           projection.HumanNickNameCol,
+		table:          humanTable,
+		isOrderByLower: true,
+	}
+	HumanDisplayNameCol = Column{
+		name:           projection.HumanDisplayNameCol,
+		table:          humanTable,
+		isOrderByLower: true,
+	}
+	HumanPreferredLanguageCol = Column{
+		name:  projection.HumanPreferredLanguageCol,
+		table: humanTable,
+	}
+	HumanGenderCol = Column{
+		name:  projection.HumanGenderCol,
+		table: humanTable,
+	}
+	HumanAvatarURLCol = Column{
+		name:  projection.HumanAvatarURLCol,
+		table: humanTable,
 	}
 
-	// If traceparent is present, extract the context
-	if req.Params.Meta.Traceparent != "" {
-		carrier := traceContextCarrier{
-			"traceparent": req.Params.Meta.Traceparent,
-		}
-		if req.Params.Meta.Tracestate != "" {
-			carrier["tracestate"] = req.Params.Meta.Tracestate
-		}
-		return otel.GetTextMapPropagator().Extract(ctx, carrier)
+	// email
+	HumanEmailCol = Column{
+		name:           projection.HumanEmailCol,
+		table:          humanTable,
+		isOrderByLower: true,
+	}
+	HumanIsEmailVerifiedCol = Column{
+		name:  projection.HumanIsEmailVerifiedCol,
+		table: humanTable,
 	}
 
-	return ctx
-}
-
-func NewStdioSession(s *Server, stdin io.Reader, stdout io.Writer) *stdioSession {
-	stdioSession := &stdioSession{
-		server: s,
-		reader: bufio.NewReader(stdin),
-		writer: stdout,
+	// phone
+	HumanPhoneCol = Column{
+		name:  projection.HumanPhoneCol,
+		table: humanTable,
 	}
-	return stdioSession
-}
-
-func (s *stdioSession) Start(ctx context.Context) error {
-	return s.readInputStream(ctx)
-}
-
-// readInputStream reads requests/notifications from MCP clients through stdin
-func (s *stdioSession) readInputStream(ctx context.Context) error {
-	sessionStart := time.Now()
-
-	// Define attributes for session metrics
-	// Note: mcp.protocol.version is added dynamically after protocol negotiation
-	sessionAttrs := []attribute.KeyValue{
-		attribute.String("network.transport", "pipe"),
-		attribute.String("network.protocol.name", "stdio"),
+	HumanIsPhoneVerifiedCol = Column{
+		name:  projection.HumanIsPhoneVerifiedCol,
+		table: humanTable,
 	}
 
-	s.server.instrumentation.McpActiveSessions.Add(ctx, 1, metric.WithAttributes(sessionAttrs...))
+	HumanPasswordChangeRequiredCol = Column{
+		name:  projection.HumanPasswordChangeRequired,
+		table: humanTable,
+	}
+	HumanPasswordChangedCol = Column{
+		name:  projection.HumanPasswordChanged,
+		table: humanTable,
+	}
+	HumanMFAInitSkippedCol = Column{
+		name:  projection.HumanMFAInitSkipped,
+		table: humanTable,
+	}
+)
 
-	var err error
-	defer func() {
-		// Build full attributes including mcp.protocol.version if negotiated
-		fullAttrs := sessionAttrs
-		if s.protocol != "" {
-			fullAttrs = append(fullAttrs, attribute.String("mcp.protocol.version", s.protocol))
-		}
+var (
+	machineTable = table{
+		name:          projection.UserMachineTable,
+		instanceIDCol: projection.MachineUserInstanceIDCol,
+	}
+	MachineUserIDCol = Column{
+		name:  projection.MachineUserIDCol,
+		table: machineTable,
+	}
+	MachineNameCol = Column{
+		name:           projection.MachineNameCol,
+		table:          machineTable,
+		isOrderByLower: true,
+	}
+	MachineDescriptionCol = Column{
+		name:  projection.MachineDescriptionCol,
+		table: machineTable,
+	}
+	MachineSecretCol = Column{
+		name:  projection.MachineSecretCol,
+		table: machineTable,
+	}
+	MachineAccessTokenTypeCol = Column{
+		name:  projection.MachineAccessTokenTypeCol,
+		table: machineTable,
+	}
+)
 
-		// Decrement active sessions counter
-		s.server.instrumentation.McpActiveSessions.Add(ctx, -1, metric.WithAttributes(fullAttrs...))
+var (
+	notifyTable = table{
+		name:          projection.UserNotifyTable,
+		instanceIDCol: projection.NotifyInstanceIDCol,
+	}
+	NotifyUserIDCol = Column{
+		name:  projection.NotifyUserIDCol,
+		table: notifyTable,
+	}
+	NotifyEmailCol = Column{
+		name:           projection.NotifyLastEmailCol,
+		table:          notifyTable,
+		isOrderByLower: true,
+	}
+	NotifyVerifiedEmailCol = Column{
+		name:           projection.NotifyVerifiedEmailCol,
+		table:          notifyTable,
+		isOrderByLower: true,
+	}
+	NotifyVerifiedEmailLowerCaseCol = Column{
+		name:  projection.NotifyVerifiedEmailLowerCol,
+		table: notifyTable,
+	}
+	NotifyPhoneCol = Column{
+		name:  projection.NotifyLastPhoneCol,
+		table: notifyTable,
+	}
+	NotifyVerifiedPhoneCol = Column{
+		name:  projection.NotifyVerifiedPhoneCol,
+		table: notifyTable,
+	}
+	NotifyPasswordSetCol = Column{
+		name:  projection.NotifyPasswordSetCol,
+		table: notifyTable,
+	}
+)
 
-		// Record session duration
-		sessionDuration := time.Since(sessionStart).Seconds()
-		durationAttrs := make([]attribute.KeyValue, len(fullAttrs))
-		copy(durationAttrs, fullAttrs)
-		if err != nil && err != io.EOF {
-			durationAttrs = append(durationAttrs, attribute.String("error.type", err.Error()))
-		}
-		s.server.instrumentation.McpSessionDuration.Record(ctx, sessionDuration, metric.WithAttributes(durationAttrs...))
-	}()
+//go:embed user_by_id.sql
+var userByIDQuery string
 
-	for {
-		if err = ctx.Err(); err != nil {
+func userCheckPermission(ctx context.Context, resourceOwner string, userID string, permissionCheck domain.PermissionCheck) error {
+	ctxData := authz.GetCtxData(ctx)
+	if ctxData.UserID != userID {
+		if err := permissionCheck(ctx, domain.PermissionUserRead, resourceOwner, userID); err != nil {
 			return err
 		}
+	}
+	return nil
+}
 
-		var line string
-		line, err = s.readLine(ctx)
+func (q *Queries) GetUserByIDWithPermission(ctx context.Context, shouldTriggerBulk bool, userID string, permissionCheck domain.PermissionCheck) (*User, error) {
+	user, err := q.GetUserByID(ctx, shouldTriggerBulk, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := userCheckPermission(ctx, user.ResourceOwner, user.ID, permissionCheck); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+func (q *Queries) GetUserByID(ctx context.Context, shouldTriggerBulk bool, userID string) (user *User, err error) {
+	return q.GetUserByIDWithResourceOwner(ctx, shouldTriggerBulk, userID, "")
+}
+
+func (q *Queries) GetUserByIDWithResourceOwner(ctx context.Context, shouldTriggerBulk bool, userID, resourceOwner string) (user *User, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	if shouldTriggerBulk {
+		triggerUserProjections(ctx)
+	}
+
+	err = q.client.QueryRowContext(ctx,
+		func(row *sql.Row) error {
+			user, err = scanUser(row)
+			return err
+		},
+		userByIDQuery,
+		userID,
+		resourceOwner,
+		authz.GetInstance(ctx).InstanceID(),
+	)
+	return user, err
+}
+
+//go:embed user_by_login_name.sql
+var userByLoginNameQuery string
+
+func (q *Queries) GetUserByLoginName(ctx context.Context, shouldTriggered bool, loginName string) (user *User, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	if shouldTriggered {
+		triggerUserProjections(ctx)
+	}
+
+	loginName = strings.ToLower(loginName)
+
+	username := loginName
+	domainIndex := strings.LastIndex(loginName, "@")
+	var domainSuffix string
+	// split between the last @ (so ignore it if the login name ends with it)
+	if domainIndex > 0 && domainIndex != len(loginName)-1 {
+		domainSuffix = loginName[domainIndex+1:]
+		username = loginName[:domainIndex]
+	}
+
+	err = q.client.QueryRowContext(ctx,
+		func(row *sql.Row) error {
+			user, err = scanUser(row)
+			return err
+		},
+		userByLoginNameQuery,
+		username,
+		domainSuffix,
+		loginName,
+		authz.GetInstance(ctx).InstanceID(),
+	)
+	return user, err
+}
+
+func (q *Queries) GetHumanProfile(ctx context.Context, userID string, queries ...SearchQuery) (profile *Profile, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareProfileQuery()
+	for _, q := range queries {
+		query = q.toQuery(query)
+	}
+	eq := sq.Eq{
+		UserIDCol.identifier():         userID,
+		UserInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	stmt, args, err := query.Where(eq).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-Dgbg2", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		profile, err = scan(row)
+		return err
+	}, stmt, args...)
+	return profile, err
+}
+
+func (q *Queries) GetHumanEmail(ctx context.Context, userID string, queries ...SearchQuery) (email *Email, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareEmailQuery()
+	for _, q := range queries {
+		query = q.toQuery(query)
+	}
+	eq := sq.Eq{
+		UserIDCol.identifier():         userID,
+		UserInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	stmt, args, err := query.Where(eq).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-BHhj3", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		email, err = scan(row)
+		return err
+	}, stmt, args...)
+	return email, err
+}
+
+func (q *Queries) GetHumanPhone(ctx context.Context, userID string, queries ...SearchQuery) (phone *Phone, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := preparePhoneQuery()
+	for _, q := range queries {
+		query = q.toQuery(query)
+	}
+	eq := sq.Eq{
+		UserIDCol.identifier():         userID,
+		UserInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	stmt, args, err := query.Where(eq).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-Dg43g", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		phone, err = scan(row)
+		return err
+	}, stmt, args...)
+	return phone, err
+}
+
+//go:embed user_notify_by_id.sql
+var notifyUserByIDQuery string
+
+func (q *Queries) GetNotifyUserByID(ctx context.Context, shouldTriggered bool, userID string) (user *NotifyUser, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	if shouldTriggered {
+		triggerUserProjections(ctx)
+	}
+
+	err = q.client.QueryRowContext(ctx,
+		func(row *sql.Row) error {
+			user, err = scanNotifyUser(row)
+			return err
+		},
+		notifyUserByIDQuery,
+		userID,
+		authz.GetInstance(ctx).InstanceID(),
+	)
+	return user, err
+}
+
+//go:embed user_notify_by_login_name.sql
+var notifyUserByLoginNameQuery string
+
+func (q *Queries) GetNotifyUserByLoginName(ctx context.Context, shouldTriggered bool, loginName string) (user *NotifyUser, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	if shouldTriggered {
+		triggerUserProjections(ctx)
+	}
+
+	loginName = strings.ToLower(loginName)
+
+	username := loginName
+	domainIndex := strings.LastIndex(loginName, "@")
+	var domainSuffix string
+	// split between the last @ (so ignore it if the login name ends with it)
+	if domainIndex > 0 && domainIndex != len(loginName)-1 {
+		domainSuffix = loginName[domainIndex+1:]
+		username = loginName[:domainIndex]
+	}
+
+	err = q.client.QueryRowContext(ctx,
+		func(row *sql.Row) error {
+			user, err = scanNotifyUser(row)
+			return err
+		},
+		notifyUserByLoginNameQuery,
+		username,
+		domainSuffix,
+		loginName,
+		authz.GetInstance(ctx).InstanceID(),
+	)
+	return user, err
+}
+
+func (q *Queries) GetNotifyUser(ctx context.Context, shouldTriggered bool, queries ...SearchQuery) (user *NotifyUser, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	if shouldTriggered {
+		triggerUserProjections(ctx)
+	}
+
+	query, scan := prepareNotifyUserQuery()
+	for _, q := range queries {
+		query = q.toQuery(query)
+	}
+	eq := sq.Eq{
+		UserInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID(),
+	}
+	stmt, args, err := query.Where(eq).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-Err3g", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		user, err = scan(row)
+		return err
+	}, stmt, args...)
+	return user, err
+}
+
+func (q *Queries) CountUsers(ctx context.Context, queries *UserSearchQueries) (count uint64, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareCountUsersQuery()
+	eq := sq.Eq{UserInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID()}
+	stmt, args, err := queries.toQuery(query).Where(eq).ToSql()
+	if err != nil {
+		return 0, zerrors.ThrowInternal(err, "QUERY-w3Dx", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		count, err = scan(rows)
+		return err
+	}, stmt, args...)
+	if err != nil {
+		return 0, zerrors.ThrowInternal(err, "QUERY-AG4gs", "Errors.Internal")
+	}
+	return count, err
+}
+
+func (q *Queries) SearchUsers(ctx context.Context, queries *UserSearchQueries, permissionCheck domain.PermissionCheck) (*Users, error) {
+	permissionCheckV2 := PermissionV2(ctx, permissionCheck)
+	users, err := q.searchUsers(ctx, queries, permissionCheckV2)
+	if err != nil {
+		return nil, err
+	}
+	if permissionCheck != nil && !authz.GetFeatures(ctx).PermissionCheckV2 {
+		usersCheckPermission(ctx, users, permissionCheck)
+	}
+	return users, nil
+}
+
+func (q *Queries) searchUsers(ctx context.Context, queries *UserSearchQueries, permissionCheckV2 bool) (users *Users, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := queries.prepareUsersQuery(ctx, permissionCheckV2)
+	stmt, args, err := queries.toQuery(query).ToSql()
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-Dgbg2", "Errors.Query.SQLStatement")
+	}
+
+	err = q.client.QueryContext(ctx, func(rows *sql.Rows) error {
+		users, err = scan(rows)
+		return err
+	}, stmt, args...)
+	if err != nil {
+		return nil, zerrors.ThrowInternal(err, "QUERY-AG4gs", "Errors.Internal")
+	}
+	users.State, err = q.latestState(ctx, userTable)
+	return users, err
+}
+
+func (q *Queries) IsUserUnique(ctx context.Context, username, email, resourceOwner string) (isUnique bool, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
+
+	query, scan := prepareUserUniqueQuery()
+	queries := make([]SearchQuery, 0, 3)
+	if username != "" {
+		usernameQuery, err := NewUserUsernameSearchQuery(username, TextEquals)
 		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
+			return false, err
 		}
+		queries = append(queries, usernameQuery)
+	}
+	if email != "" {
+		emailQuery, err := NewUserEmailSearchQuery(email, TextEquals)
+		if err != nil {
+			return false, err
+		}
+		queries = append(queries, emailQuery)
+	}
+	if resourceOwner != "" {
+		resourceOwnerQuery, err := NewUserResourceOwnerSearchQuery(resourceOwner, TextEquals)
+		if err != nil {
+			return false, err
+		}
+		queries = append(queries, resourceOwnerQuery)
+	}
+	for _, q := range queries {
+		query = q.toQuery(query)
+	}
+	eq := sq.Eq{UserInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID()}
+	stmt, args, err := query.Where(eq).ToSql()
+	if err != nil {
+		return false, zerrors.ThrowInternal(err, "QUERY-Dg43g", "Errors.Query.SQLStatement")
+	}
 
-		if err := func() error {
-			// This ensures the transport span becomes a child of the client span
-			msgCtx := extractTraceContext(ctx, []byte(line))
+	err = q.client.QueryRowContext(ctx, func(row *sql.Row) error {
+		isUnique, err = scan(row)
+		return err
+	}, stmt, args...)
+	return isUnique, err
+}
 
-			// Create span for STDIO transport
-			msgCtx, span := s.server.instrumentation.Tracer.Start(msgCtx, "toolbox/server/mcp/stdio",
-				trace.WithSpanKind(trace.SpanKindServer),
-			)
-			defer span.End()
+//go:embed user_claimed_user_ids.sql
+var userClaimedUserIDOfOrgDomain string
 
-			var v string
-			var res any
-			v, res, err = processMcpMessage(msgCtx, []byte(line), s.server, s.protocol, "", "", nil, "")
-			if err != nil {
-				// errors during the processing of message will generate a valid MCP Error response.
-				// server can continue to run.
-				s.server.logger.ErrorContext(msgCtx, err.Error())
-				span.SetStatus(codes.Error, err.Error())
-			}
+func (q *Queries) SearchClaimedUserIDsOfOrgDomain(ctx context.Context, domain, orgID string) (userIDs []string, err error) {
+	ctx, span := tracing.NewSpan(ctx)
+	defer func() { span.EndWithError(err) }()
 
-			if v != "" {
-				s.protocol = v
-			}
-			// no responses for notifications
-			if res != nil {
-				if err = s.write(msgCtx, res); err != nil {
+	err = q.client.QueryContext(ctx,
+		func(rows *sql.Rows) error {
+			userIDs = make([]string, 0)
+			for rows.Next() {
+				var userID string
+				err := rows.Scan(&userID)
+				if err != nil {
 					return err
 				}
+				userIDs = append(userIDs, userID)
 			}
 			return nil
-		}(); err != nil {
-			return err
-		}
-	}
+		},
+		userClaimedUserIDOfOrgDomain,
+		authz.GetInstance(ctx).InstanceID(),
+		"%@"+domain,
+		orgID,
+	)
+
+	return userIDs, err
 }
 
-// readLine process each line within the input stream.
-func (s *stdioSession) readLine(ctx context.Context) (string, error) {
-	readChan := make(chan string, 1)
-	errChan := make(chan error, 1)
-	done := make(chan struct{})
-	defer close(done)
-	defer close(readChan)
-	defer close(errChan)
+func (r *UserSearchQueries) AppendMyResourceOwnerQuery(orgID string) error {
+	query, err := NewUserResourceOwnerSearchQuery(orgID, TextEquals)
+	if err != nil {
+		return err
+	}
+	r.Queries = append(r.Queries, query)
+	return nil
+}
 
-	go func() {
-		select {
-		case <-done:
-			return
-		default:
-			line, err := s.reader.ReadString('\n')
+func NewUserOrSearchQuery(values []SearchQuery) (SearchQuery, error) {
+	return NewOrQuery(values...)
+}
+
+func NewUserAndSearchQuery(values []SearchQuery) (SearchQuery, error) {
+	return NewAndQuery(values...)
+}
+
+func NewUserNotSearchQuery(value SearchQuery) (SearchQuery, error) {
+	return NewNotQuery(value)
+}
+
+func NewUserInUserIdsSearchQuery(values []string) (SearchQuery, error) {
+	return NewInTextQuery(UserIDCol, values)
+}
+
+func NewUserInUserEmailsSearchQuery(values []string) (SearchQuery, error) {
+	return NewInTextQuery(HumanEmailCol, values)
+}
+
+func NewUserResourceOwnerSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(UserResourceOwnerCol, value, comparison)
+}
+
+func NewUserUsernameSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(UserUsernameCol, value, comparison)
+}
+
+func NewUserFirstNameSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(HumanFirstNameCol, value, comparison)
+}
+
+func NewUserLastNameSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(HumanLastNameCol, value, comparison)
+}
+
+func NewUserNickNameSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(HumanNickNameCol, value, comparison)
+}
+
+func NewUserDisplayNameSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(HumanDisplayNameCol, value, comparison)
+}
+
+func NewUserEmailSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(HumanEmailCol, value, comparison)
+}
+
+func NewUserPhoneSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(HumanPhoneCol, value, comparison)
+}
+
+func NewUserVerifiedEmailSearchQuery(value string) (SearchQuery, error) {
+	return NewTextQuery(NotifyVerifiedEmailLowerCaseCol, strings.ToLower(value), TextEquals)
+}
+
+func NewUserVerifiedPhoneSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(NotifyVerifiedPhoneCol, value, comparison)
+}
+
+func NewUserStateSearchQuery(value domain.UserState) (SearchQuery, error) {
+	return NewNumberQuery(UserStateCol, value, NumberEquals)
+}
+
+func NewUserTypeSearchQuery(value domain.UserType) (SearchQuery, error) {
+	return NewNumberQuery(UserTypeCol, value, NumberEquals)
+}
+
+func NewUserPreferredLoginNameSearchQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	return NewTextQuery(userPreferredLoginNameCol, value, comparison)
+}
+
+func NewUserLoginNameExistsQuery(value string, comparison TextComparison) (SearchQuery, error) {
+	// linking queries for the sub select
+	instanceQuery, err := NewColumnComparisonQuery(LoginNameInstanceIDCol, UserInstanceIDCol, ColumnEquals)
+	if err != nil {
+		return nil, err
+	}
+	userIDQuery, err := NewColumnComparisonQuery(LoginNameUserIDCol, UserIDCol, ColumnEquals)
+	if err != nil {
+		return nil, err
+	}
+	// text query to select data from the linked sub select
+	loginNameQuery, err := NewTextQuery(LoginNameNameCol, value, comparison)
+	if err != nil {
+		return nil, err
+	}
+	// full definition of the sub select
+	subSelect, err := NewSubSelect(LoginNameUserIDCol, []SearchQuery{instanceQuery, userIDQuery, loginNameQuery})
+	if err != nil {
+		return nil, err
+	}
+	// "WHERE * IN (*)" query with subquery as list-data provider
+	return NewListQuery(
+		UserIDCol,
+		subSelect,
+		ListIn,
+	)
+}
+
+func triggerUserProjections(ctx context.Context) {
+	triggerBatch(ctx, projection.UserProjection, projection.LoginNameProjection)
+}
+
+var joinLoginNames = `LEFT JOIN LATERAL (` +
+	`SELECT` +
+	` ARRAY_AGG(ln.login_name ORDER BY ln.login_name) AS login_names,` +
+	` MAX(CASE WHEN ln.is_primary THEN ln.login_name ELSE NULL END) AS preferred_login_name` +
+	` FROM` +
+	` projections.login_names3 AS ln` +
+	` WHERE` +
+	` ln.user_id = ` + UserIDCol.identifier() +
+	` AND ln.instance_id = ` + UserInstanceIDCol.identifier() +
+	`) AS login_names ON TRUE`
+
+func scanUser(row *sql.Row) (*User, error) {
+	u := new(User)
+	var count int
+	preferredLoginName := sql.NullString{}
+
+	human, machine := sqlHuman{}, sqlMachine{}
+
+	err := row.Scan(
+		&u.ID,
+		&u.CreationDate,
+		&u.ChangeDate,
+		&u.ResourceOwner,
+		&u.Sequence,
+		&u.State,
+		&u.Type,
+		&u.Username,
+		&u.LoginNames,
+		&preferredLoginName,
+		&human.humanID,
+		&human.firstName,
+		&human.lastName,
+		&human.nickName,
+		&human.displayName,
+		&human.preferredLanguage,
+		&human.gender,
+		&human.avatarKey,
+		&human.email,
+		&human.isEmailVerified,
+		&human.phone,
+		&human.isPhoneVerified,
+		&human.passwordChangeRequired,
+		&human.passwordChanged,
+		&human.mfaInitSkipped,
+		&machine.machineID,
+		&machine.name,
+		&machine.description,
+		&machine.encodedSecret,
+		&machine.accessTokenType,
+		&count,
+	)
+
+	if err != nil || count != 1 {
+		if errors.Is(err, sql.ErrNoRows) || count != 1 {
+			return nil, zerrors.ThrowNotFound(err, "QUERY-Dfbg2", "Errors.User.NotFound")
+		}
+		return nil, zerrors.ThrowInternal(err, "QUERY-Bgah2", "Errors.Internal")
+	}
+
+	u.PreferredLoginName = preferredLoginName.String
+
+	if human.humanID.Valid {
+		u.Human = &Human{
+			FirstName:              human.firstName.String,
+			LastName:               human.lastName.String,
+			NickName:               human.nickName.String,
+			DisplayName:            human.displayName.String,
+			AvatarKey:              human.avatarKey.String,
+			PreferredLanguage:      language.Make(human.preferredLanguage.String),
+			Gender:                 domain.Gender(human.gender.Int32),
+			Email:                  domain.EmailAddress(human.email.String),
+			IsEmailVerified:        human.isEmailVerified.Bool,
+			Phone:                  domain.PhoneNumber(human.phone.String),
+			IsPhoneVerified:        human.isPhoneVerified.Bool,
+			PasswordChangeRequired: human.passwordChangeRequired.Bool,
+			PasswordChanged:        human.passwordChanged.Time,
+			MFAInitSkipped:         human.mfaInitSkipped.Time,
+		}
+	} else if machine.machineID.Valid {
+		u.Machine = &Machine{
+			Name:            machine.name.String,
+			Description:     machine.description.String,
+			EncodedSecret:   machine.encodedSecret.String,
+			AccessTokenType: domain.OIDCTokenType(machine.accessTokenType.Int32),
+		}
+	}
+	return u, nil
+}
+
+func prepareProfileQuery() (sq.SelectBuilder, func(*sql.Row) (*Profile, error)) {
+	return sq.Select(
+			UserIDCol.identifier(),
+			UserCreationDateCol.identifier(),
+			UserChangeDateCol.identifier(),
+			UserResourceOwnerCol.identifier(),
+			UserSequenceCol.identifier(),
+			HumanUserIDCol.identifier(),
+			HumanFirstNameCol.identifier(),
+			HumanLastNameCol.identifier(),
+			HumanNickNameCol.identifier(),
+			HumanDisplayNameCol.identifier(),
+			HumanPreferredLanguageCol.identifier(),
+			HumanGenderCol.identifier(),
+			HumanAvatarURLCol.identifier()).
+			From(userTable.identifier()).
+			LeftJoin(join(HumanUserIDCol, UserIDCol)).
+			PlaceholderFormat(sq.Dollar),
+		func(row *sql.Row) (*Profile, error) {
+			p := new(Profile)
+
+			humanID := sql.NullString{}
+			firstName := sql.NullString{}
+			lastName := sql.NullString{}
+			nickName := sql.NullString{}
+			displayName := sql.NullString{}
+			preferredLanguage := sql.NullString{}
+			gender := sql.NullInt32{}
+			avatarKey := sql.NullString{}
+			err := row.Scan(
+				&p.ID,
+				&p.CreationDate,
+				&p.ChangeDate,
+				&p.ResourceOwner,
+				&p.Sequence,
+				&humanID,
+				&firstName,
+				&lastName,
+				&nickName,
+				&displayName,
+				&preferredLanguage,
+				&gender,
+				&avatarKey,
+			)
 			if err != nil {
-				select {
-				case errChan <- err:
-				case <-done:
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-HNhb3", "Errors.User.NotFound")
 				}
+				return nil, zerrors.ThrowInternal(err, "QUERY-Rfheq", "Errors.Internal")
+			}
+			if !humanID.Valid {
+				return nil, zerrors.ThrowPreconditionFailed(nil, "QUERY-WLTce", "Errors.User.NotHuman")
+			}
+
+			p.FirstName = firstName.String
+			p.LastName = lastName.String
+			p.NickName = nickName.String
+			p.DisplayName = displayName.String
+			p.AvatarKey = avatarKey.String
+			p.PreferredLanguage = language.Make(preferredLanguage.String)
+			p.Gender = domain.Gender(gender.Int32)
+
+			return p, nil
+		}
+}
+
+func prepareEmailQuery() (sq.SelectBuilder, func(*sql.Row) (*Email, error)) {
+	return sq.Select(
+			UserIDCol.identifier(),
+			UserCreationDateCol.identifier(),
+			UserChangeDateCol.identifier(),
+			UserResourceOwnerCol.identifier(),
+			UserSequenceCol.identifier(),
+			HumanUserIDCol.identifier(),
+			HumanEmailCol.identifier(),
+			HumanIsEmailVerifiedCol.identifier()).
+			From(userTable.identifier()).
+			LeftJoin(join(HumanUserIDCol, UserIDCol)).
+			PlaceholderFormat(sq.Dollar),
+		func(row *sql.Row) (*Email, error) {
+			e := new(Email)
+
+			humanID := sql.NullString{}
+			email := sql.NullString{}
+			isEmailVerified := sql.NullBool{}
+
+			err := row.Scan(
+				&e.ID,
+				&e.CreationDate,
+				&e.ChangeDate,
+				&e.ResourceOwner,
+				&e.Sequence,
+				&humanID,
+				&email,
+				&isEmailVerified,
+			)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-Hms2s", "Errors.User.NotFound")
+				}
+				return nil, zerrors.ThrowInternal(err, "QUERY-Nu42d", "Errors.Internal")
+			}
+			if !humanID.Valid {
+				return nil, zerrors.ThrowPreconditionFailed(nil, "QUERY-pt7HY", "Errors.User.NotHuman")
+			}
+
+			e.Email = domain.EmailAddress(email.String)
+			e.IsVerified = isEmailVerified.Bool
+
+			return e, nil
+		}
+}
+
+func preparePhoneQuery() (sq.SelectBuilder, func(*sql.Row) (*Phone, error)) {
+	return sq.Select(
+			UserIDCol.identifier(),
+			UserCreationDateCol.identifier(),
+			UserChangeDateCol.identifier(),
+			UserResourceOwnerCol.identifier(),
+			UserSequenceCol.identifier(),
+			HumanUserIDCol.identifier(),
+			HumanPhoneCol.identifier(),
+			HumanIsPhoneVerifiedCol.identifier()).
+			From(userTable.identifier()).
+			LeftJoin(join(HumanUserIDCol, UserIDCol)).
+			PlaceholderFormat(sq.Dollar),
+		func(row *sql.Row) (*Phone, error) {
+			e := new(Phone)
+
+			humanID := sql.NullString{}
+			phone := sql.NullString{}
+			isPhoneVerified := sql.NullBool{}
+
+			err := row.Scan(
+				&e.ID,
+				&e.CreationDate,
+				&e.ChangeDate,
+				&e.ResourceOwner,
+				&e.Sequence,
+				&humanID,
+				&phone,
+				&isPhoneVerified,
+			)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, zerrors.ThrowNotFound(err, "QUERY-DAvb3", "Errors.User.NotFound")
+				}
+				return nil, zerrors.ThrowInternal(err, "QUERY-Bmf2h", "Errors.Internal")
+			}
+			if !humanID.Valid {
+				return nil, zerrors.ThrowPreconditionFailed(nil, "QUERY-hliQl", "Errors.User.NotHuman")
+			}
+
+			e.Phone = phone.String
+			e.IsVerified = isPhoneVerified.Bool
+
+			return e, nil
+		}
+}
+
+func prepareNotifyUserQuery() (sq.SelectBuilder, func(*sql.Row) (*NotifyUser, error)) {
+	return sq.Select(
+			UserIDCol.identifier(),
+			UserCreationDateCol.identifier(),
+			UserChangeDateCol.identifier(),
+			UserResourceOwnerCol.identifier(),
+			UserSequenceCol.identifier(),
+			UserStateCol.identifier(),
+			UserTypeCol.identifier(),
+			UserUsernameCol.identifier(),
+			userLoginNamesListCol.identifier(),
+			userPreferredLoginNameCol.identifier(),
+			HumanUserIDCol.identifier(),
+			HumanFirstNameCol.identifier(),
+			HumanLastNameCol.identifier(),
+			HumanNickNameCol.identifier(),
+			HumanDisplayNameCol.identifier(),
+			HumanPreferredLanguageCol.identifier(),
+			HumanGenderCol.identifier(),
+			HumanAvatarURLCol.identifier(),
+			NotifyUserIDCol.identifier(),
+			NotifyEmailCol.identifier(),
+			NotifyVerifiedEmailCol.identifier(),
+			NotifyPhoneCol.identifier(),
+			NotifyVerifiedPhoneCol.identifier(),
+			NotifyPasswordSetCol.identifier(),
+			countColumn.identifier(),
+		).
+			From(userTable.identifier()).
+			LeftJoin(join(HumanUserIDCol, UserIDCol)).
+			LeftJoin(join(NotifyUserIDCol, UserIDCol)).
+			JoinClause(joinLoginNames).
+			PlaceholderFormat(sq.Dollar),
+		scanNotifyUser
+}
+
+func scanNotifyUser(row *sql.Row) (*NotifyUser, error) {
+	u := new(NotifyUser)
+	var count int
+	loginNames := database.TextArray[string]{}
+	preferredLoginName := sql.NullString{}
+
+	humanID := sql.NullString{}
+	firstName := sql.NullString{}
+	lastName := sql.NullString{}
+	nickName := sql.NullString{}
+	displayName := sql.NullString{}
+	preferredLanguage := sql.NullString{}
+	gender := sql.NullInt32{}
+	avatarKey := sql.NullString{}
+
+	notifyUserID := sql.NullString{}
+	notifyEmail := sql.NullString{}
+	notifyVerifiedEmail := sql.NullString{}
+	notifyPhone := sql.NullString{}
+	notifyVerifiedPhone := sql.NullString{}
+	notifyPasswordSet := sql.NullBool{}
+
+	err := row.Scan(
+		&u.ID,
+		&u.CreationDate,
+		&u.ChangeDate,
+		&u.ResourceOwner,
+		&u.Sequence,
+		&u.State,
+		&u.Type,
+		&u.Username,
+		&loginNames,
+		&preferredLoginName,
+		&humanID,
+		&firstName,
+		&lastName,
+		&nickName,
+		&displayName,
+		&preferredLanguage,
+		&gender,
+		&avatarKey,
+		&notifyUserID,
+		&notifyEmail,
+		&notifyVerifiedEmail,
+		&notifyPhone,
+		&notifyVerifiedPhone,
+		&notifyPasswordSet,
+		&count,
+	)
+
+	if err != nil || count != 1 {
+		if errors.Is(err, sql.ErrNoRows) || count != 1 {
+			return nil, zerrors.ThrowNotFound(err, "QUERY-Dgqd2", "Errors.User.NotFound")
+		}
+		return nil, zerrors.ThrowInternal(err, "QUERY-Dbwsg", "Errors.Internal")
+	}
+
+	if !notifyUserID.Valid {
+		return nil, zerrors.ThrowPreconditionFailed(nil, "QUERY-Sfw3f", "Errors.User.NotFound")
+	}
+
+	u.LoginNames = loginNames
+	if preferredLoginName.Valid {
+		u.PreferredLoginName = preferredLoginName.String
+	}
+	if humanID.Valid {
+		u.FirstName = firstName.String
+		u.LastName = lastName.String
+		u.NickName = nickName.String
+		u.DisplayName = displayName.String
+		u.AvatarKey = avatarKey.String
+		u.PreferredLanguage = language.Make(preferredLanguage.String)
+		u.Gender = domain.Gender(gender.Int32)
+	}
+	u.LastEmail = notifyEmail.String
+	u.VerifiedEmail = notifyVerifiedEmail.String
+	u.LastPhone = notifyPhone.String
+	u.VerifiedPhone = notifyVerifiedPhone.String
+	u.PasswordSet = notifyPasswordSet.Bool
+
+	return u, nil
+}
+
+func prepareCountUsersQuery() (sq.SelectBuilder, func(*sql.Rows) (uint64, error)) {
+	return sq.Select(countColumn.identifier()).
+			From(userTable.identifier()).
+			LeftJoin(join(HumanUserIDCol, UserIDCol)).
+			LeftJoin(join(MachineUserIDCol, UserIDCol)).
+			PlaceholderFormat(sq.Dollar),
+		func(rows *sql.Rows) (count uint64, err error) {
+			// the count is implemented as a windowing function,
+			// if it is zero, no row is returned at all.
+			if !rows.Next() {
 				return
 			}
-			select {
-			case readChan <- line:
-			case <-done:
-			}
+
+			err = rows.Scan(&count)
 			return
 		}
-	}()
-
-	select {
-	// if context is cancelled, return an empty string
-	case <-ctx.Done():
-		return "", ctx.Err()
-	// return error if error is found
-	case err := <-errChan:
-		return "", err
-	// return line if successful
-	case line := <-readChan:
-		return line, nil
-	}
 }
 
-// write writes to stdout with response to client
-func (s *stdioSession) write(_ context.Context, response any) error {
-	res, err := json.Marshal(response)
-	if err != nil {
-		return fmt.Errorf("failed to marshal response to JSON: %w", err)
-	}
+func prepareUserUniqueQuery() (sq.SelectBuilder, func(*sql.Row) (bool, error)) {
+	return sq.Select(
+			UserIDCol.identifier(),
+			UserStateCol.identifier(),
+			UserUsernameCol.identifier(),
+			HumanUserIDCol.identifier(),
+			HumanEmailCol.identifier(),
+			HumanIsEmailVerifiedCol.identifier()).
+			From(userTable.identifier()).
+			LeftJoin(join(HumanUserIDCol, UserIDCol)).
+			PlaceholderFormat(sq.Dollar),
+		func(row *sql.Row) (bool, error) {
+			userID := sql.NullString{}
+			state := sql.NullInt32{}
+			username := sql.NullString{}
+			humanID := sql.NullString{}
+			email := sql.NullString{}
+			isEmailVerified := sql.NullBool{}
 
-	_, err = fmt.Fprintf(s.writer, "%s\n", res)
-	return err
-}
-
-// mcpRouter creates a router that represents the routes under /mcp
-func mcpRouter(s *Server) (chi.Router, error) {
-	r := chi.NewRouter()
-
-	r.Use(middleware.AllowContentType("application/json", "application/json-rpc", "application/jsonrequest"))
-	r.Use(middleware.StripSlashes)
-	r.Use(render.SetContentType(render.ContentTypeJSON))
-	r.Use(mcpAuthMiddleware(s))
-
-	r.Get("/sse", func(w http.ResponseWriter, r *http.Request) { sseHandler(s, w, r) })
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) { methodNotAllowed(s, w, r) })
-	r.Post("/", func(w http.ResponseWriter, r *http.Request) { httpHandler(s, w, r) })
-	r.Delete("/", func(w http.ResponseWriter, r *http.Request) {})
-
-	r.Route("/{toolsetName}", func(r chi.Router) {
-		r.Get("/sse", func(w http.ResponseWriter, r *http.Request) { sseHandler(s, w, r) })
-		r.Get("/", func(w http.ResponseWriter, r *http.Request) { methodNotAllowed(s, w, r) })
-		r.Post("/", func(w http.ResponseWriter, r *http.Request) { httpHandler(s, w, r) })
-		r.Delete("/", func(w http.ResponseWriter, r *http.Request) {})
-	})
-
-	return r, nil
-}
-
-// sseHandler handles sse initialization and message.
-func sseHandler(s *Server, w http.ResponseWriter, r *http.Request) {
-	sessionStart := time.Now()
-	ctx, span := s.instrumentation.Tracer.Start(r.Context(), "toolbox/server/mcp/sse",
-		trace.WithSpanKind(trace.SpanKindServer),
-	)
-	r = r.WithContext(ctx)
-
-	sessionId := uuid.New().String()
-	toolsetName := chi.URLParam(r, "toolsetName")
-	s.logger.DebugContext(ctx, fmt.Sprintf("toolset name: %s", toolsetName))
-	span.SetAttributes(attribute.String("mcp.session.id", sessionId))
-	span.SetAttributes(attribute.String("toolset.name", toolsetName))
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	// Define attributes for session metrics
-	networkProtocolVersion := fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
-	sessionAttrs := []attribute.KeyValue{
-		attribute.String("network.transport", "tcp"),
-		attribute.String("network.protocol.name", "http"),
-		attribute.String("network.protocol.version", networkProtocolVersion),
-		attribute.String("mcp.protocol.version", "2024-11-05"),
-		attribute.String("toolset.name", toolsetName),
-	}
-
-	// Increment active sessions counter
-	s.instrumentation.McpActiveSessions.Add(ctx, 1, metric.WithAttributes(sessionAttrs...))
-
-	var err error
-	defer func() {
-		// Decrement active sessions counter
-		s.instrumentation.McpActiveSessions.Add(ctx, -1, metric.WithAttributes(sessionAttrs...))
-
-		// Record session duration
-		sessionDuration := time.Since(sessionStart).Seconds()
-		durationAttrs := make([]attribute.KeyValue, len(sessionAttrs))
-		copy(durationAttrs, sessionAttrs)
-		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
-			durationAttrs = append(durationAttrs, attribute.String("error.type", err.Error()))
-		}
-		s.instrumentation.McpSessionDuration.Record(ctx, sessionDuration, metric.WithAttributes(durationAttrs...))
-		span.End()
-	}()
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		err = fmt.Errorf("unable to retrieve flusher for sse")
-		s.logger.DebugContext(ctx, err.Error())
-		_ = render.Render(w, r, newErrResponse(err, http.StatusInternalServerError))
-	}
-	session := &sseSession{
-		writer:     w,
-		flusher:    flusher,
-		done:       make(chan struct{}),
-		eventQueue: make(chan string, 100),
-	}
-	s.sseManager.add(sessionId, session)
-	defer s.sseManager.remove(sessionId)
-
-	// https scheme formatting if (forwarded) request is a TLS request
-	proto := r.Header.Get("X-Forwarded-Proto")
-	if proto == "" {
-		if r.TLS == nil {
-			proto = "http"
-		} else {
-			proto = "https"
-		}
-	}
-
-	// send initial endpoint event
-	toolsetURL := ""
-	if toolsetName != "" {
-		toolsetURL = fmt.Sprintf("/%s", toolsetName)
-	}
-	messageEndpoint := fmt.Sprintf("%s://%s/mcp%s?sessionId=%s", proto, r.Host, toolsetURL, sessionId)
-	s.logger.DebugContext(ctx, fmt.Sprintf("sending endpoint event: %s", messageEndpoint))
-	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", messageEndpoint)
-	flusher.Flush()
-
-	clientClose := r.Context().Done()
-	for {
-		select {
-		// Ensure that only a single responses are written at once
-		case event := <-session.eventQueue:
-			fmt.Fprint(w, event)
-			s.logger.DebugContext(ctx, fmt.Sprintf("sending event: %s", event))
-			flusher.Flush()
-			// channel for client disconnection
-		case <-clientClose:
-			close(session.done)
-			s.logger.DebugContext(ctx, "client disconnected")
-			return
-		}
-	}
-}
-
-// methodNotAllowed handles all mcp messages.
-func methodNotAllowed(s *Server, w http.ResponseWriter, r *http.Request) {
-	err := fmt.Errorf("toolbox does not support streaming in streamable HTTP transport")
-	s.logger.DebugContext(r.Context(), err.Error())
-	_ = render.Render(w, r, newErrResponse(err, http.StatusMethodNotAllowed))
-}
-
-// httpHandler handles all mcp messages.
-func httpHandler(s *Server, w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	ctx := r.Context()
-	ctx = util.WithLogger(ctx, s.logger)
-
-	// Read body first so we can extract trace context
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		// Generate a new uuid if unable to decode
-		id := uuid.New().String()
-		s.logger.DebugContext(ctx, err.Error())
-		render.JSON(w, r, jsonrpc.NewError(id, jsonrpc.PARSE_ERROR, err.Error(), nil))
-		return
-	}
-
-	// This ensures the transport span becomes a child of the client span
-	ctx = extractTraceContext(ctx, body)
-
-	// Create span for HTTP transport
-	ctx, span := s.instrumentation.Tracer.Start(ctx, "toolbox/server/mcp/http",
-		trace.WithSpanKind(trace.SpanKindServer),
-	)
-	r = r.WithContext(ctx)
-
-	var sessionId, protocolVersion string
-	var session *sseSession
-
-	// check if client connects via sse
-	// v2024-11-05 supports http with sse
-	paramSessionId := r.URL.Query().Get("sessionId")
-	if paramSessionId != "" {
-		sessionId = paramSessionId
-		protocolVersion = v20241105.PROTOCOL_VERSION
-		var ok bool
-		session, ok = s.sseManager.get(sessionId)
-		if !ok {
-			err := fmt.Errorf("sse session not available")
-			s.logger.DebugContext(ctx, err.Error())
-			_ = render.Render(w, r, newErrResponse(err, http.StatusBadRequest))
-			return
-		}
-	}
-
-	// check if client have `Mcp-Session-Id` header
-	// `Mcp-Session-Id` is only set for v2025-03-26 in Toolbox
-	headerSessionId := r.Header.Get("Mcp-Session-Id")
-	if headerSessionId != "" {
-		protocolVersion = v20250326.PROTOCOL_VERSION
-	}
-
-	// check if client have `MCP-Protocol-Version` header
-	// Only supported for v2025-06-18+.
-	headerProtocolVersion := r.Header.Get("MCP-Protocol-Version")
-	if headerProtocolVersion != "" {
-		if !mcp.VerifyProtocolVersion(headerProtocolVersion) {
-			err := fmt.Errorf("invalid protocol version: %s", headerProtocolVersion)
-			_ = render.Render(w, r, newErrResponse(err, http.StatusBadRequest))
-			return
-		}
-		protocolVersion = headerProtocolVersion
-	}
-
-	toolsetName := chi.URLParam(r, "toolsetName")
-	promptsetName := chi.URLParam(r, "promptsetName")
-	s.logger.DebugContext(ctx, fmt.Sprintf("toolset name: %s", toolsetName))
-	span.SetAttributes(attribute.String("toolset.name", toolsetName))
-
-	defer func() {
-		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
-		}
-		span.End()
-	}()
-
-	networkProtocolVersion := fmt.Sprintf("%d.%d", r.ProtoMajor, r.ProtoMinor)
-
-	v, res, err := processMcpMessage(ctx, body, s, protocolVersion, toolsetName, promptsetName, r.Header, networkProtocolVersion)
-	if err != nil {
-		s.logger.DebugContext(ctx, fmt.Errorf("error processing message: %w", err).Error())
-	}
-
-	// notifications will return empty string
-	if res == nil {
-		// Notifications do not expect a response
-		// Toolbox doesn't do anything with notifications yet
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-
-	// for v20250326, add the `Mcp-Session-Id` header
-	if v == v20250326.PROTOCOL_VERSION {
-		sessionId = uuid.New().String()
-		w.Header().Set("Mcp-Session-Id", sessionId)
-	}
-
-	if session != nil {
-		// queue sse event
-		eventData, _ := json.Marshal(res)
-		select {
-		case session.eventQueue <- fmt.Sprintf("event: message\ndata: %s\n\n", eventData):
-			s.logger.DebugContext(ctx, "event queue successful")
-		case <-session.done:
-			s.logger.DebugContext(ctx, "session is close")
-		default:
-			s.logger.DebugContext(ctx, "unable to add to event queue")
-		}
-	}
-	if rpcResponse, ok := res.(jsonrpc.JSONRPCError); ok {
-		code := rpcResponse.Error.Code
-		switch code {
-		case jsonrpc.INTERNAL_ERROR:
-			// Map Internal RPC Error (-32603) to HTTP 500
-			w.WriteHeader(http.StatusInternalServerError)
-		case jsonrpc.INVALID_REQUEST:
-			var clientServerErr *util.ClientServerError
-			if errors.As(err, &clientServerErr) {
-				w.WriteHeader(clientServerErr.Code)
-			}
-		}
-	}
-
-	// send HTTP response
-	render.JSON(w, r, res)
-}
-
-// processMcpMessage process the messages received from clients
-func processMcpMessage(ctx context.Context, body []byte, s *Server, protocolVersion string, toolsetName string, promptsetName string, header http.Header, networkProtocolVersion string) (string, any, error) {
-	operationStart := time.Now()
-
-	logger, err := util.LoggerFromContext(ctx)
-	if err != nil {
-		return "", jsonrpc.NewError("", jsonrpc.INTERNAL_ERROR, err.Error(), nil), err
-	}
-
-	// Generic baseMessage could either be a JSONRPCNotification or JSONRPCRequest
-	var baseMessage jsonrpc.BaseMessage
-	if err = util.DecodeJSON(bytes.NewBuffer(body), &baseMessage); err != nil {
-		// Generate a new uuid if unable to decode
-		id := uuid.New().String()
-
-		// check if user is sending a batch request
-		var a []any
-		unmarshalErr := json.Unmarshal(body, &a)
-		if unmarshalErr == nil {
-			err = fmt.Errorf("not supporting batch requests")
-			return "", jsonrpc.NewError(id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
-		}
-
-		return "", jsonrpc.NewError(id, jsonrpc.PARSE_ERROR, err.Error(), nil), err
-	}
-
-	// Check if method is present
-	if baseMessage.Method == "" {
-		err = fmt.Errorf("method not found")
-		return "", jsonrpc.NewError(baseMessage.Id, jsonrpc.METHOD_NOT_FOUND, err.Error(), nil), err
-	}
-	logger.DebugContext(ctx, fmt.Sprintf("method is: %s", baseMessage.Method))
-
-	// Check for JSON-RPC 2.0
-	if baseMessage.Jsonrpc != jsonrpc.JSONRPC_VERSION {
-		err = fmt.Errorf("invalid json-rpc version")
-		return "", jsonrpc.NewError(baseMessage.Id, jsonrpc.INVALID_REQUEST, err.Error(), nil), err
-	}
-
-	// Create method-specific span with semantic conventions
-	// Note: Trace context is already extracted and set in ctx by the caller
-	ctx, span := s.instrumentation.Tracer.Start(ctx, baseMessage.Method,
-		trace.WithSpanKind(trace.SpanKindServer),
-	)
-	defer span.End()
-
-	// Determine network transport and protocol based on header presence
-	networkTransport := "pipe" // default for stdio
-	networkProtocolName := "stdio"
-	if header != nil {
-		networkTransport = "tcp" // HTTP/SSE transport
-		networkProtocolName = "http"
-	}
-
-	var metricErrorType string
-	genAIAttrs := &util.GenAIMetricAttrs{
-		NetworkProtocolName:    networkProtocolName,
-		NetworkProtocolVersion: networkProtocolVersion,
-	}
-	ctx = util.WithGenAIMetricAttrs(ctx, genAIAttrs)
-
-	// Record operation duration metric on function exit
-	defer func() {
-		operationDuration := time.Since(operationStart).Seconds()
-		durationAttrs := []attribute.KeyValue{
-			attribute.String("mcp.method.name", baseMessage.Method),
-			attribute.String("network.transport", networkTransport),
-			attribute.String("network.protocol.name", networkProtocolName),
-			attribute.String("toolset.name", toolsetName),
-		}
-		if protocolVersion != "" {
-			durationAttrs = append(durationAttrs, attribute.String("mcp.protocol.version", protocolVersion))
-		}
-		if networkProtocolVersion != "" {
-			durationAttrs = append(durationAttrs, attribute.String("network.protocol.version", networkProtocolVersion))
-		}
-		// Add gen_ai attributes populated by method handlers
-		if genAIAttrs.OperationName != "" {
-			durationAttrs = append(durationAttrs, attribute.String("gen_ai.operation.name", genAIAttrs.OperationName))
-		}
-		if genAIAttrs.ToolName != "" {
-			durationAttrs = append(durationAttrs, attribute.String("gen_ai.tool.name", genAIAttrs.ToolName))
-		}
-		if genAIAttrs.PromptName != "" {
-			durationAttrs = append(durationAttrs, attribute.String("gen_ai.prompt.name", genAIAttrs.PromptName))
-		}
-		if metricErrorType != "" {
-			durationAttrs = append(durationAttrs, attribute.String("error.type", metricErrorType))
-		}
-		s.instrumentation.McpOperationDuration.Record(ctx, operationDuration, metric.WithAttributes(durationAttrs...))
-	}()
-
-	// Set required semantic attributes for span according to OTEL MCP semcov
-	// ref: https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/#server
-	span.SetAttributes(
-		attribute.String("mcp.method.name", baseMessage.Method),
-		attribute.String("network.transport", networkTransport),
-		attribute.String("network.protocol.name", networkProtocolName),
-	)
-
-	// Set network protocol version if available
-	if networkProtocolVersion != "" {
-		span.SetAttributes(attribute.String("network.protocol.version", networkProtocolVersion))
-	}
-
-	// Set MCP protocol version if available
-	if protocolVersion != "" {
-		span.SetAttributes(attribute.String("mcp.protocol.version", protocolVersion))
-	}
-
-	// Set request ID
-	if baseMessage.Id != nil {
-		span.SetAttributes(attribute.String("jsonrpc.request.id", fmt.Sprintf("%v", baseMessage.Id)))
-	}
-
-	// Set toolset name
-	span.SetAttributes(attribute.String("toolset.name", toolsetName))
-
-	// Check if message is a notification
-	if baseMessage.Id == nil {
-		err := mcp.NotificationHandler(ctx, body)
-		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
-		}
-		return "", nil, err
-	}
-
-	// Add instrumentation to context for use in method handlers
-	ctx = util.WithInstrumentation(ctx, s.instrumentation)
-
-	// Process the method
-	switch baseMessage.Method {
-	case mcputil.INITIALIZE:
-		result, version, err := mcp.InitializeResponse(ctx, baseMessage.Id, body, s.version)
-		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
-			if rpcErr, ok := result.(jsonrpc.JSONRPCError); ok {
-				metricErrorType = rpcErr.Error.String()
-				span.SetAttributes(attribute.String("error.type", metricErrorType))
-			}
-			return "", result, err
-		}
-		span.SetAttributes(attribute.String("mcp.protocol.version", version))
-		return version, result, err
-	default:
-		toolset, ok := s.ResourceMgr.GetToolset(toolsetName)
-		if !ok {
-			err := fmt.Errorf("toolset does not exist")
-			rpcErr := jsonrpc.NewError(baseMessage.Id, jsonrpc.INVALID_REQUEST, err.Error(), nil)
-			metricErrorType = rpcErr.Error.String()
-			span.SetStatus(codes.Error, err.Error())
-			span.SetAttributes(attribute.String("error.type", metricErrorType))
-			return "", rpcErr, err
-		}
-		promptset, ok := s.ResourceMgr.GetPromptset(promptsetName)
-		if !ok {
-			err := fmt.Errorf("promptset does not exist")
-			rpcErr := jsonrpc.NewError(baseMessage.Id, jsonrpc.INVALID_REQUEST, err.Error(), nil)
-			metricErrorType = rpcErr.Error.String()
-			span.SetStatus(codes.Error, err.Error())
-			span.SetAttributes(attribute.String("error.type", metricErrorType))
-			return "", rpcErr, err
-		}
-		result, err := mcp.ProcessMethod(ctx, protocolVersion, baseMessage.Id, baseMessage.Method, toolset, promptset, s.ResourceMgr, body, header)
-		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
-			// Set error.type based on JSON-RPC error code
-			if rpcErr, ok := result.(jsonrpc.JSONRPCError); ok {
-				metricErrorType = rpcErr.Error.String()
-				span.SetAttributes(attribute.Int("jsonrpc.error.code", rpcErr.Error.Code))
-				span.SetAttributes(attribute.String("error.type", metricErrorType))
-			}
-		}
-		return "", result, err
-	}
-}
-
-type prmResponse struct {
-	Resource               string   `json:"resource"`
-	AuthorizationServers   []string `json:"authorization_servers"`
-	ScopesSupported        []string `json:"scopes_supported,omitempty"`
-	BearerMethodsSupported []string `json:"bearer_methods_supported"`
-}
-
-// prmHandler generates the Protected Resource Metadata (PRM) file for MCP Authorization.
-func prmHandler(s *Server, w http.ResponseWriter, r *http.Request) {
-	var server string
-	scopes := []string{}
-	for _, authSvc := range s.ResourceMgr.GetAuthServiceMap() {
-		cfg := authSvc.ToConfig()
-		if genCfg, ok := cfg.(generic.Config); ok {
-			if genCfg.McpEnabled {
-				server = genCfg.AuthorizationServer
-				if genCfg.ScopesRequired != nil {
-					scopes = genCfg.ScopesRequired
+			err := row.Scan(
+				&userID,
+				&state,
+				&username,
+				&humanID,
+				&email,
+				&isEmailVerified,
+			)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return true, nil
 				}
-				break
+				return false, zerrors.ThrowInternal(err, "QUERY-Cxces", "Errors.Internal")
 			}
+			return !userID.Valid, nil
 		}
+}
+
+// prepareUsersQuery creates the select query for searching users and returns a matching scan function.
+// Permissions, filters and sorting are applied in a `SELECT FROM` distinct sub-select.
+// The count over window function and limit are applied in the outer query.
+// It is not possible to pass more filters to the returned query, as they need to be applied in the sub-select.
+func (q *UserSearchQueries) prepareUsersQuery(ctx context.Context, permissionCheckV2 bool) (sq.SelectBuilder, func(*sql.Rows) (*Users, error)) {
+	if q.SortingColumn.isZero() {
+		q.SortingColumn = UserIDCol
 	}
 
-	res := prmResponse{
-		Resource:               s.toolboxUrl,
-		AuthorizationServers:   []string{server},
-		ScopesSupported:        scopes,
-		BearerMethodsSupported: []string{"header"},
-	}
+	// start building the sub-select
+	query := sq.Select(
+		UserIDCol.identifier(),
+		UserCreationDateCol.identifier(),
+		UserChangeDateCol.identifier(),
+		UserResourceOwnerCol.identifier(),
+		UserSequenceCol.identifier(),
+		UserStateCol.identifier(),
+		UserTypeCol.identifier(),
+		UserUsernameCol.identifier(),
+		userLoginNamesListCol.identifier(),
+		userPreferredLoginNameCol.identifier(),
+		HumanUserIDCol.identifier(),
+		HumanFirstNameCol.identifier(),
+		HumanLastNameCol.identifier(),
+		HumanNickNameCol.identifier(),
+		HumanDisplayNameCol.identifier(),
+		HumanPreferredLanguageCol.identifier(),
+		HumanGenderCol.identifier(),
+		HumanAvatarURLCol.identifier(),
+		HumanEmailCol.identifier(),
+		HumanIsEmailVerifiedCol.identifier(),
+		HumanPhoneCol.identifier(),
+		HumanIsPhoneVerifiedCol.identifier(),
+		HumanPasswordChangeRequiredCol.identifier(),
+		HumanPasswordChangedCol.identifier(),
+		HumanMFAInitSkippedCol.identifier(),
+		MachineUserIDCol.identifier(),
+		MachineNameCol.identifier(),
+		MachineDescriptionCol.identifier(),
+		MachineSecretCol.identifier(),
+		MachineAccessTokenTypeCol.identifier(),
+		q.SortingColumn.orderBy()).
+		Distinct().
+		From(userTable.identifier()).
+		LeftJoin(join(HumanUserIDCol, UserIDCol)).
+		LeftJoin(join(MachineUserIDCol, UserIDCol)).
+		LeftJoin(join(UserMetadataUserIDCol, UserIDCol)).
+		JoinClause(joinLoginNames).
+		Where(sq.Eq{UserInstanceIDCol.identifier(): authz.GetInstance(ctx).InstanceID()})
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(res); err != nil {
-		s.logger.ErrorContext(r.Context(), fmt.Sprintf("Failed to encode PRM response: %v", err))
-		http.Error(w, "Failed to encode PRM response", http.StatusInternalServerError)
+	query = userPermissionCheckV2(ctx, query, permissionCheckV2, q.Queries)
+	// apply requested filters
+	for _, q := range q.Queries {
+		query = q.toQuery(query)
 	}
+	// apply sorting in the sub-select,because the identifier is fully qualified.
+	query = q.consumeSorting(query)
+
+	// set the sub-select as source for the outer query
+	query = sq.Select(
+		"*",
+		countColumn.identifier(),
+	).FromSelect(query, "results")
+
+	// apply limit and offset in the outer query
+	query = q.toQuery(query)
+	query = query.PlaceholderFormat(sq.Dollar)
+
+	return query, func(rows *sql.Rows) (*Users, error) {
+		users := make([]*User, 0)
+		var count uint64
+		for rows.Next() {
+			u := new(User)
+			loginNames := database.TextArray[string]{}
+			preferredLoginName := sql.NullString{}
+
+			human, machine := sqlHuman{}, sqlMachine{}
+			var orderByValue any
+
+			err := rows.Scan(
+				&u.ID,
+				&u.CreationDate,
+				&u.ChangeDate,
+				&u.ResourceOwner,
+				&u.Sequence,
+				&u.State,
+				&u.Type,
+				&u.Username,
+				&loginNames,
+				&preferredLoginName,
+
+				&human.humanID,
+				&human.firstName,
+				&human.lastName,
+				&human.nickName,
+				&human.displayName,
+				&human.preferredLanguage,
+				&human.gender,
+				&human.avatarKey,
+				&human.email,
+				&human.isEmailVerified,
+				&human.phone,
+				&human.isPhoneVerified,
+				&human.passwordChangeRequired,
+				&human.passwordChanged,
+				&human.mfaInitSkipped,
+
+				&machine.machineID,
+				&machine.name,
+				&machine.description,
+				&machine.encodedSecret,
+				&machine.accessTokenType,
+
+				&orderByValue,
+				&count,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			u.LoginNames = loginNames
+			if preferredLoginName.Valid {
+				u.PreferredLoginName = preferredLoginName.String
+			}
+
+			if human.humanID.Valid {
+				u.Human = &Human{
+					FirstName:              human.firstName.String,
+					LastName:               human.lastName.String,
+					NickName:               human.nickName.String,
+					DisplayName:            human.displayName.String,
+					AvatarKey:              human.avatarKey.String,
+					PreferredLanguage:      language.Make(human.preferredLanguage.String),
+					Gender:                 domain.Gender(human.gender.Int32),
+					Email:                  domain.EmailAddress(human.email.String),
+					IsEmailVerified:        human.isEmailVerified.Bool,
+					Phone:                  domain.PhoneNumber(human.phone.String),
+					IsPhoneVerified:        human.isPhoneVerified.Bool,
+					PasswordChangeRequired: human.passwordChangeRequired.Bool,
+					PasswordChanged:        human.passwordChanged.Time,
+					MFAInitSkipped:         human.mfaInitSkipped.Time,
+				}
+			} else if machine.machineID.Valid {
+				u.Machine = &Machine{
+					Name:            machine.name.String,
+					Description:     machine.description.String,
+					EncodedSecret:   machine.encodedSecret.String,
+					AccessTokenType: domain.OIDCTokenType(machine.accessTokenType.Int32),
+				}
+			}
+
+			users = append(users, u)
+		}
+
+		if err := rows.Close(); err != nil {
+			return nil, zerrors.ThrowInternal(err, "QUERY-frhbd", "Errors.Query.CloseRows")
+		}
+
+		return &Users{
+			Users: users,
+			SearchResponse: SearchResponse{
+				Count: count,
+			},
+		}, nil
+	}
+}
+
+type sqlHuman struct {
+	humanID                sql.NullString
+	firstName              sql.NullString
+	lastName               sql.NullString
+	nickName               sql.NullString
+	displayName            sql.NullString
+	preferredLanguage      sql.NullString
+	gender                 sql.NullInt32
+	avatarKey              sql.NullString
+	email                  sql.NullString
+	isEmailVerified        sql.NullBool
+	phone                  sql.NullString
+	isPhoneVerified        sql.NullBool
+	passwordChangeRequired sql.NullBool
+	passwordChanged        sql.NullTime
+	mfaInitSkipped         sql.NullTime
+}
+
+type sqlMachine struct {
+	machineID       sql.NullString
+	name            sql.NullString
+	description     sql.NullString
+	encodedSecret   sql.NullString
+	accessTokenType sql.NullInt32
 }

@@ -1,3237 +1,5380 @@
-"""
-Usage
------
-
-.. code-block:: bash
-
-    mlflow server --app-name basic-auth
-"""
-
-from __future__ import annotations
-
+import ast
+import asyncio
 import base64
-import functools
-import importlib
+import copy
+import html
+import inspect
 import json
 import logging
+import os
+import random
 import re
-from http import HTTPStatus
-from typing import Any, Awaitable, Callable
+import sys
+import textwrap
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Optional
+from uuid import uuid4
 
-import sqlalchemy
-from cachetools import TTLCache
-from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
-from flask import (
-    Flask,
-    Request,
-    Response,
-    flash,
-    jsonify,
-    make_response,
-    render_template_string,
-    request,
+from aiocache import cached
+from fastapi import HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from open_webui.config import (
+    CACHE_DIR,
+    CODE_INTERPRETER_BLOCKED_MODULES,
+    CODE_INTERPRETER_PYODIDE_PROMPT,
+    DEFAULT_CODE_INTERPRETER_PROMPT,
+    DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
+    DEFAULT_VOICE_MODE_PROMPT_TEMPLATE,
 )
-from starlette.requests import Request as StarletteRequest
-from werkzeug.datastructures import Authorization
-
-from mlflow import MlflowException
-from mlflow.entities import Experiment
-from mlflow.entities.logged_model import LoggedModel
-from mlflow.entities.model_registry import RegisteredModel
-from mlflow.environment_variables import (
-    _MLFLOW_SGI_NAME,
-    MLFLOW_ENABLE_WORKSPACES,
-    MLFLOW_FLASK_SERVER_SECRET_KEY,
-    MLFLOW_SERVER_ENABLE_GRAPHQL_AUTH,
+from open_webui.constants import TASKS
+from open_webui.env import (
+    BYPASS_MODEL_ACCESS_CONTROL,
+    CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS,
+    CHAT_RESPONSE_STREAM_DELTA_CHUNK_SIZE,
+    ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION,
+    ENABLE_QUERIES_CACHE,
+    ENABLE_REALTIME_CHAT_SAVE,
+    ENABLE_RESPONSES_API_STATEFUL,
+    GLOBAL_LOG_LEVEL,
+    RAG_SYSTEM_CONTEXT,
 )
-from mlflow.protos.databricks_pb2 import (
-    BAD_REQUEST,
-    INTERNAL_ERROR,
-    INVALID_PARAMETER_VALUE,
-    RESOURCE_DOES_NOT_EXIST,
-    ErrorCode,
+from open_webui.models.chats import Chats
+from open_webui.models.config import Config
+from open_webui.models.folders import Folders
+from open_webui.models.functions import Functions
+from open_webui.models.models import Models
+from open_webui.models.oauth_sessions import OAuthSessions
+from open_webui.models.users import UserModel, Users
+from open_webui.retrieval.utils import get_sources_from_items
+from open_webui.routers.images import (
+    CreateImageForm,
+    EditImageForm,
+    image_edits,
+    image_generations,
 )
-from mlflow.protos.model_registry_pb2 import (
-    CreateModelVersion,
-    CreateRegisteredModel,
-    DeleteModelVersion,
-    DeleteModelVersionTag,
-    DeleteRegisteredModel,
-    DeleteRegisteredModelAlias,
-    DeleteRegisteredModelTag,
-    GetLatestVersions,
-    GetModelVersion,
-    GetModelVersionByAlias,
-    GetModelVersionDownloadUri,
-    GetRegisteredModel,
-    RenameRegisteredModel,
-    SearchRegisteredModels,
-    SetModelVersionTag,
-    SetRegisteredModelAlias,
-    SetRegisteredModelTag,
-    TransitionModelVersionStage,
-    UpdateModelVersion,
-    UpdateRegisteredModel,
+from open_webui.routers.pipelines import (
+    process_pipeline_inlet_filter,
+    process_pipeline_outlet_filter,
 )
-from mlflow.protos.service_pb2 import (
-    AttachModelToGatewayEndpoint,
-    CancelPromptOptimizationJob,
-    CreateExperiment,
-    CreateGatewayEndpoint,
-    CreateGatewayEndpointBinding,
-    CreateGatewayModelDefinition,
-    CreateGatewaySecret,
-    CreateLoggedModel,
-    CreatePromptOptimizationJob,
-    CreateRun,
-    CreateWorkspace,
-    DeleteExperiment,
-    DeleteExperimentTag,
-    DeleteGatewayEndpoint,
-    DeleteGatewayEndpointBinding,
-    DeleteGatewayEndpointTag,
-    DeleteGatewayModelDefinition,
-    DeleteGatewaySecret,
-    DeleteLoggedModel,
-    DeleteLoggedModelTag,
-    DeletePromptOptimizationJob,
-    DeleteRun,
-    DeleteScorer,
-    DeleteTag,
-    DeleteWorkspace,
-    DetachModelFromGatewayEndpoint,
-    FinalizeLoggedModel,
-    GetExperiment,
-    GetExperimentByName,
-    GetGatewayEndpoint,
-    GetGatewayModelDefinition,
-    GetGatewaySecretInfo,
-    GetLoggedModel,
-    GetMetricHistory,
-    GetPromptOptimizationJob,
-    GetRun,
-    GetScorer,
-    GetWorkspace,
-    ListArtifacts,
-    ListGatewayEndpointBindings,
-    ListScorers,
-    ListScorerVersions,
-    ListWorkspaces,
-    LogBatch,
-    LogLoggedModelParamsRequest,
-    LogMetric,
-    LogModel,
-    LogParam,
-    RegisterScorer,
-    RestoreExperiment,
-    RestoreRun,
-    SearchExperiments,
-    SearchLoggedModels,
-    SearchPromptOptimizationJobs,
-    SetExperimentTag,
-    SetGatewayEndpointTag,
-    SetLoggedModelTags,
-    SetTag,
-    UpdateExperiment,
-    UpdateGatewayEndpoint,
-    UpdateGatewayModelDefinition,
-    UpdateGatewaySecret,
-    UpdateRun,
-    UpdateWorkspace,
+from open_webui.routers.retrieval import (
+    SearchForm,
+    process_web_search,
 )
-from mlflow.protos.service_pb2 import (
-    ListGatewayEndpoints as ListGatewayEndpoints,
+from open_webui.routers.tasks import (
+    generate_chat_tags,
+    generate_follow_ups,
+    generate_image_prompt,
+    generate_queries,
+    generate_title,
 )
-from mlflow.protos.service_pb2 import (
-    ListGatewayModelDefinitions as ListGatewayModelDefinitions,
+from open_webui.socket.main import (
+    get_event_call,
+    get_event_emitter,
 )
-from mlflow.protos.service_pb2 import (
-    ListGatewaySecretInfos as ListGatewaySecretInfos,
+from open_webui.utils.access_control import has_connection_access, has_permission
+from open_webui.utils.access_control.files import get_accessible_folder_files
+from open_webui.utils.chat import generate_chat_completion
+from open_webui.utils.code_interpreter import execute_code_jupyter
+from open_webui.utils.context_compaction import compact_messages_for_request
+from open_webui.utils.files import (
+    convert_markdown_base64_images,
+    get_file_url_from_base64,
+    get_image_base64_from_url,
+    get_image_url_from_base64,
 )
-from mlflow.server import app
-from mlflow.server.auth.config import DEFAULT_AUTHORIZATION_FUNCTION, read_auth_config
-from mlflow.server.auth.entities import User
-from mlflow.server.auth.logo import MLFLOW_LOGO
-from mlflow.server.auth.permissions import (
-    MANAGE,
-    NO_PERMISSIONS,
-    Permission,
-    get_permission,
-)
-from mlflow.server.auth.routes import (
-    CREATE_EXPERIMENT_PERMISSION,
-    CREATE_GATEWAY_ENDPOINT_PERMISSION,
-    CREATE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-    CREATE_GATEWAY_SECRET_PERMISSION,
-    CREATE_PROMPTLAB_RUN,
-    CREATE_REGISTERED_MODEL_PERMISSION,
-    CREATE_SCORER_PERMISSION,
-    CREATE_USER,
-    CREATE_USER_UI,
-    DELETE_EXPERIMENT_PERMISSION,
-    DELETE_GATEWAY_ENDPOINT_PERMISSION,
-    DELETE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-    DELETE_GATEWAY_SECRET_PERMISSION,
-    DELETE_REGISTERED_MODEL_PERMISSION,
-    DELETE_SCORER_PERMISSION,
-    DELETE_USER,
-    GATEWAY_PROVIDER_CONFIG,
-    GATEWAY_PROXY,
-    GATEWAY_SECRETS_CONFIG,
-    GATEWAY_SUPPORTED_MODELS,
-    GATEWAY_SUPPORTED_PROVIDERS,
-    GET_ARTIFACT,
-    GET_EXPERIMENT_PERMISSION,
-    GET_GATEWAY_ENDPOINT_PERMISSION,
-    GET_GATEWAY_MODEL_DEFINITION_PERMISSION,
-    GET_GATEWAY_SECRET_PERMISSION,
-    GET_METRIC_HISTORY_BULK,
-    GET_METRIC_HISTORY_BULK_INTERVAL,
-    GET_MODEL_VERSION_ARTIFACT,
-    GET_REGISTERED_MODEL_PERMISSION,
-    GET_SCORER_PERMISSION,
-    GET_TRACE_ARTIFACT,
-    GET_USER,
-    HOME,
-    INVOKE_SCORER,
-    LIST_USER_WORKSPACE_PERMISSIONS,
-    LIST_WORKSPACE_PERMISSIONS,
-    SEARCH_DATASETS,
-    SIGNUP,
-    UPDATE_EXPERIMENT_PERMISSION,
-    UPDATE_GATEWAY_ENDPOINT_PERMISSION,
-    UPDATE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-    UPDATE_GATEWAY_SECRET_PERMISSION,
-    UPDATE_REGISTERED_MODEL_PERMISSION,
-    UPDATE_SCORER_PERMISSION,
-    UPDATE_USER_ADMIN,
-    UPDATE_USER_PASSWORD,
-    UPLOAD_ARTIFACT,
-)
-from mlflow.server.auth.sqlalchemy_store import SqlAlchemyStore
-from mlflow.server.fastapi_app import create_fastapi_app
-from mlflow.server.handlers import (
-    _disable_if_workspaces_disabled,
-    _get_model_registry_store,
-    _get_request_message,
-    _get_tracking_store,
-    catch_mlflow_exception,
-    get_endpoints,
-)
-from mlflow.server.jobs import get_job
-from mlflow.server.workspace_helpers import _get_workspace_store
-from mlflow.store.entities import PagedList
-from mlflow.store.workspace.utils import get_default_workspace_optional
-from mlflow.utils import workspace_context
-from mlflow.utils.proto_json_utils import message_to_json, parse_dict
-from mlflow.utils.rest_utils import _REST_API_PATH_PREFIX
-from mlflow.utils.search_utils import SearchUtils
-
-try:
-    from flask_wtf.csrf import CSRFProtect
-except ImportError as e:
-    raise ImportError(
-        "The MLflow basic auth app requires the Flask-WTF package to perform CSRF "
-        "validation. Please run `pip install mlflow[auth]` to install it."
-    ) from e
-
-_logger = logging.getLogger(__name__)
-
-auth_config = read_auth_config()
-store = SqlAlchemyStore()
-
-# Cache for resource_id -> workspace_name mapping. The relationship between a resource
-# (experiment, registered model) and its workspace is immutable.
-_RESOURCE_WORKSPACE_CACHE: TTLCache[str, str | None] = TTLCache(
-    maxsize=auth_config.workspace_cache_max_size,
-    ttl=auth_config.workspace_cache_ttl_seconds,
+from open_webui.utils.filter import (
+    get_sorted_filter_ids,
+    process_filter_functions,
 )
 
-
-def is_unprotected_route(path: str) -> bool:
-    return path.startswith(("/static", "/favicon.ico", "/health"))
-
-
-def make_basic_auth_response() -> Response:
-    res = make_response(
-        "You are not authenticated. Please see "
-        "https://www.mlflow.org/docs/latest/auth/index.html#authenticating-to-mlflow "
-        "on how to authenticate."
-    )
-    res.status_code = 401
-    res.headers["WWW-Authenticate"] = 'Basic realm="mlflow"'
-    return res
-
-
-def make_forbidden_response() -> Response:
-    res = make_response("Permission denied")
-    res.status_code = 403
-    return res
-
-
-def _get_request_param(param: str) -> str:
-    if request.method == "GET":
-        args = request.args
-    elif request.method in ("POST", "PATCH"):
-        args = request.json
-    elif request.method == "DELETE":
-        args = request.json if request.is_json else request.args
-    else:
-        raise MlflowException(
-            f"Unsupported HTTP method '{request.method}'",
-            BAD_REQUEST,
-        )
-
-    args = args | (request.view_args or {})
-    if param not in args:
-        # Special handling for run_id
-        if param == "run_id":
-            return _get_request_param("run_uuid")
-        raise MlflowException(
-            f"Missing value for required parameter '{param}'. "
-            "See the API docs for more information about request parameters.",
-            INVALID_PARAMETER_VALUE,
-        )
-    return args[param]
-
-
-def _get_permission_from_store_or_default(
-    store_permission_func: Callable[[], str],
-    workspace_level_permission_func: Callable[[], Permission | None] | None = None,
-) -> Permission:
-    """
-    Resolve a permission from the auth store, with an optional workspace-aware fallback.
-
-    Behavior:
-    - If a direct (resource-level) permission exists, it is returned.
-    - If no direct permission exists and workspaces are enabled, callers provide
-      ``workspace_level_permission_func`` to check workspace-level permissions for the resource's
-      workspace. This fallback should default to ``NO_PERMISSIONS`` to preserve workspace isolation.
-    - If workspace permissions are not applicable (e.g. workspaces are disabled and the func
-      returns ``None``), fall back to ``auth_config.default_permission``.
-    - Unexpected errors are propagated rather than granting access.
-    """
-    try:
-        perm = store_permission_func()
-    except MlflowException as e:
-        if e.error_code == ErrorCode.Name(RESOURCE_DOES_NOT_EXIST):
-            if workspace_level_permission_func is not None:
-                workspace_permission = workspace_level_permission_func()
-                # workspace_permission is only None when workspaces are not enabled.
-                # workspace_permission defaults to NO_PERMISSIONS. In effect, this means that
-                # auth_config.default_permission is not supported when workspaces are enabled
-                # to keep workspace isolation.
-                if workspace_permission is not None:
-                    return workspace_permission
-            perm = auth_config.default_permission
-        else:
-            raise
-    return get_permission(perm)
-
-
-def _workspace_permission(
-    username: str | None,
-    workspace_name: str,
-) -> Permission | None:
-    """
-    Determine the workspace-level permission for a user.
-
-    Returns:
-        - A `Permission` value from the auth store when workspaces are enabled.
-        - `auth_config.default_permission` (as a `Permission`) if the workspace is the default and
-          implicit access is granted via `grant_default_workspace_access`.
-        - `None` when workspaces are disabled.
-        - `NO_PERMISSIONS` when no permission is found and no implicit access applies.
-    """
-    if not MLFLOW_ENABLE_WORKSPACES.get():
-        return None
-
-    if not workspace_name:
-        raise ValueError("workspace_name must be provided when checking workspace permissions")
-
-    if username is None:
-        return NO_PERMISSIONS
-
-    try:
-        permission = store.get_workspace_permission(workspace_name, username)
-        if permission is not None:
-            return permission
-
-        if auth_config.grant_default_workspace_access and auth_config.default_permission:
-            default_workspace, _ = get_default_workspace_optional(_get_workspace_store())
-            if default_workspace and workspace_name == default_workspace.name:
-                return get_permission(auth_config.default_permission)
-
-        return NO_PERMISSIONS
-    except MlflowException as e:
-        _logger.warning(
-            "Error checking workspace permissions for user '%s' in workspace '%s': %s. "
-            "Denying access for security.",
-            username,
-            workspace_name,
-            e,
-        )
-        return NO_PERMISSIONS
-
-
-def _get_resource_workspace(
-    resource_id: str,
-    fetcher: Callable[[str], Any],
-    resource_label: str,
-) -> str | None:
-    """
-    Get the workspace name for a resource, using a cache to avoid repeated lookups.
-
-    The resource→workspace relationship is immutable, so caching is safe.
-    """
-    # Use a cache key that includes the resource_label to avoid collisions between
-    # experiments and registered models that might have the same ID/name.
-    workspace_scope = (
-        workspace_context.get_request_workspace() if MLFLOW_ENABLE_WORKSPACES.get() else None
-    )
-    cache_key = (
-        f"{resource_label}:{workspace_scope}:{resource_id}" if workspace_scope is not None else None
-    )
-
-    if cache_key is not None and cache_key in _RESOURCE_WORKSPACE_CACHE:
-        return _RESOURCE_WORKSPACE_CACHE[cache_key]
-
-    try:
-        resource = fetcher(resource_id)
-        workspace_name = getattr(resource, "workspace", None)
-    except MlflowException as e:
-        _logger.warning(
-            "Failed to determine workspace for %s '%s': %s. Denying access for security.",
-            resource_label,
-            resource_id,
-            e,
-        )
-        workspace_name = None
-
-    if cache_key is None:
-        cache_key = (
-            f"{resource_label}:{workspace_name}:{resource_id}"
-            if workspace_name is not None
-            else f"{resource_label}:{resource_id}"
-        )
-
-    _RESOURCE_WORKSPACE_CACHE[cache_key] = workspace_name
-    return workspace_name
-
-
-def _workspace_permission_for_resource(
-    username: str | None,
-    resource_id: str,
-    fetcher: Callable[[str], Any],
-    resource_label: str,
-) -> Permission | None:
-    """
-    Generic workspace permission checker for any resource type.
-
-    Args:
-        username: Username associated with the request (may be None)
-        resource_id: ID of the resource to check
-        fetcher: Function to fetch the resource (e.g., store.get_experiment)
-        resource_label: Human-readable label for error messages
-
-    Returns:
-        Permission object if workspace permissions apply, None if workspace permissions
-        are not supported. Returns NO_PERMISSIONS if the resource lookup fails
-        (security: deny on error).
-    """
-    if not MLFLOW_ENABLE_WORKSPACES.get():
-        return None
-
-    workspace_name = _get_resource_workspace(resource_id, fetcher, resource_label)
-    if workspace_name is None:
-        return NO_PERMISSIONS
-
-    return _workspace_permission(username, workspace_name)
-
-
-def _workspace_permission_for_experiment(
-    username: str | None, experiment_id: str
-) -> Permission | None:
-    """
-    Get workspace-level permission for accessing an experiment.
-
-    Returns:
-        Permission object if workspace permissions apply, None if workspace permissions
-        are not supported. Returns NO_PERMISSIONS if the experiment lookup fails
-        (security: deny on error).
-    """
-    return _workspace_permission_for_resource(
-        username,
-        experiment_id,
-        _get_tracking_store().get_experiment,
-        "experiment",
-    )
-
-
-def _workspace_permission_for_registered_model(
-    username: str | None, model_name: str
-) -> Permission | None:
-    """
-    Get workspace-level permission for accessing a registered model (including prompts).
-
-    Returns:
-        Permission object if workspace permissions apply, None to fall back to resource permissions.
-        Returns NO_PERMISSIONS if the model lookup fails (security: deny on error).
-    """
-    return _workspace_permission_for_resource(
-        username,
-        model_name,
-        _get_model_registry_store().get_registered_model,
-        "registered model",
-    )
-
-
-def _has_resource_read_access(
-    resource_id: str,
-    username: str | None,
-    workspace_permission_getter: Callable[[str | None, str], Permission | None],
-    explicit_can_read: dict[str, bool],
-    default_can_read: bool,
-) -> bool:
-    if resource_id in explicit_can_read:
-        return explicit_can_read[resource_id]
-
-    # If workspaces are enabled, the default is NO_PERMISSIONS.
-    if perm := workspace_permission_getter(username, resource_id):
-        return perm.can_read
-
-    # Use the default only when there is no explicit entry and no workspace permission.
-    # workspace_permission_getter returns None only when workspaces are disabled. In that
-    # mode, the stores refuse to start if any resource lives outside the default workspace,
-    # so this fallback cannot bypass workspace permissions.
-    return default_can_read
-
-
-def _has_experiment_read_access(
-    username: str | None,
-    experiment_id: str,
-    explicit_can_read: dict[str, bool],
-    default_can_read: bool,
-) -> bool:
-    return _has_resource_read_access(
-        experiment_id,
-        username,
-        _workspace_permission_for_experiment,
-        explicit_can_read,
-        default_can_read,
-    )
-
-
-def _has_registered_model_read_access(
-    username: str | None,
-    model_name: str,
-    explicit_can_read: dict[str, bool],
-    default_can_read: bool,
-) -> bool:
-    return _has_resource_read_access(
-        model_name,
-        username,
-        _workspace_permission_for_registered_model,
-        explicit_can_read,
-        default_can_read,
-    )
-
-
-def _get_permission_from_experiment_id() -> Permission:
-    experiment_id = _get_request_param("experiment_id")
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-_EXPERIMENT_ID_PATTERN = re.compile(r"^(\d+)/")
-
-
-def _get_experiment_id_from_view_args():
-    if artifact_path := request.view_args.get("artifact_path"):
-        if m := _EXPERIMENT_ID_PATTERN.match(artifact_path):
-            return m.group(1)
-    return None
-
-
-def _get_permission_from_experiment_id_artifact_proxy() -> Permission:
-    username = authenticate_request().username
-
-    if experiment_id := _get_experiment_id_from_view_args():
-        return _get_permission_from_store_or_default(
-            lambda: store.get_experiment_permission(experiment_id, username).permission,
-            workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-                username, experiment_id
-            ),
-        )
-
-    if MLFLOW_ENABLE_WORKSPACES.get():
-        if workspace_name := workspace_context.get_request_workspace():
-            permission = _workspace_permission(username, workspace_name)
-            if permission is not None:
-                return permission
-        return NO_PERMISSIONS
-
-    return get_permission(auth_config.default_permission)
-
-
-def _get_permission_from_experiment_name() -> Permission:
-    experiment_name = _get_request_param("experiment_name")
-    store_exp = _get_tracking_store().get_experiment_by_name(experiment_name)
-    if store_exp is None:
-        raise MlflowException(
-            f"Could not find experiment with name {experiment_name}",
-            error_code=RESOURCE_DOES_NOT_EXIST,
-        )
-    username = authenticate_request().username
-
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(store_exp.experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, store_exp.experiment_id
-        ),
-    )
-
-
-def _get_permission_from_run_id() -> Permission:
-    # run permissions inherit from parent resource (experiment)
-    # so we just get the experiment permission
-    run_id = _get_request_param("run_id")
-    run = _get_tracking_store().get_run(run_id)
-    experiment_id = run.info.experiment_id
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def _get_permission_from_model_id() -> Permission:
-    # logged model permissions inherit from parent resource (experiment)
-    model_id = _get_request_param("model_id")
-    model = _get_tracking_store().get_logged_model(model_id)
-    experiment_id = model.experiment_id
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def _get_permission_from_prompt_optimization_job_id() -> Permission:
-    # prompt optimization job permissions inherit from parent resource (experiment)
-    job_id = _get_request_param("job_id")
-    job_entity = get_job(job_id)
-    params = json.loads(job_entity.params)
-    experiment_id = params.get("experiment_id")
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def _get_permission_from_registered_model_name() -> Permission:
-    name = _get_request_param("name")
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_registered_model_permission(name, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_registered_model(
-            username, name
-        ),
-    )
-
-
-def _get_permission_from_scorer_name() -> Permission:
-    experiment_id = _get_request_param("experiment_id")
-    name = _get_request_param("name")
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_scorer_permission(experiment_id, name, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def _get_permission_from_scorer_permission_request() -> Permission:
-    experiment_id = _get_request_param("experiment_id")
-    scorer_name = _get_request_param("scorer_name")
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_scorer_permission(experiment_id, scorer_name, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def _workspace_permission_for_gateway_secret(
-    username: str | None, secret_id: str
-) -> Permission | None:
-    """
-    Get workspace-level permission for accessing a gateway secret.
-
-    Returns:
-        Permission object if workspace permissions apply, None if workspace permissions
-        are not supported. Returns NO_PERMISSIONS if the secret lookup fails
-        (security: deny on error).
-    """
-    return _workspace_permission_for_resource(
-        username,
-        secret_id,
-        lambda sid: _get_tracking_store().get_secret_info(secret_id=sid),
-        "gateway secret",
-    )
-
-
-def _workspace_permission_for_gateway_endpoint(
-    username: str | None, endpoint_id: str
-) -> Permission | None:
-    """
-    Get workspace-level permission for accessing a gateway endpoint.
-
-    Returns:
-        Permission object if workspace permissions apply, None if workspace permissions
-        are not supported. Returns NO_PERMISSIONS if the endpoint lookup fails
-        (security: deny on error).
-    """
-    return _workspace_permission_for_resource(
-        username,
-        endpoint_id,
-        lambda eid: _get_tracking_store().get_gateway_endpoint(endpoint_id=eid),
-        "gateway endpoint",
-    )
-
-
-def _workspace_permission_for_gateway_model_definition(
-    username: str | None, model_definition_id: str
-) -> Permission | None:
-    """
-    Get workspace-level permission for accessing a gateway model definition.
-
-    Returns:
-        Permission object if workspace permissions apply, None if workspace permissions
-        are not supported. Returns NO_PERMISSIONS if the model definition lookup fails
-        (security: deny on error).
-    """
-    return _workspace_permission_for_resource(
-        username,
-        model_definition_id,
-        lambda mdid: _get_tracking_store().get_gateway_model_definition(model_definition_id=mdid),
-        "gateway model definition",
-    )
-
-
-def _get_permission_from_gateway_secret_id() -> Permission:
-    secret_id = _get_request_param("secret_id")
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_gateway_secret_permission(secret_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_gateway_secret(
-            username, secret_id
-        ),
-    )
-
-
-def _get_permission_from_gateway_endpoint_id() -> Permission:
-    endpoint_id = _get_request_param("endpoint_id")
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_gateway_endpoint_permission(endpoint_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_gateway_endpoint(
-            username, endpoint_id
-        ),
-    )
-
-
-def _get_permission_from_gateway_model_definition_id() -> Permission:
-    model_definition_id = _get_request_param("model_definition_id")
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: (
-            store.get_gateway_model_definition_permission(model_definition_id, username).permission
-        ),
-        workspace_level_permission_func=lambda: _workspace_permission_for_gateway_model_definition(
-            username, model_definition_id
-        ),
-    )
-
-
-def validate_can_read_experiment():
-    return _get_permission_from_experiment_id().can_read
-
-
-def validate_can_read_experiment_by_name():
-    return _get_permission_from_experiment_name().can_read
-
-
-def validate_can_update_experiment():
-    return _get_permission_from_experiment_id().can_update
-
-
-def validate_can_delete_experiment():
-    return _get_permission_from_experiment_id().can_delete
-
-
-def validate_can_manage_experiment():
-    return _get_permission_from_experiment_id().can_manage
-
-
-def validate_can_read_experiment_artifact_proxy():
-    return _get_permission_from_experiment_id_artifact_proxy().can_read
-
-
-def validate_can_update_experiment_artifact_proxy():
-    return _get_permission_from_experiment_id_artifact_proxy().can_update
-
-
-def validate_can_delete_experiment_artifact_proxy():
-    return _get_permission_from_experiment_id_artifact_proxy().can_manage
-
-
-# Runs
-def validate_can_read_run():
-    return _get_permission_from_run_id().can_read
-
-
-def validate_can_update_run():
-    return _get_permission_from_run_id().can_update
-
-
-def validate_can_delete_run():
-    return _get_permission_from_run_id().can_delete
-
-
-def validate_can_manage_run():
-    return _get_permission_from_run_id().can_manage
-
-
-# Prompt optimization jobs
-def validate_can_read_prompt_optimization_job():
-    return _get_permission_from_prompt_optimization_job_id().can_read
-
-
-def validate_can_update_prompt_optimization_job():
-    return _get_permission_from_prompt_optimization_job_id().can_update
-
-
-def validate_can_delete_prompt_optimization_job():
-    return _get_permission_from_prompt_optimization_job_id().can_delete
-
-
-# Logged models
-def validate_can_read_logged_model():
-    return _get_permission_from_model_id().can_read
-
-
-def validate_can_update_logged_model():
-    return _get_permission_from_model_id().can_update
-
-
-def validate_can_delete_logged_model():
-    return _get_permission_from_model_id().can_delete
-
-
-def validate_can_manage_logged_model():
-    return _get_permission_from_model_id().can_manage
-
-
-# Registered models
-def validate_can_read_registered_model():
-    return _get_permission_from_registered_model_name().can_read
-
-
-def validate_can_update_registered_model():
-    return _get_permission_from_registered_model_name().can_update
-
-
-def validate_can_delete_registered_model():
-    return _get_permission_from_registered_model_name().can_delete
-
-
-def validate_can_manage_registered_model():
-    return _get_permission_from_registered_model_name().can_manage
-
-
-def validate_can_create_experiment() -> bool:
-    # Historically, experiment creation has always been allowed when workspaces are
-    # disabled. We keep returning True here to preserve that behavior even if
-    # auth_config.default_permission is READ/NO_PERMISSIONS.
-    if not MLFLOW_ENABLE_WORKSPACES.get():
-        return True
-
-    workspace_name = workspace_context.get_request_workspace()
-    if workspace_name is None:
-        return False
-
-    perm = _workspace_permission(authenticate_request().username, workspace_name)
-    return perm is not None and perm.can_manage
-
-
-def validate_can_create_registered_model() -> bool:
-    # Historically, registered model creation has always been allowed when workspaces are
-    # disabled. We keep returning True here to preserve that behavior even if
-    # auth_config.default_permission is READ/NO_PERMISSIONS.
-    if not MLFLOW_ENABLE_WORKSPACES.get():
-        return True
-
-    workspace_name = workspace_context.get_request_workspace()
-    if workspace_name is None:
-        return False
-
-    perm = _workspace_permission(authenticate_request().username, workspace_name)
-    return perm is not None and perm.can_manage
-
-
-def validate_can_view_workspace() -> bool:
-    if not MLFLOW_ENABLE_WORKSPACES.get():
-        return True
-
-    username = authenticate_request().username
-
-    workspace_name = request.view_args.get("workspace_name") if request.view_args else None
-    if workspace_name is None:
-        return False
-
-    if username is None:
-        return False
-
-    if auth_config.grant_default_workspace_access:
-        default_workspace, _ = get_default_workspace_optional(_get_workspace_store())
-        if default_workspace and workspace_name == default_workspace.name:
-            return True
-
-    names = set(store.list_accessible_workspace_names(username))
-
-    return workspace_name in names
-
-
-def _get_workspace_name_from_request() -> str | None:
-    return request.view_args.get("workspace_name") if request.view_args else None
-
-
-def validate_can_list_workspace_permissions() -> bool:
-    username = authenticate_request().username
-    if not username:
-        return False
-
-    if store.get_user(username).is_admin:
-        return True
-
-    workspace_name = _get_workspace_name_from_request()
-    if not workspace_name:
-        return False
-
-    perm = _workspace_permission(username, workspace_name)
-    return perm is not None and perm.can_manage
-
-
-def validate_can_modify_workspace_permission() -> bool:
-    """
-    Validate if the user can create, update, or delete workspace permissions.
-
-    Permission delegation: Users with MANAGE permission on a workspace can grant
-    permissions to other users in that workspace. This allows workspace managers
-    to delegate access without requiring admin intervention, enabling self-service
-    team management within workspace boundaries.
-    """
-    username = authenticate_request().username
-    if not username:
-        return False
-
-    if store.get_user(username).is_admin:
-        return True
-
-    workspace_name = _get_workspace_name_from_request()
-    if not workspace_name:
-        return False
-
-    perm = _workspace_permission(username, workspace_name)
-    return perm is not None and perm.can_manage
-
-
-# Scorers
-def validate_can_read_scorer():
-    return _get_permission_from_scorer_name().can_read
-
-
-def validate_can_update_scorer():
-    return _get_permission_from_scorer_name().can_update
-
-
-def validate_can_delete_scorer():
-    return _get_permission_from_scorer_name().can_delete
-
-
-def validate_can_manage_scorer():
-    return _get_permission_from_scorer_name().can_manage
-
-
-def validate_can_manage_scorer_permission():
-    return _get_permission_from_scorer_permission_request().can_manage
-
-
-def sender_is_admin():
-    """Validate if the sender is admin"""
-    username = authenticate_request().username
-    return store.get_user(username).is_admin
-
-
-def filter_experiment_ids(experiment_ids: list[str]) -> list[str]:
-    """
-    Filter experiment IDs to only include those the user has read access to.
-
-    This function is called from search_runs_impl before the tracking store query.
-    When workspaces are enabled, the tracking store will subsequently filter results
-    to only experiments in the active workspace. Since experiments outside the active
-    workspace will be rejected anyway, we only need to check workspace permission once
-    for the active workspace, rather than fetching each experiment to determine its workspace.
-
-    Args:
-        experiment_ids: List of experiment IDs to filter
-
-    Returns:
-        Filtered list of experiment IDs the user can read
-    """
-    if not auth_config:
-        return experiment_ids
-
-    try:
-        if sender_is_admin():
-            return experiment_ids
-
-        username = authenticate_request().username
-        perms = store.list_experiment_permissions(username)
-        can_read = {p.experiment_id: get_permission(p.permission).can_read for p in perms}
-        default_can_read = get_permission(auth_config.default_permission).can_read
-
-        if not MLFLOW_ENABLE_WORKSPACES.get():
-            return [exp_id for exp_id in experiment_ids if can_read.get(exp_id, default_can_read)]
-
-        # With workspaces enabled, the tracking store will filter to the active workspace
-        # after this function returns. Since experiments outside the active workspace
-        # will be excluded anyway, we only need ONE workspace permission check here.
-        workspace_name = workspace_context.get_request_workspace()
-        workspace_perm = (
-            _workspace_permission(username, workspace_name) if workspace_name else NO_PERMISSIONS
-        )
-
-        return [
-            exp_id for exp_id in experiment_ids if can_read.get(exp_id, workspace_perm.can_read)
-        ]
-    except (RuntimeError, AttributeError):
-        # Auth system not fully initialized, skip filtering
-        return experiment_ids
-
-
-def username_is_sender():
-    """Validate if the request username is the sender"""
-    username = _get_request_param("username")
-    sender = authenticate_request().username
-    return username == sender
-
-
-def validate_can_read_user():
-    return username_is_sender()
-
-
-def validate_can_create_user():
-    # only admins can create user, but admins won't reach this validator
-    return False
-
-
-def validate_can_update_user_password():
-    return username_is_sender()
-
-
-def validate_can_update_user_admin():
-    # only admins can update, but admins won't reach this validator
-    return False
-
-
-def validate_can_delete_user():
-    # only admins can delete, but admins won't reach this validator
-    return False
-
-
-def validate_can_read_gateway_secret():
-    return _get_permission_from_gateway_secret_id().can_read
-
-
-def validate_can_update_gateway_secret():
-    return _get_permission_from_gateway_secret_id().can_update
-
-
-def validate_can_delete_gateway_secret():
-    return _get_permission_from_gateway_secret_id().can_delete
-
-
-def validate_can_manage_gateway_secret():
-    return _get_permission_from_gateway_secret_id().can_manage
-
-
-def validate_can_read_gateway_endpoint():
-    return _get_permission_from_gateway_endpoint_id().can_read
-
-
-def validate_can_delete_gateway_endpoint():
-    return _get_permission_from_gateway_endpoint_id().can_delete
-
-
-def validate_can_manage_gateway_endpoint():
-    return _get_permission_from_gateway_endpoint_id().can_manage
-
-
-def validate_can_read_gateway_model_definition():
-    return _get_permission_from_gateway_model_definition_id().can_read
-
-
-def validate_can_delete_gateway_model_definition():
-    return _get_permission_from_gateway_model_definition_id().can_delete
-
-
-def validate_can_manage_gateway_model_definition():
-    return _get_permission_from_gateway_model_definition_id().can_manage
-
-
-def validate_can_create_gateway_model_definition():
-    """
-    Validate that the user can create a gateway model definition.
-    This requires USE permission on the referenced secret.
-    """
-    body = request.json or {}
-    secret_id = body.get("secret_id")
-    if not secret_id:
-        # If no secret is provided, allow creation (will fail in handler)
-        return True
-
-    username = authenticate_request().username
-    permission = _get_permission_from_store_or_default(
-        lambda: store.get_gateway_secret_permission(secret_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_gateway_secret(
-            username, secret_id
-        ),
-    )
-    return permission.can_use
-
-
-def validate_can_update_gateway_model_definition():
-    """
-    Validate that the user can update a gateway model definition.
-    This requires UPDATE permission on the model definition AND
-    USE permission on any new secret being referenced.
-    """
-    # First check update permission on the model definition
-    if not _get_permission_from_gateway_model_definition_id().can_update:
-        return False
-
-    # If updating the secret, check USE permission on the new secret
-    body = request.json or {}
-    secret_id = body.get("secret_id")
-    if not secret_id:
-        # No secret being changed, just return True
-        return True
-
-    username = authenticate_request().username
-    permission = _get_permission_from_store_or_default(
-        lambda: store.get_gateway_secret_permission(secret_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_gateway_secret(
-            username, secret_id
-        ),
-    )
-    return permission.can_use
-
-
-def _validate_can_use_model_definitions(model_configs: list[dict[str, Any]]) -> bool:
-    """
-    Helper to validate USE permission on all model definitions in model_configs.
-    Returns True if all model definitions have USE permission, False otherwise.
-    """
-    if not model_configs:
-        return True
-
-    model_def_ids = [
-        config.get("model_definition_id")
-        for config in model_configs
-        if config.get("model_definition_id")
-    ]
-
-    if not model_def_ids:
-        return True
-
-    username = authenticate_request().username
-    # Reassign to a shorter name for line length limits
-    ws_func = _workspace_permission_for_gateway_model_definition
-    for model_def_id in model_def_ids:
-        permission = _get_permission_from_store_or_default(
-            lambda md_id=model_def_id: (
-                store.get_gateway_model_definition_permission(md_id, username).permission
-            ),
-            workspace_level_permission_func=lambda md_id=model_def_id: ws_func(username, md_id),
-        )
-        if not permission.can_use:
-            return False
-
-    return True
-
-
-def _validate_can_use_model_definitions_for_create(model_configs: list[dict[str, Any]]) -> bool:
-    """
-    Create-only helper that enforces workspace USE permission when no model definitions
-    are provided, otherwise validates USE permission on referenced model definitions.
-    """
-    if not model_configs or not any(config.get("model_definition_id") for config in model_configs):
-        if not MLFLOW_ENABLE_WORKSPACES.get():
-            return True
-        workspace_name = workspace_context.get_request_workspace()
-        if workspace_name is None:
-            return False
-        username = authenticate_request().username
-        workspace_perm = _workspace_permission(username, workspace_name)
-        return workspace_perm is not None and workspace_perm.can_use
-
-    return _validate_can_use_model_definitions(model_configs)
-
-
-def validate_can_create_gateway_endpoint():
-    """
-    Validate that the user can create a gateway endpoint.
-    This requires USE permission on all referenced model definitions.
-    """
-    body = request.json or {}
-    model_configs = body.get("model_configs", [])
-    return _validate_can_use_model_definitions_for_create(model_configs)
-
-
-def validate_can_update_gateway_endpoint():
-    """
-    Validate that the user can update a gateway endpoint.
-    This requires UPDATE permission on the endpoint AND
-    USE permission on any new model definitions being referenced.
-    """
-    if not _get_permission_from_gateway_endpoint_id().can_update:
-        return False
-
-    body = request.json or {}
-    model_configs = body.get("model_configs", [])
-    return _validate_can_use_model_definitions(model_configs)
-
-
-def _get_permission_from_run_id_or_uuid() -> Permission:
-    """
-    Get permission for Flask routes that use either run_id or run_uuid parameter.
-    """
-    run_id = request.args.get("run_id") or request.args.get("run_uuid")
-    if not run_id:
-        raise MlflowException(
-            "Request must specify run_id or run_uuid parameter",
-            INVALID_PARAMETER_VALUE,
-        )
-    run = _get_tracking_store().get_run(run_id)
-    experiment_id = run.info.experiment_id
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def validate_can_read_run_artifact():
-    """Checks READ permission on run artifacts."""
-    return _get_permission_from_run_id_or_uuid().can_read
-
-
-def validate_can_update_run_artifact():
-    """Checks UPDATE permission on run artifacts."""
-    return _get_permission_from_run_id_or_uuid().can_update
-
-
-def _get_permission_from_model_version() -> Permission:
-    """
-    Get permission for model version artifacts.
-    Model versions inherit permissions from their registered model.
-    """
-    name = request.args.get("name")
-    if not name:
-        raise MlflowException(
-            "Request must specify name parameter",
-            INVALID_PARAMETER_VALUE,
-        )
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_registered_model_permission(name, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_registered_model(
-            username, name
-        ),
-    )
-
-
-def validate_can_read_model_version_artifact():
-    """Checks READ permission on model version artifacts."""
-    return _get_permission_from_model_version().can_read
-
-
-def _get_permission_from_trace_request_id() -> Permission:
-    """
-    Get permission for trace artifacts.
-    Traces inherit permissions from their parent run/experiment.
-    """
-    request_id = request.args.get("request_id")
-    if not request_id:
-        raise MlflowException(
-            "Request must specify request_id parameter",
-            INVALID_PARAMETER_VALUE,
-        )
-    # Get the trace to find its experiment
-    trace = _get_tracking_store().get_trace_info(request_id)
-    experiment_id = trace.experiment_id
-    username = authenticate_request().username
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def validate_can_read_trace_artifact():
-    """Checks READ permission on trace artifacts."""
-    return _get_permission_from_trace_request_id().can_read
-
-
-def validate_can_read_metric_history_bulk(run_ids=None):
-    """Checks READ permission on all requested runs.
-
-    Args:
-        run_ids: Optional list of run IDs to validate. If not provided,
-            extracts 'run_id' from request args (for GetMetricHistoryBulk endpoint).
-    """
-    if run_ids is None:
-        run_ids = request.args.to_dict(flat=False).get("run_id", [])
-    if not run_ids:
-        raise MlflowException(
-            "GetMetricHistoryBulk request must specify at least one run_id.",
-            INVALID_PARAMETER_VALUE,
-        )
-
-    username = authenticate_request().username
-    tracking_store = _get_tracking_store()
-
-    for run_id in run_ids:
-        run = tracking_store.get_run(run_id)
-        experiment_id = run.info.experiment_id
-
-        def get_workspace_perm(eid=experiment_id):
-            return _workspace_permission_for_experiment(username, eid)
-
-        permission = _get_permission_from_store_or_default(
-            lambda eid=experiment_id: store.get_experiment_permission(eid, username).permission,
-            workspace_level_permission_func=get_workspace_perm,
-        )
-        if not permission.can_read:
-            return False
-
-    return True
-
-
-def validate_can_read_metric_history_bulk_interval():
-    """Checks READ permission on all requested runs for the bulk interval endpoint."""
-    run_ids = request.args.to_dict(flat=False).get("run_ids", [])
-    if not run_ids:
-        raise MlflowException(
-            "GetMetricHistoryBulkInterval request must specify at least one run_id.",
-            INVALID_PARAMETER_VALUE,
-        )
-    return validate_can_read_metric_history_bulk(run_ids)
-
-
-def validate_can_search_datasets():
-    """Checks READ permission on all requested experiments."""
-    if request.method == "POST":
-        data = request.json
-        experiment_ids = data.get("experiment_ids", [])
-    else:
-        experiment_ids = request.args.getlist("experiment_ids")
-
-    if not experiment_ids:
-        raise MlflowException(
-            "SearchDatasets request must specify at least one experiment_id.",
-            INVALID_PARAMETER_VALUE,
-        )
-
-    username = authenticate_request().username
-
-    # Check permission for each experiment
-    for experiment_id in experiment_ids:
-
-        def get_workspace_perm(eid=experiment_id):
-            return _workspace_permission_for_experiment(username, eid)
-
-        permission = _get_permission_from_store_or_default(
-            lambda eid=experiment_id: store.get_experiment_permission(eid, username).permission,
-            workspace_level_permission_func=get_workspace_perm,
-        )
-        if not permission.can_read:
-            return False
-
-    return True
-
-
-def validate_can_create_promptlab_run():
-    """Checks UPDATE permission on the experiment."""
-    data = request.json
-    experiment_id = data.get("experiment_id")
-    if not experiment_id:
-        raise MlflowException(
-            "CreatePromptlabRun request must specify experiment_id.",
-            INVALID_PARAMETER_VALUE,
-        )
-
-    username = authenticate_request().username
-    permission = _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-    return permission.can_update
-
-
-def validate_gateway_proxy():
-    """
-    Allows gateway proxy requests without permission checks.
-    This endpoint proxies to external services that handle their own authorization.
-    """
-    return True
-
-
-BEFORE_REQUEST_HANDLERS = {
-    # Routes for experiments
-    CreateExperiment: validate_can_create_experiment,
-    GetExperiment: validate_can_read_experiment,
-    GetExperimentByName: validate_can_read_experiment_by_name,
-    DeleteExperiment: validate_can_delete_experiment,
-    RestoreExperiment: validate_can_delete_experiment,
-    UpdateExperiment: validate_can_update_experiment,
-    SetExperimentTag: validate_can_update_experiment,
-    DeleteExperimentTag: validate_can_update_experiment,
-    # Routes for runs
-    CreateRun: validate_can_update_experiment,
-    GetRun: validate_can_read_run,
-    DeleteRun: validate_can_delete_run,
-    RestoreRun: validate_can_delete_run,
-    UpdateRun: validate_can_update_run,
-    LogMetric: validate_can_update_run,
-    LogBatch: validate_can_update_run,
-    LogModel: validate_can_update_run,
-    SetTag: validate_can_update_run,
-    DeleteTag: validate_can_update_run,
-    LogParam: validate_can_update_run,
-    GetMetricHistory: validate_can_read_run,
-    ListArtifacts: validate_can_read_run,
-    # Routes for model registry
-    CreateRegisteredModel: validate_can_create_registered_model,
-    GetRegisteredModel: validate_can_read_registered_model,
-    DeleteRegisteredModel: validate_can_delete_registered_model,
-    UpdateRegisteredModel: validate_can_update_registered_model,
-    RenameRegisteredModel: validate_can_update_registered_model,
-    GetLatestVersions: validate_can_read_registered_model,
-    CreateModelVersion: validate_can_update_registered_model,
-    GetModelVersion: validate_can_read_registered_model,
-    DeleteModelVersion: validate_can_delete_registered_model,
-    UpdateModelVersion: validate_can_update_registered_model,
-    TransitionModelVersionStage: validate_can_update_registered_model,
-    GetModelVersionDownloadUri: validate_can_read_registered_model,
-    SetRegisteredModelTag: validate_can_update_registered_model,
-    DeleteRegisteredModelTag: validate_can_update_registered_model,
-    SetModelVersionTag: validate_can_update_registered_model,
-    DeleteModelVersionTag: validate_can_delete_registered_model,
-    SetRegisteredModelAlias: validate_can_update_registered_model,
-    DeleteRegisteredModelAlias: validate_can_delete_registered_model,
-    GetModelVersionByAlias: validate_can_read_registered_model,
-    # Routes for scorers
-    RegisterScorer: validate_can_update_experiment,
-    ListScorers: validate_can_read_experiment,
-    GetScorer: validate_can_read_scorer,
-    DeleteScorer: validate_can_delete_scorer,
-    ListScorerVersions: validate_can_read_scorer,
-    # Routes for gateway secrets
-    GetGatewaySecretInfo: validate_can_read_gateway_secret,
-    UpdateGatewaySecret: validate_can_update_gateway_secret,
-    DeleteGatewaySecret: validate_can_delete_gateway_secret,
-    # Routes for gateway endpoints
-    CreateGatewayEndpoint: validate_can_create_gateway_endpoint,
-    GetGatewayEndpoint: validate_can_read_gateway_endpoint,
-    UpdateGatewayEndpoint: validate_can_update_gateway_endpoint,
-    DeleteGatewayEndpoint: validate_can_delete_gateway_endpoint,
-    # Routes for gateway model definitions
-    CreateGatewayModelDefinition: validate_can_create_gateway_model_definition,
-    GetGatewayModelDefinition: validate_can_read_gateway_model_definition,
-    UpdateGatewayModelDefinition: validate_can_update_gateway_model_definition,
-    DeleteGatewayModelDefinition: validate_can_delete_gateway_model_definition,
-    # Routes for gateway endpoint-model mappings
-    AttachModelToGatewayEndpoint: validate_can_update_gateway_endpoint,
-    DetachModelFromGatewayEndpoint: validate_can_update_gateway_endpoint,
-    # Routes for gateway endpoint bindings
-    CreateGatewayEndpointBinding: validate_can_update_gateway_endpoint,
-    DeleteGatewayEndpointBinding: validate_can_update_gateway_endpoint,
-    ListGatewayEndpointBindings: validate_can_read_gateway_endpoint,
-    # Routes for gateway endpoint tags
-    SetGatewayEndpointTag: validate_can_update_gateway_endpoint,
-    DeleteGatewayEndpointTag: validate_can_update_gateway_endpoint,
-    # Routes for prompt optimization jobs
-    CreatePromptOptimizationJob: validate_can_update_experiment,
-    GetPromptOptimizationJob: validate_can_read_prompt_optimization_job,
-    SearchPromptOptimizationJobs: validate_can_read_experiment,
-    CancelPromptOptimizationJob: validate_can_update_prompt_optimization_job,
-    DeletePromptOptimizationJob: validate_can_delete_prompt_optimization_job,
-    # Workspace routes
-    ListWorkspaces: None,
-    CreateWorkspace: sender_is_admin,
-    GetWorkspace: validate_can_view_workspace,
-    UpdateWorkspace: sender_is_admin,
-    DeleteWorkspace: sender_is_admin,
-}
-
-
-def get_before_request_handler(request_class):
-    return BEFORE_REQUEST_HANDLERS.get(request_class)
-
-
-@functools.lru_cache(maxsize=None)
-def _re_compile_path(path: str) -> re.Pattern:
-    """
-    Convert a path with angle brackets to a regex pattern. For example,
-    "/api/2.0/experiments/<experiment_id>" becomes "/api/2.0/experiments/([^/]+)".
-    """
-    return re.compile(re.sub(r"<([^>]+)>", r"([^/]+)", path))
-
-
-BEFORE_REQUEST_VALIDATORS = {
-    (http_path, method): handler
-    for http_path, handler, methods in get_endpoints(get_before_request_handler)
-    for method in methods
-    if "/scorers/online-config" not in http_path
-}
-
-# Auth-related routes
-BEFORE_REQUEST_VALIDATORS.update(
-    {
-        (SIGNUP, "GET"): validate_can_create_user,
-        (GET_USER, "GET"): validate_can_read_user,
-        (CREATE_USER, "POST"): validate_can_create_user,
-        (UPDATE_USER_PASSWORD, "PATCH"): validate_can_update_user_password,
-        (UPDATE_USER_ADMIN, "PATCH"): validate_can_update_user_admin,
-        (DELETE_USER, "DELETE"): validate_can_delete_user,
-        (GET_EXPERIMENT_PERMISSION, "GET"): validate_can_manage_experiment,
-        (CREATE_EXPERIMENT_PERMISSION, "POST"): validate_can_manage_experiment,
-        (UPDATE_EXPERIMENT_PERMISSION, "PATCH"): validate_can_manage_experiment,
-        (DELETE_EXPERIMENT_PERMISSION, "DELETE"): validate_can_manage_experiment,
-        (GET_REGISTERED_MODEL_PERMISSION, "GET"): validate_can_manage_registered_model,
-        (CREATE_REGISTERED_MODEL_PERMISSION, "POST"): validate_can_manage_registered_model,
-        (UPDATE_REGISTERED_MODEL_PERMISSION, "PATCH"): validate_can_manage_registered_model,
-        (DELETE_REGISTERED_MODEL_PERMISSION, "DELETE"): validate_can_manage_registered_model,
-        (GET_SCORER_PERMISSION, "GET"): validate_can_manage_scorer_permission,
-        (CREATE_SCORER_PERMISSION, "POST"): validate_can_manage_scorer_permission,
-        (UPDATE_SCORER_PERMISSION, "PATCH"): validate_can_manage_scorer_permission,
-        (DELETE_SCORER_PERMISSION, "DELETE"): validate_can_manage_scorer_permission,
-        # Gateway secret permissions
-        (GET_GATEWAY_SECRET_PERMISSION, "GET"): validate_can_manage_gateway_secret,
-        (CREATE_GATEWAY_SECRET_PERMISSION, "POST"): validate_can_manage_gateway_secret,
-        (UPDATE_GATEWAY_SECRET_PERMISSION, "PATCH"): validate_can_manage_gateway_secret,
-        (DELETE_GATEWAY_SECRET_PERMISSION, "DELETE"): validate_can_manage_gateway_secret,
-        # Gateway endpoint permissions
-        (GET_GATEWAY_ENDPOINT_PERMISSION, "GET"): validate_can_manage_gateway_endpoint,
-        (CREATE_GATEWAY_ENDPOINT_PERMISSION, "POST"): validate_can_manage_gateway_endpoint,
-        (UPDATE_GATEWAY_ENDPOINT_PERMISSION, "PATCH"): validate_can_manage_gateway_endpoint,
-        (DELETE_GATEWAY_ENDPOINT_PERMISSION, "DELETE"): validate_can_manage_gateway_endpoint,
-        # Gateway model definition permissions
-        (
-            GET_GATEWAY_MODEL_DEFINITION_PERMISSION,
-            "GET",
-        ): validate_can_manage_gateway_model_definition,
-        (
-            CREATE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-            "POST",
-        ): validate_can_manage_gateway_model_definition,
-        (
-            UPDATE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-            "PATCH",
-        ): validate_can_manage_gateway_model_definition,
-        (
-            DELETE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-            "DELETE",
-        ): validate_can_manage_gateway_model_definition,
-    }
+from open_webui.utils.mcp.client import MCPClient
+from open_webui.utils.memory import add_memory_context, review_memory_after_turn
+from open_webui.utils.misc import (
+    add_or_update_system_message,
+    add_or_update_user_message,
+    convert_logit_bias_input_to_json,
+    convert_output_to_messages,
+    deep_update,
+    extract_urls,
+    get_content_from_message,
+    get_last_assistant_message,
+    get_last_user_message,
+    get_last_user_message_item,
+    get_message_list,
+    get_system_message,
+    is_string_allowed,
+    merge_system_messages,
+    prepend_to_first_user_message_content,
+    replace_system_message_content,
+    set_last_user_message_content,
+    strip_empty_content_blocks,
 )
-
-# Flask routes (no proto mapping)
-BEFORE_REQUEST_VALIDATORS.update(
-    {
-        (GET_ARTIFACT, "GET"): validate_can_read_run_artifact,
-        (UPLOAD_ARTIFACT, "POST"): validate_can_update_run_artifact,
-        (GET_MODEL_VERSION_ARTIFACT, "GET"): validate_can_read_model_version_artifact,
-        (GET_TRACE_ARTIFACT, "GET"): validate_can_read_trace_artifact,
-        (GET_METRIC_HISTORY_BULK, "GET"): validate_can_read_metric_history_bulk,
-        (GET_METRIC_HISTORY_BULK_INTERVAL, "GET"): validate_can_read_metric_history_bulk_interval,
-        (SEARCH_DATASETS, "POST"): validate_can_search_datasets,
-        (CREATE_PROMPTLAB_RUN, "POST"): validate_can_create_promptlab_run,
-        (GATEWAY_PROXY, "GET"): validate_gateway_proxy,
-        (GATEWAY_PROXY, "POST"): validate_gateway_proxy,
-        (INVOKE_SCORER, "POST"): validate_gateway_proxy,
-        (LIST_WORKSPACE_PERMISSIONS, "GET"): validate_can_list_workspace_permissions,
-        (LIST_WORKSPACE_PERMISSIONS, "POST"): validate_can_modify_workspace_permission,
-        (LIST_WORKSPACE_PERMISSIONS, "DELETE"): validate_can_modify_workspace_permission,
-        (LIST_USER_WORKSPACE_PERMISSIONS, "GET"): sender_is_admin,
-    }
+from open_webui.utils.payload import apply_system_prompt_to_body, resolve_system_prompt
+from open_webui.utils.plugin import load_function_module_by_id
+from open_webui.utils.response import merge_usage, normalize_usage
+from open_webui.utils.sanitize import sanitize_code
+from open_webui.utils.task import (
+    get_task_model_id,
+    rag_template,
+    tools_function_calling_generation_template,
 )
+from open_webui.utils.tools import (
+    build_tool_server_headers,
+    get_builtin_tools,
+    get_terminal_tools,
+    get_tools,
+    get_updated_tool_function,
+)
+from open_webui.utils.webhook import post_webhook
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
-# Precompile workspace parameterized paths (e.g., workspace_name) for fast matching.
-WORKSPACE_PARAMETERIZED_BEFORE_REQUEST_VALIDATORS = {
-    (_re_compile_path(path), method): handler
-    for (path, method), handler in BEFORE_REQUEST_VALIDATORS.items()
-    if "<" in path and "/workspaces/" in path
-}
-
-LOGGED_MODEL_BEFORE_REQUEST_HANDLERS = {
-    CreateLoggedModel: validate_can_update_experiment,
-    GetLoggedModel: validate_can_read_logged_model,
-    DeleteLoggedModel: validate_can_delete_logged_model,
-    FinalizeLoggedModel: validate_can_update_logged_model,
-    DeleteLoggedModelTag: validate_can_delete_logged_model,
-    SetLoggedModelTags: validate_can_update_logged_model,
-    LogLoggedModelParamsRequest: validate_can_update_logged_model,
-}
+logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
+log = logging.getLogger(__name__)
 
 
-def get_logged_model_before_request_handler(request_class):
-    return LOGGED_MODEL_BEFORE_REQUEST_HANDLERS.get(request_class)
+# We believe in one maker of all models, seen and unseen,
+# and in the reasoning which proceeds from the architect.
+# We look for the resurrection of dead processes and the
+# inference of the world to come.
+DEFAULT_REASONING_TAGS = [
+    ('<think>', '</think>'),
+    ('<thinking>', '</thinking>'),
+    ('<reason>', '</reason>'),
+    ('<reasoning>', '</reasoning>'),
+    ('<thought>', '</thought>'),
+    ('<Thought>', '</Thought>'),
+    ('<|begin_of_thought|>', '<|end_of_thought|>'),
+    ('◁think▷', '◁/think▷'),
+]
+
+DEFAULT_SOLUTION_TAGS = [('<|begin_of_solution|>', '<|end_of_solution|>')]
+DEFAULT_CODE_INTERPRETER_TAGS = [('<code_interpreter>', '</code_interpreter>')]
 
 
-LOGGED_MODEL_BEFORE_REQUEST_VALIDATORS = {
-    # Paths for logged models contains path parameters (e.g. /mlflow/logged-models/<model_id>)
-    (_re_compile_path(http_path), method): handler
-    for http_path, handler, methods in get_endpoints(get_logged_model_before_request_handler)
-    for method in methods
-}
-
-_AJAX_API_PATH_PREFIX = "/ajax-api/2.0"
+def output_id(prefix: str) -> str:
+    """Generate OR-style ID: prefix + 24-char hex UUID."""
+    return f'{prefix}_{uuid4().hex[:24]}'
 
 
-_AJAX_API_PATH_PREFIX = "/ajax-api/2.0"
+def _split_tool_calls(
+    tool_calls: list[dict],
+) -> list[dict]:
+    """Expand tool calls whose arguments contain multiple back-to-back JSON objects.
 
+    Some models (e.g. GPT-5.4) send multiple complete JSON argument objects
+    under the same tool call index, producing concatenated invalid JSON like:
+        '{"query":"A","count":5}{"query":"B","count":5}'
 
-def _is_proxy_artifact_path(path: str) -> bool:
-    # MlflowArtifactsService endpoints are registered at both /api/2.0/... and /ajax-api/2.0/...
-    # paths (see handlers._get_paths), so we need to check both prefixes for auth validation.
-    prefixes = [
-        f"{_REST_API_PATH_PREFIX}/mlflow-artifacts/artifacts",
-        f"{_AJAX_API_PATH_PREFIX}/mlflow-artifacts/artifacts",
-        f"{_REST_API_PATH_PREFIX}/mlflow-artifacts/mpu/",
-        f"{_AJAX_API_PATH_PREFIX}/mlflow-artifacts/mpu/",
-    ]
-    return any(path.startswith(prefix) for prefix in prefixes)
-
-
-def _get_proxy_artifact_validator(
-    method: str, view_args: dict[str, Any] | None
-) -> Callable[[], bool] | None:
-    if view_args is None:
-        return validate_can_read_experiment_artifact_proxy  # List
-
-    return {
-        "GET": validate_can_read_experiment_artifact_proxy,  # Download
-        "PUT": validate_can_update_experiment_artifact_proxy,  # Upload
-        "DELETE": validate_can_delete_experiment_artifact_proxy,  # Delete
-        "POST": validate_can_update_experiment_artifact_proxy,  # Multipart upload
-    }.get(method)
-
-
-def authenticate_request() -> Authorization | Response:
-    """Use configured authorization function to get request authorization."""
-    auth_func = get_auth_func(auth_config.authorization_function)
-    return auth_func()
-
-
-@functools.lru_cache(maxsize=None)
-def get_auth_func(authorization_function: str) -> Callable[[], Authorization | Response]:
+    Each such tool call is split into separate entries so each gets executed
+    independently. Single-object arguments pass through unchanged.
     """
-    Import and return the specified authorization function.
 
-    Args:
-        authorization_function: A string of the form "module.submodule:auth_func"
-    """
-    mod_name, fn_name = authorization_function.split(":", 1)
-    module = importlib.import_module(mod_name)
-    return getattr(module, fn_name)
+    def split_json_objects(raw: str) -> list[str]:
+        decoder = json.JSONDecoder()
+        results = []
+        position = 0
 
-
-def authenticate_request_basic_auth() -> Authorization | Response:
-    """Authenticate the request using basic auth."""
-    if request.authorization is None:
-        return make_basic_auth_response()
-
-    username = request.authorization.username
-    password = request.authorization.password
-    if store.authenticate_user(username, password):
-        return request.authorization
-    else:
-        # let user attempt login again
-        return make_basic_auth_response()
-
-
-def _find_validator(req: Request) -> Callable[[], bool] | None:
-    """
-    Finds the validator matching the request path and method.
-    """
-    if "/mlflow/logged-models" in req.path:
-        # logged model routes are not registered in the app
-        # so we need to check them manually
-        return next(
-            (
-                v
-                for (pat, method), v in LOGGED_MODEL_BEFORE_REQUEST_VALIDATORS.items()
-                if pat.fullmatch(req.path) and method == req.method
-            ),
-            None,
-        )
-
-    if validator := BEFORE_REQUEST_VALIDATORS.get((req.path, req.method)):
-        return validator
-
-    # Workspace permission routes use parameterized path matching (e.g., workspace_name).
-    # Only check these when workspaces are enabled to avoid unnecessary regex matching.
-    if MLFLOW_ENABLE_WORKSPACES.get():
-        return _get_workspace_validator(req)
-
-    if "/workspaces/" not in req.path:
-        return None
-
-    # Regex matching for parameterized workspace paths.
-    for (path, method), candidate in WORKSPACE_PARAMETERIZED_BEFORE_REQUEST_VALIDATORS.items():
-        if method != req.method:
-            continue
-        if path.fullmatch(req.path):
-            return candidate
-
-    return None
-
-
-def _get_workspace_validator(req: Request) -> Callable[[], bool] | None:
-    if "/workspaces/" not in req.path:
-        return None
-    for (path, method), candidate in WORKSPACE_PARAMETERIZED_BEFORE_REQUEST_VALIDATORS.items():
-        if method != req.method:
-            continue
-        if path.fullmatch(req.path):
-            return candidate
-    return None
-
-
-@catch_mlflow_exception
-def _before_request():
-    if is_unprotected_route(request.path):
-        return
-
-    authorization = authenticate_request()
-    if isinstance(authorization, Response):
-        return authorization
-    elif not isinstance(authorization, Authorization):
-        raise MlflowException(
-            f"Unsupported result type from {auth_config.authorization_function}: "
-            f"'{type(authorization).__name__}'",
-            INTERNAL_ERROR,
-        )
-
-    # admins don't need to be authorized
-    if sender_is_admin():
-        return
-
-    # authorization
-    if validator := _find_validator(request):
-        if not validator():
-            return make_forbidden_response()
-    elif _is_proxy_artifact_path(request.path):
-        if validator := _get_proxy_artifact_validator(request.method, request.view_args):
-            if not validator():
-                return make_forbidden_response()
-
-
-def set_can_manage_experiment_permission(resp: Response):
-    response_message = CreateExperiment.Response()
-    parse_dict(resp.json, response_message)
-    experiment_id = response_message.experiment_id
-    username = authenticate_request().username
-    store.create_experiment_permission(experiment_id, username, MANAGE.name)
-
-
-def set_can_manage_registered_model_permission(resp: Response):
-    response_message = CreateRegisteredModel.Response()
-    parse_dict(resp.json, response_message)
-    name = response_message.registered_model.name
-    username = authenticate_request().username
-    store.create_registered_model_permission(name, username, MANAGE.name)
-
-
-def delete_can_manage_registered_model_permission(resp: Response):
-    """
-    Delete registered model permissions when the model is deleted.
-
-    We need to do this because the primary key of the registered model is the name,
-    unlike the experiment where the primary key is experiment_id (UUID). Therefore,
-    we have to delete existing permission records when the model is deleted; otherwise, they would
-    implicitly apply if a new model is later created with the same name.
-    """
-    # Get model name from request context because it's not available in the response
-    name = request.get_json(force=True, silent=True)["name"]
-    store.delete_registered_model_permissions(name)
-
-
-def _validate_workspace_permission_payload(payload: dict[str, Any]) -> tuple[str, str]:
-    if missing := {"username", "permission"} - payload.keys():
-        raise MlflowException.invalid_parameter_value(
-            "Workspace permission payload missing keys: " + ", ".join(sorted(missing))
-        )
-    return payload["username"], payload["permission"]
-
-
-@catch_mlflow_exception
-@_disable_if_workspaces_disabled
-def list_workspace_permissions(workspace_name: str):
-    permissions = store.list_workspace_permissions(workspace_name)
-
-    if not sender_is_admin():
-        username = authenticate_request().username
-        perm = _workspace_permission(username, workspace_name)
-        if perm is None or not perm.can_manage:
-            return make_forbidden_response()
-
-    return jsonify({"permissions": [perm.to_json() for perm in permissions]})
-
-
-@catch_mlflow_exception
-@_disable_if_workspaces_disabled
-def set_workspace_permission(workspace_name: str):
-    payload = request.get_json(force=True, silent=True) or {}
-    username, permission = _validate_workspace_permission_payload(payload)
-    workspace_store = _get_workspace_store()
-    workspace_store.get_workspace(workspace_name)
-    perm = store.set_workspace_permission(workspace_name, username, permission)
-    return jsonify({"permission": perm.to_json()})
-
-
-@catch_mlflow_exception
-@_disable_if_workspaces_disabled
-def delete_workspace_permission(workspace_name: str):
-    username = _get_request_param("username")
-    store.delete_workspace_permission(workspace_name, username)
-    return Response(status=204)
-
-
-@catch_mlflow_exception
-@_disable_if_workspaces_disabled
-def list_user_workspace_permissions():
-    username = _get_request_param("username")
-    permissions = store.list_user_workspace_permissions(username)
-    return jsonify({"permissions": [perm.to_json() for perm in permissions]})
-
-
-def filter_list_workspaces(resp: Response) -> None:
-    if sender_is_admin():
-        return
-
-    username = authenticate_request().username
-    response_message = ListWorkspaces.Response()
-    parse_dict(resp.json, response_message)
-
-    allowed: set[str] = set()
-    if username is not None:
-        allowed = set(store.list_accessible_workspace_names(username))
-        if auth_config.grant_default_workspace_access:
-            default_workspace, _ = get_default_workspace_optional(_get_workspace_store())
-            if default_workspace:
-                allowed.add(default_workspace.name)
-
-    filtered = [ws for ws in response_message.workspaces if ws.name in allowed]
-    response_message.ClearField("workspaces")
-    response_message.workspaces.extend(filtered)
-
-    resp.data = message_to_json(response_message)
-
-
-def _cleanup_workspace_permissions(resp: Response) -> None:
-    # This handler runs only on successful DELETE responses. Cleanup failures are logged
-    # instead of raised because the workspace deletion has already succeeded at this point.
-    workspace_name = request.view_args.get("workspace_name") if request.view_args else None
-    if not workspace_name:
-        return
-
-    try:
-        store.delete_workspace_permissions_for_workspace(workspace_name)
-    except MlflowException as e:
-        _logger.error(
-            "Failed to delete workspace permissions for workspace '%s': %s",
-            workspace_name,
-            e,
-        )
-
-
-def filter_search_experiments(resp: Response):
-    if sender_is_admin():
-        return
-
-    response_message = SearchExperiments.Response()
-    parse_dict(resp.json, response_message)
-
-    # fetch permissions
-    username = authenticate_request().username
-    perms = store.list_experiment_permissions(username)
-    can_read = {p.experiment_id: get_permission(p.permission).can_read for p in perms}
-    default_can_read = get_permission(auth_config.default_permission).can_read
-    # filter out unreadable
-    for e in list(response_message.experiments):
-        if not _has_experiment_read_access(username, e.experiment_id, can_read, default_can_read):
-            response_message.experiments.remove(e)
-
-    # re-fetch to fill max results
-    request_message = _get_request_message(SearchExperiments())
-    while (
-        len(response_message.experiments) < request_message.max_results
-        and response_message.next_page_token != ""
-    ):
-        refetched: PagedList[Experiment] = _get_tracking_store().search_experiments(
-            view_type=request_message.view_type,
-            max_results=request_message.max_results,
-            order_by=request_message.order_by,
-            filter_string=request_message.filter,
-            page_token=response_message.next_page_token,
-        )
-        refetched = refetched[: request_message.max_results - len(response_message.experiments)]
-        if len(refetched) == 0:
-            response_message.next_page_token = ""
-            break
-
-        refetched_readable_proto = [
-            e.to_proto()
-            for e in refetched
-            if _has_experiment_read_access(username, e.experiment_id, can_read, default_can_read)
-        ]
-        response_message.experiments.extend(refetched_readable_proto)
-
-        # recalculate next page token
-        start_offset = SearchUtils.parse_start_offset_from_page_token(
-            response_message.next_page_token
-        )
-        final_offset = start_offset + len(refetched)
-        response_message.next_page_token = SearchUtils.create_page_token(final_offset)
-
-    resp.data = message_to_json(response_message)
-
-
-def filter_search_logged_models(resp: Response) -> None:
-    """
-    Filter out unreadable logged models from the search results.
-    """
-    from mlflow.utils.search_utils import SearchLoggedModelsPaginationToken as Token
-
-    if sender_is_admin():
-        return
-
-    response_proto = SearchLoggedModels.Response()
-    parse_dict(resp.json, response_proto)
-
-    # fetch permissions
-    username = authenticate_request().username
-    perms = store.list_experiment_permissions(username)
-    can_read = {p.experiment_id: get_permission(p.permission).can_read for p in perms}
-    default_can_read = get_permission(auth_config.default_permission).can_read
-    # Remove unreadable models
-    for m in list(response_proto.models):
-        if not _has_experiment_read_access(
-            username, m.info.experiment_id, can_read, default_can_read
-        ):
-            response_proto.models.remove(m)
-
-    request_proto = _get_request_message(SearchLoggedModels())
-    max_results = request_proto.max_results
-    # These parameters won't change in the loop
-    params = {
-        "experiment_ids": list(request_proto.experiment_ids),
-        "filter_string": request_proto.filter or None,
-        "order_by": (
-            [
-                {
-                    "field_name": ob.field_name,
-                    "ascending": ob.ascending,
-                    "dataset_name": ob.dataset_name,
-                    "dataset_digest": ob.dataset_digest,
-                }
-                for ob in request_proto.order_by
-            ]
-            if request_proto.order_by
-            else None
-        ),
-    }
-    next_page_token = response_proto.next_page_token or None
-    tracking_store = _get_tracking_store()
-    while len(response_proto.models) < max_results and next_page_token is not None:
-        batch: PagedList[LoggedModel] = tracking_store.search_logged_models(
-            max_results=max_results, page_token=next_page_token, **params
-        )
-        is_last_page = batch.token is None
-        offset = Token.decode(next_page_token).offset if next_page_token else 0
-        last_index = len(batch) - 1
-        for index, model in enumerate(batch):
-            if not _has_experiment_read_access(
-                username, model.experiment_id, can_read, default_can_read
-            ):
-                continue
-            response_proto.models.append(model.to_proto())
-            if len(response_proto.models) >= max_results:
-                next_page_token = (
-                    None
-                    if is_last_page and index == last_index
-                    else Token(offset=offset + index + 1, **params).encode()
-                )
+        while position < len(raw):
+            while position < len(raw) and raw[position].isspace():
+                position += 1
+            if position >= len(raw):
                 break
-        else:
-            # If we reach here, it means we have not reached the max results.
-            next_page_token = (
-                None if is_last_page else Token(offset=offset + max_results, **params).encode()
-            )
-
-    if next_page_token:
-        response_proto.next_page_token = next_page_token
-    resp.data = message_to_json(response_proto)
-
-
-def filter_search_registered_models(resp: Response):
-    if sender_is_admin():
-        return
-
-    response_message = SearchRegisteredModels.Response()
-    parse_dict(resp.json, response_message)
-
-    # fetch permissions
-    username = authenticate_request().username
-    perms = store.list_registered_model_permissions(username)
-    can_read = {p.name: get_permission(p.permission).can_read for p in perms}
-    default_can_read = get_permission(auth_config.default_permission).can_read
-    # filter out unreadable
-    for rm in list(response_message.registered_models):
-        if not _has_registered_model_read_access(username, rm.name, can_read, default_can_read):
-            response_message.registered_models.remove(rm)
-
-    # re-fetch to fill max results
-    request_message = _get_request_message(SearchRegisteredModels())
-    while (
-        len(response_message.registered_models) < request_message.max_results
-        and response_message.next_page_token != ""
-    ):
-        refetched: PagedList[RegisteredModel] = (
-            _get_model_registry_store().search_registered_models(
-                filter_string=request_message.filter,
-                max_results=request_message.max_results,
-                order_by=request_message.order_by,
-                page_token=response_message.next_page_token,
-            )
-        )
-        refetched = refetched[
-            : request_message.max_results - len(response_message.registered_models)
-        ]
-        if len(refetched) == 0:
-            response_message.next_page_token = ""
-            break
-
-        refetched_readable_proto = [
-            rm.to_proto()
-            for rm in refetched
-            if _has_registered_model_read_access(username, rm.name, can_read, default_can_read)
-        ]
-        response_message.registered_models.extend(refetched_readable_proto)
-
-        # recalculate next page token
-        start_offset = SearchUtils.parse_start_offset_from_page_token(
-            response_message.next_page_token
-        )
-        final_offset = start_offset + len(refetched)
-        response_message.next_page_token = SearchUtils.create_page_token(final_offset)
-
-    resp.data = message_to_json(response_message)
-
-
-def rename_registered_model_permission(resp: Response):
-    """
-    A model registry can be assigned to multiple users with different permissions.
-
-    Changing the model registry name must be propagated to all users.
-    """
-    # get registry model name before update
-    data = request.get_json(force=True, silent=True)
-    store.rename_registered_model_permissions(data.get("name"), data.get("new_name"))
-
-
-def set_can_manage_scorer_permission(resp: Response):
-    response_message = RegisterScorer.Response()
-    parse_dict(resp.json, response_message)
-    experiment_id = response_message.experiment_id
-    name = response_message.name
-    username = authenticate_request().username
-    store.create_scorer_permission(experiment_id, name, username, MANAGE.name)
-
-
-def delete_scorer_permissions_cascade(resp: Response):
-    data = request.get_json(force=True, silent=True)
-    experiment_id = data.get("experiment_id")
-    name = data.get("name")
-    if experiment_id and name:
-        store.delete_scorer_permissions_for_scorer(experiment_id, name)
-
-
-def set_can_manage_gateway_secret_permission(resp: Response):
-    response_message = CreateGatewaySecret.Response()
-    parse_dict(resp.json, response_message)
-    secret_id = response_message.secret.secret_id
-    username = authenticate_request().username
-    store.create_gateway_secret_permission(secret_id, username, MANAGE.name)
-
-
-def delete_gateway_secret_permissions_cascade(resp: Response):
-    data = request.get_json(force=True, silent=True)
-    if secret_id := data.get("secret_id"):
-        store.delete_gateway_secret_permissions_for_secret(secret_id)
-
-
-def set_can_manage_gateway_endpoint_permission(resp: Response):
-    response_message = CreateGatewayEndpoint.Response()
-    parse_dict(resp.json, response_message)
-    endpoint_id = response_message.endpoint.endpoint_id
-    username = authenticate_request().username
-    store.create_gateway_endpoint_permission(endpoint_id, username, MANAGE.name)
-
-
-def delete_gateway_endpoint_permissions_cascade(resp: Response):
-    data = request.get_json(force=True, silent=True)
-    if endpoint_id := data.get("endpoint_id"):
-        store.delete_gateway_endpoint_permissions_for_endpoint(endpoint_id)
-
-
-def set_can_manage_gateway_model_definition_permission(resp: Response):
-    response_message = CreateGatewayModelDefinition.Response()
-    parse_dict(resp.json, response_message)
-    model_definition_id = response_message.model_definition.model_definition_id
-    username = authenticate_request().username
-    store.create_gateway_model_definition_permission(model_definition_id, username, MANAGE.name)
-
-
-def delete_gateway_model_definition_permissions_cascade(resp: Response):
-    data = request.get_json(force=True, silent=True)
-    if model_definition_id := data.get("model_definition_id"):
-        store.delete_gateway_model_definition_permissions_for_model_definition(model_definition_id)
-
-
-AFTER_REQUEST_PATH_HANDLERS = {
-    CreateExperiment: set_can_manage_experiment_permission,
-    CreateRegisteredModel: set_can_manage_registered_model_permission,
-    DeleteRegisteredModel: delete_can_manage_registered_model_permission,
-    SearchExperiments: filter_search_experiments,
-    SearchLoggedModels: filter_search_logged_models,
-    SearchRegisteredModels: filter_search_registered_models,
-    RenameRegisteredModel: rename_registered_model_permission,
-    RegisterScorer: set_can_manage_scorer_permission,
-    DeleteScorer: delete_scorer_permissions_cascade,
-    CreateGatewaySecret: set_can_manage_gateway_secret_permission,
-    DeleteGatewaySecret: delete_gateway_secret_permissions_cascade,
-    CreateGatewayEndpoint: set_can_manage_gateway_endpoint_permission,
-    DeleteGatewayEndpoint: delete_gateway_endpoint_permissions_cascade,
-    CreateGatewayModelDefinition: set_can_manage_gateway_model_definition_permission,
-    DeleteGatewayModelDefinition: delete_gateway_model_definition_permissions_cascade,
-    ListWorkspaces: filter_list_workspaces,
-    DeleteWorkspace: _cleanup_workspace_permissions,
-}
-
-
-def get_after_request_handler(request_class):
-    return AFTER_REQUEST_PATH_HANDLERS.get(request_class)
-
-
-_AJAX_GATEWAY_PATHS = frozenset(
-    [
-        GATEWAY_SUPPORTED_PROVIDERS,
-        GATEWAY_SUPPORTED_MODELS,
-        GATEWAY_PROVIDER_CONFIG,
-        GATEWAY_SECRETS_CONFIG,
-        INVOKE_SCORER,
-    ]
-)
-
-AFTER_REQUEST_HANDLERS = {
-    (http_path, method): handler
-    for http_path, handler, methods in get_endpoints(get_after_request_handler)
-    for method in methods
-    if handler is not None
-    and "/graphql" not in http_path
-    and "/scorers/online-config" not in http_path
-    and "/mlflow/server-info" not in http_path
-    and http_path not in _AJAX_GATEWAY_PATHS
-}
-
-# Precompile workspace parameterized paths for after-request handlers.
-WORKSPACE_PARAMETERIZED_AFTER_REQUEST_HANDLERS = {
-    (_re_compile_path(path), method): handler
-    for (path, method), handler in AFTER_REQUEST_HANDLERS.items()
-    if "<" in path and "/workspaces/" in path
-}
-
-
-@catch_mlflow_exception
-def _after_request(resp: Response):
-    if 400 <= resp.status_code < 600:
-        return resp
-
-    handler = AFTER_REQUEST_HANDLERS.get((request.path, request.method))
-    if handler is None and "/workspaces/" in request.path:
-        # Fallback to regex matching for workspace paths.
-        for (path, method), candidate in WORKSPACE_PARAMETERIZED_AFTER_REQUEST_HANDLERS.items():
-            if method != request.method:
-                continue
-            if path.fullmatch(request.path):
-                handler = candidate
-                break
-
-    if handler is not None:
-        handler(resp)
-    return resp
-
-
-def create_admin_user(username, password):
-    if not store.has_user(username):
-        try:
-            store.create_user(username, password, is_admin=True)
-            _logger.info(
-                f"Created admin user '{username}'. "
-                "It is recommended that you set a new password as soon as possible "
-                f"on {UPDATE_USER_PASSWORD}."
-            )
-        except MlflowException as e:
-            if isinstance(e.__cause__, sqlalchemy.exc.IntegrityError):
-                # When multiple workers are starting up at the same time, it's possible
-                # that they try to create the admin user at the same time and one of them
-                # will succeed while the others will fail with an IntegrityError.
-                return
-            raise
-
-
-def alert(href: str):
-    return render_template_string(
-        r"""
-<script type = "text/javascript">
-{% with messages = get_flashed_messages() %}
-  {% if messages %}
-    {% for message in messages %}
-      alert("{{ message }}");
-    {% endfor %}
-  {% endif %}
-{% endwith %}
-      window.location.href = "{{ href }}";
-</script>
-""",
-        href=href,
-    )
-
-
-def signup():
-    return render_template_string(
-        r"""
-<style>
-  form {
-    background-color: #F5F5F5;
-    border: 1px solid #CCCCCC;
-    border-radius: 4px;
-    padding: 20px;
-    max-width: 400px;
-    margin: 0 auto;
-    font-family: Arial, sans-serif;
-    font-size: 14px;
-    line-height: 1.5;
-  }
-
-  input[type=text], input[type=password] {
-    width: 100%;
-    padding: 10px;
-    margin-bottom: 10px;
-    border: 1px solid #CCCCCC;
-    border-radius: 4px;
-    box-sizing: border-box;
-  }
-  input[type=submit] {
-    background-color: rgb(34, 114, 180);
-    color: #FFFFFF;
-    border: none;
-    border-radius: 4px;
-    padding: 10px 20px;
-    cursor: pointer;
-    font-size: 16px;
-    font-weight: bold;
-  }
-
-  input[type=submit]:hover {
-    background-color: rgb(14, 83, 139);
-  }
-
-  .logo-container {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-bottom: 10px;
-  }
-
-  .logo {
-    max-width: 150px;
-    margin-right: 10px;
-  }
-</style>
-
-<form action="{{ users_route }}" method="post">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"/>
-  <div class="logo-container">
-    {% autoescape false %}
-    {{ mlflow_logo }}
-    {% endautoescape %}
-  </div>
-  <label for="username">Username:</label>
-  <br>
-  <input type="text" id="username" name="username" minlength="4">
-  <br>
-  <label for="password">Password:</label>
-  <br>
-  <input type="password" id="password" name="password" minlength="12">
-  <br>
-  <br>
-  <input type="submit" value="Sign up">
-</form>
-""",
-        mlflow_logo=MLFLOW_LOGO,
-        users_route=CREATE_USER_UI,
-    )
-
-
-@catch_mlflow_exception
-def create_user_ui(csrf):
-    csrf.protect()
-    content_type = request.headers.get("Content-Type")
-    if content_type == "application/x-www-form-urlencoded":
-        username = request.form["username"]
-        password = request.form["password"]
-
-        if not username or not password:
-            message = "Username and password cannot be empty."
-            return make_response(message, 400)
-
-        if store.has_user(username):
-            flash(f"Username has already been taken: {username}")
-            return alert(href=SIGNUP)
-
-        store.create_user(username, password)
-        flash(f"Successfully signed up user: {username}")
-        return alert(href=HOME)
-    else:
-        message = "Invalid content type. Must be application/x-www-form-urlencoded"
-        return make_response(message, 400)
-
-
-@catch_mlflow_exception
-def create_user():
-    content_type = request.headers.get("Content-Type")
-    if content_type == "application/json":
-        username = _get_request_param("username")
-        password = _get_request_param("password")
-
-        if not username or not password:
-            message = "Username and password cannot be empty."
-            return make_response(message, 400)
-
-        user = store.create_user(username, password)
-        return jsonify({"user": user.to_json()})
-    else:
-        message = "Invalid content type. Must be application/json"
-        return make_response(message, 400)
-
-
-@catch_mlflow_exception
-def get_user():
-    username = _get_request_param("username")
-    user = store.get_user(username)
-    return jsonify({"user": user.to_json()})
-
-
-@catch_mlflow_exception
-def update_user_password():
-    username = _get_request_param("username")
-    password = _get_request_param("password")
-    store.update_user(username, password=password)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def update_user_admin():
-    username = _get_request_param("username")
-    is_admin = _get_request_param("is_admin")
-    store.update_user(username, is_admin=is_admin)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def delete_user():
-    username = _get_request_param("username")
-    store.delete_user(username)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def create_experiment_permission():
-    experiment_id = _get_request_param("experiment_id")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    ep = store.create_experiment_permission(experiment_id, username, permission)
-    return jsonify({"experiment_permission": ep.to_json()})
-
-
-@catch_mlflow_exception
-def get_experiment_permission():
-    experiment_id = _get_request_param("experiment_id")
-    username = _get_request_param("username")
-    ep = store.get_experiment_permission(experiment_id, username)
-    return make_response({"experiment_permission": ep.to_json()})
-
-
-@catch_mlflow_exception
-def update_experiment_permission():
-    experiment_id = _get_request_param("experiment_id")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    store.update_experiment_permission(experiment_id, username, permission)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def delete_experiment_permission():
-    experiment_id = _get_request_param("experiment_id")
-    username = _get_request_param("username")
-    store.delete_experiment_permission(experiment_id, username)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def create_registered_model_permission():
-    name = _get_request_param("name")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    rmp = store.create_registered_model_permission(name, username, permission)
-    return make_response({"registered_model_permission": rmp.to_json()})
-
-
-@catch_mlflow_exception
-def get_registered_model_permission():
-    name = _get_request_param("name")
-    username = _get_request_param("username")
-    rmp = store.get_registered_model_permission(name, username)
-    return make_response({"registered_model_permission": rmp.to_json()})
-
-
-@catch_mlflow_exception
-def update_registered_model_permission():
-    name = _get_request_param("name")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    store.update_registered_model_permission(name, username, permission)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def delete_registered_model_permission():
-    name = _get_request_param("name")
-    username = _get_request_param("username")
-    store.delete_registered_model_permission(name, username)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def create_scorer_permission():
-    experiment_id = _get_request_param("experiment_id")
-    scorer_name = _get_request_param("scorer_name")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    sp = store.create_scorer_permission(experiment_id, scorer_name, username, permission)
-    return jsonify({"scorer_permission": sp.to_json()})
-
-
-@catch_mlflow_exception
-def get_scorer_permission():
-    experiment_id = _get_request_param("experiment_id")
-    scorer_name = _get_request_param("scorer_name")
-    username = _get_request_param("username")
-    sp = store.get_scorer_permission(experiment_id, scorer_name, username)
-    return make_response({"scorer_permission": sp.to_json()})
-
-
-@catch_mlflow_exception
-def update_scorer_permission():
-    experiment_id = _get_request_param("experiment_id")
-    scorer_name = _get_request_param("scorer_name")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    store.update_scorer_permission(experiment_id, scorer_name, username, permission)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def delete_scorer_permission():
-    experiment_id = _get_request_param("experiment_id")
-    scorer_name = _get_request_param("scorer_name")
-    username = _get_request_param("username")
-    store.delete_scorer_permission(experiment_id, scorer_name, username)
-    return make_response({})
-
-
-# =============================================================================
-# Gateway Permission API Endpoints
-# =============================================================================
-
-
-@catch_mlflow_exception
-def create_gateway_secret_permission():
-    secret_id = _get_request_param("secret_id")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    perm = store.create_gateway_secret_permission(secret_id, username, permission)
-    return jsonify({"gateway_secret_permission": perm.to_json()})
-
-
-@catch_mlflow_exception
-def get_gateway_secret_permission():
-    secret_id = _get_request_param("secret_id")
-    username = _get_request_param("username")
-    perm = store.get_gateway_secret_permission(secret_id, username)
-    return make_response({"gateway_secret_permission": perm.to_json()})
-
-
-@catch_mlflow_exception
-def update_gateway_secret_permission():
-    secret_id = _get_request_param("secret_id")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    store.update_gateway_secret_permission(secret_id, username, permission)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def delete_gateway_secret_permission():
-    secret_id = _get_request_param("secret_id")
-    username = _get_request_param("username")
-    store.delete_gateway_secret_permission(secret_id, username)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def create_gateway_endpoint_permission():
-    endpoint_id = _get_request_param("endpoint_id")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    perm = store.create_gateway_endpoint_permission(endpoint_id, username, permission)
-    return jsonify({"gateway_endpoint_permission": perm.to_json()})
-
-
-@catch_mlflow_exception
-def get_gateway_endpoint_permission():
-    endpoint_id = _get_request_param("endpoint_id")
-    username = _get_request_param("username")
-    perm = store.get_gateway_endpoint_permission(endpoint_id, username)
-    return make_response({"gateway_endpoint_permission": perm.to_json()})
-
-
-@catch_mlflow_exception
-def update_gateway_endpoint_permission():
-    endpoint_id = _get_request_param("endpoint_id")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    store.update_gateway_endpoint_permission(endpoint_id, username, permission)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def delete_gateway_endpoint_permission():
-    endpoint_id = _get_request_param("endpoint_id")
-    username = _get_request_param("username")
-    store.delete_gateway_endpoint_permission(endpoint_id, username)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def create_gateway_model_definition_permission():
-    model_definition_id = _get_request_param("model_definition_id")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    perm = store.create_gateway_model_definition_permission(
-        model_definition_id, username, permission
-    )
-    return jsonify({"gateway_model_definition_permission": perm.to_json()})
-
-
-@catch_mlflow_exception
-def get_gateway_model_definition_permission():
-    model_definition_id = _get_request_param("model_definition_id")
-    username = _get_request_param("username")
-    perm = store.get_gateway_model_definition_permission(model_definition_id, username)
-    return make_response({"gateway_model_definition_permission": perm.to_json()})
-
-
-@catch_mlflow_exception
-def update_gateway_model_definition_permission():
-    model_definition_id = _get_request_param("model_definition_id")
-    username = _get_request_param("username")
-    permission = _get_request_param("permission")
-    store.update_gateway_model_definition_permission(model_definition_id, username, permission)
-    return make_response({})
-
-
-@catch_mlflow_exception
-def delete_gateway_model_definition_permission():
-    model_definition_id = _get_request_param("model_definition_id")
-    username = _get_request_param("username")
-    store.delete_gateway_model_definition_permission(model_definition_id, username)
-    return make_response({})
-
-
-# =============================================================================
-# GraphQL Authorization
-# =============================================================================
-
-_auth_initialized = False
-
-
-def is_auth_enabled() -> bool:
-    return _auth_initialized
-
-
-def _graphql_get_permission_for_experiment(experiment_id: str, username: str) -> Permission:
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def _graphql_get_permission_for_run(run_id: str, username: str) -> Permission:
-    run = _get_tracking_store().get_run(run_id)
-    experiment_id = run.info.experiment_id
-    return _get_permission_from_store_or_default(
-        lambda: store.get_experiment_permission(experiment_id, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_experiment(
-            username, experiment_id
-        ),
-    )
-
-
-def _graphql_get_permission_for_model(model_name: str, username: str) -> Permission:
-    return _get_permission_from_store_or_default(
-        lambda: store.get_registered_model_permission(model_name, username).permission,
-        workspace_level_permission_func=lambda: _workspace_permission_for_registered_model(
-            username, model_name
-        ),
-    )
-
-
-def _graphql_can_read_experiment(experiment_id: str, username: str) -> bool:
-    return _graphql_get_permission_for_experiment(experiment_id, username).can_read
-
-
-def _graphql_can_read_run(run_id: str, username: str) -> bool:
-    return _graphql_get_permission_for_run(run_id, username).can_read
-
-
-def _graphql_can_read_model(model_name: str, username: str) -> bool:
-    return _graphql_get_permission_for_model(model_name, username).can_read
-
-
-class GraphQLAuthorizationMiddleware:
-    """
-    Graphene middleware that enforces per-object authorization for GraphQL queries.
-
-    This middleware checks user permissions before resolving protected fields.
-    It integrates with MLflow's basic-auth permission system.
-    """
-
-    PROTECTED_FIELDS = {
-        "mlflowGetExperiment",
-        "mlflowGetRun",
-        "mlflowListArtifacts",
-        "mlflowGetMetricHistoryBulkInterval",
-        "mlflowSearchRuns",
-        "mlflowSearchDatasets",
-    }
-
-    def resolve(self, next, root, info, **args):
-        """
-        Middleware resolve function called for every field resolution.
-
-        Args:
-            next: The next resolver in the chain
-            root: The root value object
-            info: GraphQL resolve info containing field name and context
-            args: Field arguments as keyword arguments
-
-        Returns:
-            The resolved value or an error response
-        """
-        field_name = info.field_name
-
-        if field_name not in self.PROTECTED_FIELDS:
-            return next(root, info, **args)
-
-        try:
-            authorization = authenticate_request()
-            if isinstance(authorization, Response):
-                return None
-            username = authorization.username
-
-            if store.get_user(username).is_admin:
-                return next(root, info, **args)
-        except Exception:
-            _logger.warning("GraphQL authorization failed: auth system error", exc_info=True)
-            return None
-
-        try:
-            if not self._check_authorization(field_name, args, username):
-                _logger.debug(f"GraphQL authorization denied for {field_name} by user {username}")
-                return None
-        except MlflowException:
-            return None
-        except Exception:
-            _logger.warning(f"GraphQL authorization error for {field_name}", exc_info=True)
-            return None
-
-        return next(root, info, **args)
-
-    def _check_authorization(self, field_name: str, args: dict[str, Any], username: str) -> bool:
-        """
-        Check if the user is authorized to access the requested field.
-
-        Args:
-            field_name: The GraphQL field being resolved
-            args: The field arguments
-            username: The authenticated username
-
-        Returns:
-            True if authorized, False otherwise
-        """
-        input_obj = args.get("input")
-        if input_obj is None:
-            # No input means no specific resource to check
-            return True
-
-        if field_name == "mlflowGetExperiment":
-            if experiment_id := getattr(input_obj, "experiment_id", None):
-                return _graphql_can_read_experiment(experiment_id, username)
-
-        elif field_name in ("mlflowGetRun", "mlflowListArtifacts"):
-            if run_id := (
-                getattr(input_obj, "run_id", None) or getattr(input_obj, "run_uuid", None)
-            ):
-                return _graphql_can_read_run(run_id, username)
-
-        elif field_name == "mlflowGetMetricHistoryBulkInterval":
-            run_ids = getattr(input_obj, "run_ids", None) or []
-            for run_id in run_ids:
-                if not _graphql_can_read_run(run_id, username):
-                    return False
-
-        elif field_name in ("mlflowSearchRuns", "mlflowSearchDatasets"):
-            if experiment_ids := (getattr(input_obj, "experiment_ids", None) or []):
-                readable_ids = [
-                    exp_id
-                    for exp_id in experiment_ids
-                    if _graphql_can_read_experiment(exp_id, username)
-                ]
-                if not readable_ids:
-                    return False
-                input_obj.experiment_ids = readable_ids
-
-        return True
-
-
-def get_graphql_authorization_middleware():
-    """
-    Get the GraphQL authorization middleware instance if auth is enabled.
-
-    Returns:
-        A list containing the middleware instance if auth is enabled,
-        empty list otherwise. Suitable for passing to schema.execute(middleware=...).
-    """
-    if not MLFLOW_SERVER_ENABLE_GRAPHQL_AUTH.get():
-        return []
-    if not is_auth_enabled():
-        return []
-    return [GraphQLAuthorizationMiddleware()]
-
-
-# Routes that need request body to extract endpoint name for validation
-_ROUTES_NEEDING_BODY = frozenset(
-    (
-        "/gateway/mlflow/v1/chat/completions",
-        "/gateway/openai/v1/chat/completions",
-        "/gateway/openai/v1/embeddings",
-        "/gateway/openai/v1/responses",
-        "/gateway/anthropic/v1/messages",
-    )
-)
-
-
-def _authenticate_request(request: StarletteRequest) -> User | None:
-    """
-    Authenticate request using Basic Auth and return user object.
-
-    This mirrors the Flask authenticate_request() logic for FastAPI routes.
-
-    Args:
-        request: The Starlette/FastAPI Request object.
-
-    Returns:
-        User object if authentication succeeds, None otherwise.
-    """
-    if "Authorization" not in request.headers:
-        return None
-
-    auth = request.headers["Authorization"]
-    try:
-        scheme, credentials = auth.split()
-        if scheme.lower() != "basic":
-            return None
-        decoded = base64.b64decode(credentials).decode("ascii")
-    except Exception:
-        return None
-
-    username, _, password = decoded.partition(":")
-    if store.authenticate_user(username, password):
-        return store.get_user(username)
-    return None
-
-
-def _extract_gateway_endpoint_name(path: str, body: dict[str, Any] | None) -> str | None:
-    """Extract endpoint name from gateway routes."""
-    # Pattern 1: /gateway/{endpoint_name}/mlflow/invocations
-    if match := re.match(r"^/gateway/([^/]+)/mlflow/invocations$", path):
-        return match.group(1)
-
-    # Pattern 2-6: Passthrough routes (endpoint in request body as "model")
-    if path in _ROUTES_NEEDING_BODY:
-        if body:
-            return body.get("model")
-        return None
-
-    # Pattern 7-8: Gemini routes (endpoint in URL path)
-    if match := re.match(r"^/gateway/gemini/v1beta/models/([^/:]+):generateContent$", path):
-        return match.group(1)
-    if match := re.match(r"^/gateway/gemini/v1beta/models/([^/:]+):streamGenerateContent$", path):
-        return match.group(1)
-
-    return None
-
-
-def _validate_gateway_use_permission(endpoint_name: str, username: str) -> bool:
-    """Check if the user has USE permission on the gateway endpoint."""
-    # TODO: we need to query endpoint ID by name from the database.
-    # Revisit the mutability of the endpoint name if it causes latency issues.
-    try:
-        from mlflow.tracking._tracking_service.utils import _get_store
-
-        tracking_store = _get_store()
-        endpoint = tracking_store.get_gateway_endpoint(name=endpoint_name)
-        endpoint_id = endpoint.endpoint_id
-
-        permission = _get_permission_from_store_or_default(
-            lambda: store.get_gateway_endpoint_permission(endpoint_id, username).permission,
-            workspace_level_permission_func=lambda: _workspace_permission_for_gateway_endpoint(
-                username, endpoint_id
-            ),
-        )
-        return permission.can_use
-    except MlflowException:
-        return False
-
-
-def _get_gateway_validator(path: str) -> Callable[[str, StarletteRequest], Awaitable[bool]] | None:
-    """
-    Get a validator function for gateway routes.
-
-    Args:
-        path: The request path.
-
-    Returns:
-        An async validator function that takes (username, request) and returns
-        True if authorized, or None if no validation is needed for this route.
-    """
-
-    async def validator(username: str, request: StarletteRequest) -> bool:
-        body = None
-        if path in _ROUTES_NEEDING_BODY:
             try:
-                body = await request.json()
-                # Cache parsed body in request.state so route handlers can reuse it
-                # (request body can only be read once in Starlette/FastAPI)
-                request.state.cached_body = body
-            except Exception as e:
-                raise MlflowException(f"Invalid JSON payload: {e}", error_code=BAD_REQUEST)
+                _, end = decoder.raw_decode(raw, position)
+                results.append(raw[position:end].strip())
+                position = end
+            except json.JSONDecodeError:
+                return [raw]
 
-        endpoint_name = _extract_gateway_endpoint_name(path, body)
-        if endpoint_name is None:
-            raise MlflowException("No endpoint name found", error_code=BAD_REQUEST)
+        return results or [raw]
 
-        return _validate_gateway_use_permission(endpoint_name, username)
+    expanded = []
+    for tool_call in tool_calls:
+        arguments = tool_call.get('function', {}).get('arguments', '')
+        split_arguments = split_json_objects(arguments)
 
-    return validator
+        if len(split_arguments) <= 1:
+            expanded.append(tool_call)
+        else:
+            for argument in split_arguments:
+                cloned = copy.deepcopy(tool_call)
+                cloned['id'] = f'call_{uuid4().hex[:24]}'
+                cloned['function']['arguments'] = argument
+                expanded.append(cloned)
+
+    return expanded
 
 
-def _find_fastapi_validator(path: str) -> Callable[[str, StarletteRequest], Awaitable[bool]] | None:
+def get_citation_source_from_tool_result(
+    tool_name: str, tool_params: dict, tool_result: str, tool_id: str = ''
+) -> list[dict]:
     """
-    Find the validator for a FastAPI route that bypasses Flask.
+    Parse a tool's result and convert it to source dicts for citation display.
 
-    This mirrors the _find_validator pattern used in Flask's _before_request,
-    returning a validator function for routes that need permission checks.
+    Follows the source format conventions from get_sources_from_items:
+    - source: file/item info object with id, name, type
+    - document: list of document contents
+    - metadata: list of metadata objects with source, file_id, name fields
+
+    Returns a list of sources (usually one, but query_knowledge_files may return multiple).
+    """
+    _EXPECTS_LIST = {'search_web', 'query_knowledge_files'}
+    _EXPECTS_DICT = {'view_knowledge_file', 'view_file'}
+
+    try:
+        try:
+            tool_result = json.loads(tool_result)
+        except (json.JSONDecodeError, TypeError):
+            pass  # keep tool_result as-is (e.g. fetch_url returns plain text)
+        if isinstance(tool_result, dict) and 'error' in tool_result:
+            return []
+
+        # Validate tool_result type based on what the branch expects
+        if tool_name in _EXPECTS_LIST and not isinstance(tool_result, list):
+            return []
+        elif tool_name in _EXPECTS_DICT and not isinstance(tool_result, dict):
+            return []
+
+        if tool_name == 'search_web':
+            # Parse JSON array: [{"title": "...", "link": "...", "snippet": "..."}]
+            results = tool_result
+            documents = []
+            metadata = []
+
+            for result in results:
+                title = result.get('title', '')
+                link = result.get('link', '')
+                snippet = result.get('snippet', '')
+
+                documents.append(f'{title}\n{snippet}')
+                metadata.append(
+                    {
+                        'source': link,
+                        'name': title,
+                        'url': link,
+                    }
+                )
+
+            return [
+                {
+                    'source': {'name': 'search_web', 'id': 'search_web'},
+                    'document': documents,
+                    'metadata': metadata,
+                }
+            ]
+
+        elif tool_name in ('view_knowledge_file', 'view_file'):
+            file_data = tool_result
+            filename = file_data.get('filename', 'Unknown File')
+            file_id = file_data.get('id', '')
+            knowledge_name = file_data.get('knowledge_name', '')
+
+            return [
+                {
+                    'source': {
+                        'id': file_id,
+                        'name': filename,
+                        'type': 'file',
+                    },
+                    'document': [file_data.get('content', '')],
+                    'metadata': [
+                        {
+                            'file_id': file_id,
+                            'name': filename,
+                            'source': filename,
+                            **({'knowledge_name': knowledge_name} if knowledge_name else {}),
+                        }
+                    ],
+                }
+            ]
+
+        elif tool_name == 'fetch_url':
+            url = tool_params.get('url', '')
+            content = tool_result if isinstance(tool_result, str) else str(tool_result)
+            snippet = content[:500] + ('...' if len(content) > 500 else '')
+
+            return [
+                {
+                    'source': {'name': url or 'fetch_url', 'id': url or 'fetch_url'},
+                    'document': [snippet],
+                    'metadata': [
+                        {
+                            'source': url,
+                            'name': url,
+                            'url': url,
+                        }
+                    ],
+                }
+            ]
+
+        elif tool_name == 'query_knowledge_files':
+            chunks = tool_result
+
+            # Group chunks by source for better citation display
+            # Each unique source becomes a separate source entry
+            sources_by_file = {}
+
+            for chunk in chunks:
+                source_name = chunk.get('source', 'Unknown')
+                file_id = chunk.get('file_id', '')
+                note_id = chunk.get('note_id', '')
+                chunk_type = chunk.get('type', 'file')
+                content = chunk.get('content', '')
+
+                # Use file_id or note_id as the key
+                key = file_id or note_id or source_name
+
+                if key not in sources_by_file:
+                    sources_by_file[key] = {
+                        'source': {
+                            'id': file_id or note_id,
+                            'name': source_name,
+                            'type': chunk_type,
+                        },
+                        'document': [],
+                        'metadata': [],
+                    }
+
+                sources_by_file[key]['document'].append(content)
+                sources_by_file[key]['metadata'].append(
+                    {
+                        'file_id': file_id,
+                        'name': source_name,
+                        'source': source_name,
+                        **({'note_id': note_id} if note_id else {}),
+                    }
+                )
+
+            # Return all grouped sources as a list
+            if sources_by_file:
+                return list(sources_by_file.values())
+
+            # Empty result fallback
+            return []
+
+        else:
+            # Fallback for other tools
+            return [
+                {
+                    'source': {
+                        'name': tool_name,
+                        'type': 'tool',
+                        'id': tool_id or tool_name,
+                    },
+                    'document': [str(tool_result)],
+                    'metadata': [{'source': tool_name, 'name': tool_name}],
+                }
+            ]
+    except Exception as e:
+        log.exception(f'Error parsing tool result for {tool_name}: {e}')
+        return [
+            {
+                'source': {'name': tool_name, 'type': 'tool'},
+                'document': [str(tool_result)],
+                'metadata': [{'source': tool_name}],
+            }
+        ]
+
+
+def split_content_and_whitespace(content):
+    content_stripped = content.rstrip()
+    original_whitespace = content[len(content_stripped) :] if len(content) > len(content_stripped) else ''
+    return content_stripped, original_whitespace
+
+
+def is_opening_code_block(content):
+    backtick_segments = content.split('```')
+    # Even number of segments means the last backticks are opening a new block
+    return len(backtick_segments) > 1 and len(backtick_segments) % 2 == 0
+
+
+_OPENAI_TOOL_DISPLAY_NAMES = {
+    'web_search_call': 'Web Search',
+    'file_search_call': 'File Search',
+    'computer_call': 'Computer Use',
+}
+
+
+def _render_openai_tool_call_handler(item: dict, done: bool) -> str:
+    """Render an OpenAI Responses API server-side tool item as a <details> block.
+
+    Handles web_search_call, file_search_call, and computer_call items whose
+    schemas are defined in the openai-python SDK (generated from OpenAPI spec).
+    """
+    item_type = item.get('type', '')
+    call_id = item.get('id', '')
+    display_name = _OPENAI_TOOL_DISPLAY_NAMES.get(item_type, item_type)
+
+    # Build a short summary of what the tool did
+    summary = ''
+    if item_type == 'web_search_call':
+        action = item.get('action', {})
+        if isinstance(action, dict):
+            atype = action.get('type', '')
+            if atype == 'search':
+                queries = action.get('queries') or []
+                query = action.get('query', '')
+                summary = (
+                    f'Search: {", ".join(str(q) for q in queries)}'
+                    if queries
+                    else (f'Search: {query}' if query else '')
+                )
+            elif atype == 'open_page':
+                summary = f'Open page: {action.get("url", "")}' if action.get('url') else ''
+            elif atype == 'find_in_page':
+                summary = f'Find in page: {action.get("pattern", "")}' if action.get('pattern') else ''
+    elif item_type == 'file_search_call':
+        queries = item.get('queries', [])
+        if queries:
+            summary = f'Queries: {", ".join(str(q) for q in queries)}'
+    elif item_type == 'computer_call':
+        action = item.get('action')
+        actions = item.get('actions')
+        if isinstance(action, dict):
+            summary = f'Action: {action.get("type", "unknown")}'
+        elif isinstance(actions, list) and actions:
+            summary = f'Actions: {", ".join(a.get("type", "?") for a in actions if isinstance(a, dict))}'
+
+    escaped_name = html.escape(display_name)
+    if done:
+        return f'<details type="tool_calls" done="true" id="{call_id}" name="{escaped_name}" arguments="">\n<summary>Tool Executed</summary>\n{html.escape(summary)}\n</details>\n'
+    return f'<details type="tool_calls" done="false" id="{call_id}" name="{escaped_name}" arguments="">\n<summary>Executing...</summary>\n</details>\n'
+
+
+def serialize_output(output: list) -> str:
+    """
+    Convert OR-aligned output items to HTML for display.
+    For LLM consumption, use convert_output_to_messages() instead.
+    """
+    parts: list[str] = []
+
+    # First pass: collect function_call_output items by call_id for lookup
+    tool_outputs = {}
+    for item in output:
+        if item.get('type') == 'function_call_output':
+            tool_outputs[item.get('call_id')] = item
+
+    # Second pass: render items in order
+    for idx, item in enumerate(output):
+        item_type = item.get('type', '')
+
+        if item_type == 'message':
+            for content_part in item.get('content', []):
+                if 'text' in content_part:
+                    text = content_part.get('text', '').strip()
+                    if text:
+                        parts.append(text)
+
+        elif item_type == 'function_call':
+            call_id = item.get('call_id', '')
+            name = item.get('name', '')
+            arguments = item.get('arguments', '')
+
+            result_item = tool_outputs.get(call_id)
+            if result_item:
+                result_parts: list[str] = []
+                for result_output in result_item.get('output', []):
+                    if 'text' in result_output:
+                        output_text = result_output.get('text', '')
+                        result_parts.append(str(output_text) if not isinstance(output_text, str) else output_text)
+                result_text = ''.join(result_parts)
+                files = result_item.get('files')
+                embeds = result_item.get('embeds', '')
+
+                parts.append(
+                    f'<details type="tool_calls" done="true" id="{call_id}" name="{name}" arguments="{html.escape(json.dumps(arguments))}" files="{html.escape(json.dumps(files)) if files else ""}" embeds="{html.escape(json.dumps(embeds))}">\n<summary>Tool Executed</summary>\n{html.escape(json.dumps(result_text, ensure_ascii=False))}\n</details>'
+                )
+            else:
+                parts.append(
+                    f'<details type="tool_calls" done="false" id="{call_id}" name="{name}" arguments="{html.escape(json.dumps(arguments))}">\n<summary>Executing...</summary>\n</details>'
+                )
+
+        elif item_type == 'function_call_output':
+            # Already handled inline with function_call above
+            pass
+
+        elif item_type in _OPENAI_TOOL_DISPLAY_NAMES:
+            status = item.get('status', 'in_progress')
+            done = status in ('completed', 'failed', 'incomplete') or idx != len(output) - 1
+            parts.append(_render_openai_tool_call_handler(item, done).rstrip('\n'))
+
+        elif item_type == 'reasoning':
+            reasoning_parts: list[str] = []
+            # Check for 'summary' (new structure) or 'content' (legacy/fallback)
+            source_list = item.get('summary', []) or item.get('content', [])
+            for content_part in source_list:
+                if 'text' in content_part:
+                    reasoning_parts.append(content_part.get('text', ''))
+                elif 'summary' in content_part:  # Handle potential nested logic if any
+                    pass
+
+            reasoning_content = ''.join(reasoning_parts).strip()
+
+            duration = item.get('duration')
+            status = item.get('status', 'in_progress')
+
+            # Infer completion: if this reasoning item is NOT the last item,
+            # render as done (a subsequent item means reasoning is complete)
+            is_last_item = idx == len(output) - 1
+
+            display = html.escape(
+                '\n'.join(
+                    (f'> {line}' if not line.startswith('>') else line) for line in reasoning_content.splitlines()
+                )
+            )
+
+            if status == 'completed' or duration is not None or not is_last_item:
+                parts.append(
+                    f'<details type="reasoning" done="true" duration="{duration or 0}">\n<summary>Thought for {duration or 0} seconds</summary>\n{display}\n</details>'
+                )
+            else:
+                parts.append(
+                    f'<details type="reasoning" done="false">\n<summary>Thinking…</summary>\n{display}\n</details>'
+                )
+
+        elif item_type == 'open_webui:code_interpreter':
+            # Code interpreter needs to inspect/mutate prior accumulated content
+            # to strip trailing unclosed code fences — materialize only here.
+            content = '\n'.join(parts)
+            content_stripped, original_whitespace = split_content_and_whitespace(content)
+            if is_opening_code_block(content_stripped):
+                content = content_stripped.rstrip('`').rstrip() + original_whitespace
+            else:
+                content = content_stripped + original_whitespace
+
+            # Re-split back into parts list after mutation
+            parts = [content] if content else []
+
+            # Render the code_interpreter item as a <details> block
+            # so the frontend Collapsible renders "Analyzing..."/"Analyzed".
+            code = item.get('code', '').strip()
+            lang = item.get('lang', 'python')
+            status = item.get('status', 'in_progress')
+            duration = item.get('duration')
+            is_last_item = idx == len(output) - 1
+
+            # Build inner content: code block
+            display = ''
+            if code:
+                display = f'```{lang}\n{code}\n```'
+
+            # Build output attribute as HTML-escaped JSON for CodeBlock.svelte
+            ci_output = item.get('output')
+            output_attr = ''
+            if ci_output:
+                if isinstance(ci_output, dict):
+                    output_json = json.dumps(ci_output, ensure_ascii=False)
+                else:
+                    output_json = json.dumps({'result': str(ci_output)}, ensure_ascii=False)
+                output_attr = f' output="{html.escape(output_json)}"'
+
+            if status == 'completed' or duration is not None or not is_last_item:
+                parts.append(
+                    f'<details type="code_interpreter" done="true" duration="{duration or 0}"{output_attr}>\n<summary>Analyzed</summary>\n{display}\n</details>'
+                )
+            else:
+                parts.append(
+                    f'<details type="code_interpreter" done="false"{output_attr}>\n<summary>Analyzing…</summary>\n{display}\n</details>'
+                )
+
+    return '\n'.join(parts).strip()
+
+
+def deep_merge(target, source):
+    """
+    Merge source into target recursively (returning new structure).
+    - Dicts: Recursive merge.
+    - Strings: Concatenation.
+    - Others: Overwrite.
+    """
+    if isinstance(target, dict) and isinstance(source, dict):
+        new_target = target.copy()
+        for k, v in source.items():
+            if k in new_target:
+                new_target[k] = deep_merge(new_target[k], v)
+            else:
+                new_target[k] = v
+        return new_target
+    elif isinstance(target, str) and isinstance(source, str):
+        return target + source
+    else:
+        return source
+
+
+def handle_responses_streaming_event(
+    data: dict,
+    current_output: list,
+) -> tuple[list, dict | None]:
+    """
+    Handle Responses API streaming events in a pure functional way.
 
     Args:
-        path: The request path.
+        data: The event data
+        current_output: List of output items (treated as immutable)
 
     Returns:
-        An async validator function that takes (username, request) and returns
-        True if authorized, or None if the route is not handled by FastAPI.
+        tuple[list, dict | None]: (new_output, metadata)
+        - new_output: The updated output list.
+        - metadata: Metadata to emit (e.g. usage), {} if update occurred, None if skip.
     """
-    if path.startswith("/gateway/"):
-        return _get_gateway_validator(path)
+    # Default: no change
+    # Note: treating current_output as immutable, but avoiding full deepcopy for perf.
+    # We will shallow copy only if we need to modify the list structure or items.
 
+    event_type = data.get('type', '')
+
+    if event_type == 'response.output_item.added':
+        item = data.get('item', {})
+        if item:
+            new_output = list(current_output)
+            new_output.append(item)
+            return new_output, None
+        return current_output, None
+
+    elif event_type == 'response.content_part.added':
+        part = data.get('part', {})
+        output_index = data.get('output_index', len(current_output) - 1)
+
+        if current_output and 0 <= output_index < len(current_output):
+            new_output = list(current_output)
+            # Copy the item to mutate it
+            item = new_output[output_index].copy()
+            new_output[output_index] = item
+
+            if 'content' not in item:
+                item['content'] = []
+            else:
+                # Copy content list
+                item['content'] = list(item['content'])
+
+            if item.get('type') == 'reasoning':
+                # Reasoning items should not have content parts
+                pass
+            else:
+                item['content'].append(part)
+            return new_output, None
+        return current_output, None
+
+    elif event_type == 'response.reasoning_summary_part.added':
+        part = data.get('part', {})
+        output_index = data.get('output_index', len(current_output) - 1)
+
+        if current_output and 0 <= output_index < len(current_output):
+            new_output = list(current_output)
+            item = new_output[output_index].copy()
+            new_output[output_index] = item
+
+            if 'summary' not in item:
+                item['summary'] = []
+            else:
+                item['summary'] = list(item['summary'])
+
+            item['summary'].append(part)
+            return new_output, None
+        return current_output, None
+
+    elif event_type.startswith('response.') and event_type.endswith('.delta'):
+        # Generic Delta Handling
+        parts = event_type.split('.')
+        if len(parts) >= 3:
+            delta_type = parts[1]
+            delta = data.get('delta', '')
+
+            output_index = data.get('output_index', len(current_output) - 1)
+
+            if current_output and 0 <= output_index < len(current_output):
+                new_output = list(current_output)
+                item = new_output[output_index].copy()
+                new_output[output_index] = item
+                item_type = item.get('type', '')
+
+                # Determine target field and object based on delta_type and item_type
+                if delta_type == 'function_call_arguments':
+                    key = 'arguments'
+                    if item_type == 'function_call':
+                        # Function call args are usually strings
+                        item[key] = item.get(key, '') + str(delta)
+                else:
+                    # Generic handling, refined by item type below
+                    pass
+
+                    if item_type == 'message':
+                        # Message items: "text"/"output_text" -> "text"
+                        # "reasoning_text" -> Skipped (should use reasoning item)
+                        if delta_type in ['text', 'output_text']:
+                            key = 'text'
+                        elif delta_type in ['reasoning_text', 'reasoning_summary_text']:
+                            # Skip reasoning updates for message items
+                            return new_output, None
+                        else:
+                            key = delta_type
+
+                        content_index = data.get('content_index', 0)
+                        if 'content' not in item:
+                            item['content'] = []
+                        else:
+                            item['content'] = list(item['content'])
+                        content_list = item['content']
+
+                        while len(content_list) <= content_index:
+                            content_list.append({'type': 'text', 'text': ''})
+
+                        # Copy the part to mutate it
+                        part = content_list[content_index].copy()
+                        content_list[content_index] = part
+
+                        current_val = part.get(key)
+                        if current_val is None:
+                            # Initialize based on delta type
+                            current_val = {} if isinstance(delta, dict) else ''
+
+                        part[key] = deep_merge(current_val, delta)
+
+                    elif item_type == 'reasoning':
+                        # Reasoning items: "reasoning_text"/"reasoning_summary_text" -> "text"
+                        # "text"/"output_text" -> Skipped (should use message item)
+                        if delta_type == 'reasoning_summary_text':
+                            # Summary updates -> item['summary']
+                            key = 'text'
+                            summary_index = data.get('summary_index', 0)
+                            if 'summary' not in item:
+                                item['summary'] = []
+                            else:
+                                item['summary'] = list(item['summary'])
+                            summary_list = item['summary']
+
+                            while len(summary_list) <= summary_index:
+                                summary_list.append({'type': 'summary_text', 'text': ''})
+
+                            part = summary_list[summary_index].copy()
+                            summary_list[summary_index] = part
+
+                            target_val = part.get(key, '')
+                            part[key] = deep_merge(target_val, delta)
+
+                        elif delta_type == 'reasoning_text':
+                            # Reasoning body updates -> item['content']
+                            key = 'text'
+                            content_index = data.get('content_index', 0)
+                            if 'content' not in item:
+                                item['content'] = []
+                            else:
+                                item['content'] = list(item['content'])
+                            content_list = item['content']
+
+                            while len(content_list) <= content_index:
+                                # Reasoning content parts default to text
+                                content_list.append({'type': 'text', 'text': ''})
+
+                            part = content_list[content_index].copy()
+                            content_list[content_index] = part
+
+                            target_val = part.get(key, '')
+                            part[key] = deep_merge(target_val, delta)
+
+                        elif delta_type in ['text', 'output_text']:
+                            return new_output, None
+                        else:
+                            # Fallback just in case other deltas target reasoning?
+                            pass
+
+                    else:
+                        # Fallback for other item types
+                        if delta_type in ['text', 'output_text']:
+                            key = 'text'
+                        else:
+                            key = delta_type
+
+                        current_val = item.get(key)
+                        if current_val is None:
+                            current_val = {} if isinstance(delta, dict) else ''
+                        item[key] = deep_merge(current_val, delta)
+
+            return new_output, None
+
+    elif event_type.startswith('response.') and event_type.endswith('.done'):
+        # Delta Events: response.content_part.done, response.text.done, etc.
+        parts = event_type.split('.')
+        if len(parts) >= 3:
+            type_name = parts[1]
+
+            # 1. Handle specific Delta "done" signals
+            if type_name == 'content_part':
+                # "Signaling that no further changes will occur to a content part"
+                # If payloads contains the full part, we could update it.
+                # Usually purely signaling in standard implementation, but we check payload.
+                part = data.get('part')
+                output_index = data.get('output_index', len(current_output) - 1)
+
+                if part and current_output and 0 <= output_index < len(current_output):
+                    new_output = list(current_output)
+                    item = new_output[output_index].copy()
+                    new_output[output_index] = item
+
+                    if 'content' in item:
+                        item['content'] = list(item['content'])
+                        content_index = data.get('content_index', len(item['content']) - 1)
+                        if 0 <= content_index < len(item['content']):
+                            item['content'][content_index] = part
+                            return new_output, {}
+                return current_output, None
+
+            elif type_name == 'reasoning_summary_part':
+                part = data.get('part')
+                output_index = data.get('output_index', len(current_output) - 1)
+
+                if part and current_output and 0 <= output_index < len(current_output):
+                    new_output = list(current_output)
+                    item = new_output[output_index].copy()
+                    new_output[output_index] = item
+
+                    if 'summary' in item:
+                        item['summary'] = list(item['summary'])
+                        summary_index = data.get('summary_index', len(item['summary']) - 1)
+                        if 0 <= summary_index < len(item['summary']):
+                            item['summary'][summary_index] = part
+                            return new_output, {}
+                return current_output, None
+
+            # 2. Skip Output Item done (handled specifically below)
+            if type_name == 'output_item':
+                pass
+
+            # 3. Generic Field Done (text.done, audio.done)
+            elif type_name not in ['completed', 'failed']:
+                output_index = data.get('output_index', len(current_output) - 1)
+                if current_output and 0 <= output_index < len(current_output):
+                    key = (
+                        'text'
+                        if type_name
+                        in [
+                            'text',
+                            'output_text',
+                            'reasoning_text',
+                            'reasoning_summary_text',
+                        ]
+                        else type_name
+                    )
+                    if type_name == 'function_call_arguments':
+                        key = 'arguments'
+
+                    if key in data:
+                        final_value = data[key]
+                        new_output = list(current_output)
+                        item = new_output[output_index].copy()
+                        new_output[output_index] = item
+                        item_type = item.get('type', '')
+
+                        if type_name == 'function_call_arguments':
+                            if item_type == 'function_call':
+                                item['arguments'] = final_value
+                        elif item_type == 'message':
+                            content_index = data.get('content_index', 0)
+                            if 'content' in item:
+                                item['content'] = list(item['content'])
+                                if len(item['content']) > content_index:
+                                    part = item['content'][content_index].copy()
+                                    item['content'][content_index] = part
+                                    part[key] = final_value
+                        elif item_type == 'reasoning':
+                            item['status'] = 'completed'
+                        else:
+                            item[key] = final_value
+
+                        return new_output, {}
+
+        return current_output, None
+
+    elif event_type == 'response.output_item.done':
+        # Delta Event: Output item complete
+        item = data.get('item')
+        output_index = data.get('output_index', len(current_output) - 1)
+
+        new_output = list(current_output)
+        if item and 0 <= output_index < len(current_output):
+            new_output[output_index] = item
+        elif item:
+            new_output.append(item)
+        return new_output, {}
+
+    elif event_type == 'response.completed':
+        # State Machine Event: Completed
+        response_data = data.get('response', {})
+        final_output = response_data.get('output')
+
+        new_output = final_output if final_output is not None else current_output
+
+        # Ensure reasoning items are marked as completed in the final output
+        if new_output:
+            for item in new_output:
+                if item.get('type') == 'reasoning' and item.get('status') != 'completed':
+                    item['status'] = 'completed'
+
+        return new_output, {
+            'usage': response_data.get('usage'),
+            'done': True,
+            'response_id': response_data.get('id'),
+        }
+
+    elif event_type == 'response.in_progress':
+        # State Machine Event: In Progress
+        # We could extract metadata if needed, but for now just acknowledge iteration
+        return current_output, None
+
+    elif event_type == 'response.failed':
+        # State Machine Event: Failed
+        error = data.get('response', {}).get('error', {})
+        return current_output, {'error': error}
+
+    else:
+        return current_output, None
+
+
+def get_source_context(sources: list, source_ids: dict = None, include_content: bool = True) -> str:
+    """
+    Build <source> tag context string from citation sources.
+    """
+    context_string = ''
+    if source_ids is None:
+        source_ids = {}
+    for source in sources:
+        for doc, meta in zip(source.get('document', []), source.get('metadata', [])):
+            source_id = meta.get('source') or source.get('source', {}).get('id') or 'N/A'
+            if source_id not in source_ids:
+                source_ids[source_id] = len(source_ids) + 1
+            src_name = source.get('source', {}).get('name')
+            src_type = source.get('source', {}).get('type')
+            src_rid = source.get('source', {}).get('id')
+            body = doc if include_content else ''
+            context_string += (
+                f'<source id="{source_ids[source_id]}"'
+                + (f' name="{src_name}"' if src_name else '')
+                + (f' resource-type="{src_type}"' if src_type else '')
+                + (f' resource-id="{src_rid}"' if src_rid else '')
+                + f'>{body}</source>\n'
+            )
+    return context_string
+
+
+async def apply_source_context_to_messages(
+    request: Request,
+    messages: list,
+    sources: list,
+    user_message: str,
+    include_content: bool = True,
+) -> list:
+    """
+    Build source context from citation sources and apply to messages.
+    Uses RAG template to format context for model consumption.
+
+    When include_content is False, emit <source> tags with id/name but no
+    document body — useful when the content is already present elsewhere
+    (e.g. in a tool result message) and only citation markers are needed.
+    """
+    if not sources or not user_message:
+        return messages
+
+    context = get_source_context(sources, include_content=include_content)
+
+    context = context.strip()
+    if not context:
+        return messages
+
+    if RAG_SYSTEM_CONTEXT:
+        return add_or_update_system_message(
+            await rag_template(await Config.get('rag.template'), context, user_message),
+            messages,
+            append=True,
+        )
+    else:
+        return add_or_update_user_message(
+            await rag_template(await Config.get('rag.template'), context, user_message),
+            messages,
+            append=False,
+        )
+
+
+async def process_tool_result(
+    request,
+    tool_function_name,
+    tool_result,
+    tool_type,
+    direct_tool=False,
+    metadata=None,
+    user=None,
+):
+    tool_result_embeds = []
+    EXTERNAL_TOOL_TYPES = ('external', 'action', 'terminal')
+
+    # Support (HTMLResponse, result_context) tuples: the optional second
+    # element lets tool authors provide the LLM with actionable context
+    # about the generated embed instead of the generic fallback message.
+    result_context = None
+    if isinstance(tool_result, tuple) and len(tool_result) == 2 and isinstance(tool_result[0], HTMLResponse):
+        tool_result, result_context = tool_result
+
+    if isinstance(tool_result, HTMLResponse):
+        content_disposition = tool_result.headers.get('Content-Disposition', '')
+        if 'inline' in content_disposition:
+            content = tool_result.body.decode('utf-8', 'replace')
+            tool_result_embeds.append(content)
+
+            if 200 <= tool_result.status_code < 300:
+                if result_context is not None and isinstance(result_context, (str, dict, list)):
+                    tool_result = result_context
+                else:
+                    tool_result = {
+                        'status': 'success',
+                        'code': 'ui_component',
+                        'message': f'{tool_function_name}: Embedded UI result is active and visible to the user.',
+                    }
+            elif 400 <= tool_result.status_code < 500:
+                tool_result = {
+                    'status': 'error',
+                    'code': 'ui_component',
+                    'message': f'{tool_function_name}: Client error {tool_result.status_code} from embedded UI result.',
+                }
+            elif 500 <= tool_result.status_code < 600:
+                tool_result = {
+                    'status': 'error',
+                    'code': 'ui_component',
+                    'message': f'{tool_function_name}: Server error {tool_result.status_code} from embedded UI result.',
+                }
+            else:
+                tool_result = {
+                    'status': 'error',
+                    'code': 'ui_component',
+                    'message': f'{tool_function_name}: Unexpected status code {tool_result.status_code} from embedded UI result.',
+                }
+        else:
+            tool_result = tool_result.body.decode('utf-8', 'replace')
+
+    elif (tool_type in EXTERNAL_TOOL_TYPES and isinstance(tool_result, tuple)) or (
+        direct_tool and isinstance(tool_result, list) and len(tool_result) == 2
+    ):
+        tool_result, tool_response_headers = tool_result
+
+        try:
+            if not isinstance(tool_response_headers, dict):
+                tool_response_headers = dict(tool_response_headers)
+        except Exception as e:
+            tool_response_headers = {}
+            log.debug(e)
+
+        if tool_response_headers and isinstance(tool_response_headers, dict):
+            content_disposition = tool_response_headers.get(
+                'Content-Disposition',
+                tool_response_headers.get('content-disposition', ''),
+            )
+
+            if 'inline' in content_disposition:
+                content_type = tool_response_headers.get(
+                    'Content-Type',
+                    tool_response_headers.get('content-type', ''),
+                )
+                location = tool_response_headers.get(
+                    'Location',
+                    tool_response_headers.get('location', ''),
+                )
+
+                if 'text/html' in content_type:
+                    # Support (html_content, result_context) nested tuple
+                    result_context = None
+                    html_content = tool_result
+                    if isinstance(tool_result, (tuple, list)) and len(tool_result) == 2:
+                        html_content, result_context = tool_result
+
+                    # Display as iframe embed
+                    tool_result_embeds.append(html_content)
+                    if result_context is not None and isinstance(result_context, (str, dict, list)):
+                        tool_result = result_context
+                    else:
+                        tool_result = {
+                            'status': 'success',
+                            'code': 'ui_component',
+                            'message': f'{tool_function_name}: Embedded UI result is active and visible to the user.',
+                        }
+                elif location:
+                    # Support (html_content, result_context) nested tuple for location embeds
+                    result_context = None
+                    if isinstance(tool_result, (tuple, list)) and len(tool_result) == 2:
+                        _, result_context = tool_result
+
+                    tool_result_embeds.append(location)
+                    if result_context is not None and isinstance(result_context, (str, dict, list)):
+                        tool_result = result_context
+                    else:
+                        tool_result = {
+                            'status': 'success',
+                            'code': 'ui_component',
+                            'message': f'{tool_function_name}: Embedded UI result is active and visible to the user.',
+                        }
+
+    tool_result_files = []
+
+    # Detect base64 image data URIs from tool results (e.g. binary image
+    # responses from execute_tool_server).  Move the data URI to
+    # tool_result_files and replace tool_result with a text summary.
+    if isinstance(tool_result, str) and tool_result.startswith('data:image/'):
+        tool_result_files.append({'type': 'image', 'url': tool_result})
+        tool_result = f'{tool_function_name}: Image file read successfully.'
+
+    if isinstance(tool_result, list):
+        if tool_type == 'mcp':  # MCP
+            tool_response = []
+            for item in tool_result:
+                if isinstance(item, dict):
+                    if item.get('type') == 'text':
+                        text = item.get('text', '')
+                        if isinstance(text, str):
+                            try:
+                                text = json.loads(text)
+                            except json.JSONDecodeError:
+                                pass
+                        tool_response.append(text)
+                    elif item.get('type') in ['image', 'audio']:
+                        file_url = await get_file_url_from_base64(
+                            request,
+                            f'data:{item.get("mimeType")};base64,{item.get("data", item.get("blob", ""))}',
+                            {
+                                'chat_id': metadata.get('chat_id', None),
+                                'message_id': metadata.get('message_id', None),
+                                'session_id': metadata.get('session_id', None),
+                                'result': item,
+                            },
+                            user,
+                        )
+
+                        tool_result_files.append(
+                            {
+                                'type': item.get('type', 'data'),
+                                'url': file_url,
+                            }
+                        )
+                    elif item.get('type') == 'resource':
+                        resource = item.get('resource', {})
+                        text = resource.get('text', '')
+                        if isinstance(text, str) and text:
+                            try:
+                                text = json.loads(text)
+                            except json.JSONDecodeError:
+                                pass
+                            tool_response.append(text)
+            tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
+        else:  # OpenAPI
+            for item in tool_result:
+                if isinstance(item, str) and item.startswith('data:'):
+                    tool_result_files.append(
+                        {
+                            'type': 'data',
+                            'content': item,
+                        }
+                    )
+                    tool_result.remove(item)
+
+    if isinstance(tool_result, list):
+        tool_result = {'results': tool_result}
+
+    if isinstance(tool_result, dict) or isinstance(tool_result, list):
+        tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
+
+    # Safety: ensure tool_result is always a string (or None) to prevent
+    # downstream TypeError when concatenating (e.g. if an upstream callable
+    # returned a tuple that was not unpacked by the branches above).
+    if tool_result is not None and not isinstance(tool_result, str):
+        if isinstance(tool_result, tuple):
+            # execute_tool_server returns (data, headers); unpack the data part
+            tool_result = json.dumps(tool_result[0], indent=2, ensure_ascii=False) if len(tool_result) > 0 else ''
+        else:
+            tool_result = str(tool_result)
+
+    return tool_result, tool_result_files, tool_result_embeds
+
+
+async def terminal_event_handler(
+    tool_function_name: str,
+    tool_function_params: dict,
+    tool_result,
+    event_emitter,
+):
+    """Emit terminal:* events for Open Terminal tools.
+
+    - display_file  → emits 'terminal:display_file' to open the file preview.
+    - write_file / replace_file_content → emits 'terminal:write_file' to refresh.
+    - run_command → emits 'terminal:run_command' with cwd to refresh if relevant.
+    """
+    if not event_emitter:
+        return
+
+    if tool_function_name == 'display_file':
+        path = tool_function_params.get('path', '')
+        if not path:
+            return
+        # Only emit if the file actually exists
+        parsed = tool_result
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if isinstance(parsed, dict) and parsed.get('exists') is False:
+            return
+
+        await event_emitter(
+            {
+                'type': f'terminal:{tool_function_name}',
+                'data': {'path': path},
+            }
+        )
+    elif tool_function_name in ('write_file', 'replace_file_content'):
+        path = tool_function_params.get('path', '')
+        if not path:
+            return
+        await event_emitter(
+            {
+                'type': f'terminal:{tool_function_name}',
+                'data': {'path': path},
+            }
+        )
+    elif tool_function_name == 'run_command':
+        await event_emitter(
+            {
+                'type': 'terminal:run_command',
+                'data': {},
+            }
+        )
+
+
+async def chat_completion_tools_handler(
+    request: Request, body: dict, extra_params: dict, user: UserModel, models, tools
+) -> tuple[dict, dict]:
+    async def get_content_from_response(response) -> Optional[str]:
+        content = None
+        if hasattr(response, 'body_iterator'):
+            async for chunk in response.body_iterator:
+                data = json.loads(chunk.decode('utf-8', 'replace'))
+                content = data['choices'][0]['message']['content']
+
+            # Cleanup any remaining background tasks if necessary
+            if response.background is not None:
+                await response.background()
+        else:
+            content = response['choices'][0]['message']['content']
+        return content
+
+    def get_tools_function_calling_payload(messages, task_model_id, content):
+        user_message = get_last_user_message(messages)
+
+        if user_message and messages and messages[-1]['role'] == 'user':
+            # Remove the last user message to avoid duplication
+            messages = messages[:-1]
+
+        recent_messages = messages[-4:] if len(messages) > 4 else messages
+        chat_history = '\n'.join(
+            f'{message["role"].upper()}: """{get_content_from_message(message)}"""' for message in recent_messages
+        )
+
+        prompt = f'History:\n{chat_history}\nQuery: {user_message}' if chat_history else f'Query: {user_message}'
+
+        return {
+            'model': task_model_id,
+            'messages': [
+                {'role': 'system', 'content': content},
+                {'role': 'user', 'content': prompt},
+            ],
+            'stream': False,
+            'metadata': {'task': str(TASKS.FUNCTION_CALLING)},
+        }
+
+    event_caller = extra_params['__event_call__']
+    event_emitter = extra_params['__event_emitter__']
+    metadata = extra_params['__metadata__']
+
+    task_model_id = get_task_model_id(
+        body['model'],
+        await Config.get('task.model.default'),
+        await Config.get('task.model.external'),
+        models,
+    )
+
+    skip_files = False
+    sources = []
+
+    specs = [tool['spec'] for tool in tools.values()]
+    tools_specs = json.dumps(specs, ensure_ascii=False)
+
+    if await Config.get('task.tools.prompt_template') != '':
+        template = await Config.get('task.tools.prompt_template')
+    else:
+        template = DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+
+    tools_function_calling_prompt = tools_function_calling_generation_template(template, tools_specs)
+    payload = get_tools_function_calling_payload(body['messages'], task_model_id, tools_function_calling_prompt)
+
+    try:
+        response = await generate_chat_completion(request, form_data=payload, user=user)
+        log.debug(f'{response=}')
+        content = await get_content_from_response(response)
+        log.debug(f'{content=}')
+
+        if not content:
+            return body, {}
+
+        try:
+            content = content[content.find('{') : content.rfind('}') + 1]
+            if not content:
+                raise Exception('No JSON object found in the response')
+
+            result = json.loads(content)
+
+            async def tool_call_handler(tool_call):
+                nonlocal skip_files
+
+                log.debug(f'{tool_call=}')
+
+                tool_function_name = tool_call.get('name', None)
+                if tool_function_name not in tools:
+                    log.warning(f'Tool "{tool_function_name}" not found')
+                    return
+
+                tool_function_params = tool_call.get('parameters', {})
+
+                tool = None
+                tool_type = ''
+                direct_tool = False
+
+                try:
+                    tool = tools[tool_function_name]
+                    tool_type = tool.get('type', '')
+                    direct_tool = tool.get('direct', False)
+
+                    spec = tool.get('spec', {})
+                    allowed_params = spec.get('parameters', {}).get('properties', {}).keys()
+                    tool_function_params = {k: v for k, v in tool_function_params.items() if k in allowed_params}
+
+                    if tool.get('direct', False):
+                        tool_result = await event_caller(
+                            {
+                                'type': 'execute:tool',
+                                'data': {
+                                    'id': str(uuid4()),
+                                    'name': tool_function_name,
+                                    'params': tool_function_params,
+                                    'server': tool.get('server', {}),
+                                    'session_id': metadata.get('session_id', None),
+                                },
+                            }
+                        )
+                    else:
+                        tool_function = tool['callable']
+                        tool_result = await tool_function(**tool_function_params)
+
+                except Exception as e:
+                    tool_result = str(e)
+
+                tool_result, tool_result_files, tool_result_embeds = await process_tool_result(
+                    request,
+                    tool_function_name,
+                    tool_result,
+                    tool_type,
+                    direct_tool,
+                    metadata,
+                    user,
+                )
+
+                if event_emitter:
+                    await terminal_event_handler(
+                        tool_function_name,
+                        tool_function_params,
+                        tool_result,
+                        event_emitter,
+                    )
+
+                    if tool_result_files:
+                        await event_emitter(
+                            {
+                                'type': 'files',
+                                'data': {
+                                    'files': tool_result_files,
+                                },
+                            }
+                        )
+
+                    if tool_result_embeds:
+                        await event_emitter(
+                            {
+                                'type': 'embeds',
+                                'data': {
+                                    'embeds': tool_result_embeds,
+                                },
+                            }
+                        )
+
+                if tool_result:
+                    tool = tools[tool_function_name]
+                    tool_id = tool.get('tool_id', '')
+
+                    tool_name = f'{tool_id}/{tool_function_name}' if tool_id else f'{tool_function_name}'
+
+                    # Citation is enabled for this tool
+                    sources.append(
+                        {
+                            'source': {
+                                'name': (f'{tool_name}'),
+                            },
+                            'document': [str(tool_result)],
+                            'metadata': [
+                                {
+                                    'source': (f'{tool_name}'),
+                                    'parameters': tool_function_params,
+                                }
+                            ],
+                            'tool_result': True,
+                        }
+                    )
+
+                    if tools[tool_function_name].get('metadata', {}).get('file_handler', False):
+                        skip_files = True
+
+            # check if "tool_calls" in result
+            if result.get('tool_calls'):
+                for tool_call in result.get('tool_calls'):
+                    await tool_call_handler(tool_call)
+            else:
+                await tool_call_handler(result)
+
+        except Exception as e:
+            log.debug(f'Error: {e}')
+            content = None
+    except Exception as e:
+        log.debug(f'Error: {e}')
+        content = None
+
+    log.debug(f'tool_contexts: {sources}')
+
+    if skip_files and 'files' in body.get('metadata', {}):
+        del body['metadata']['files']
+
+    return body, {'sources': sources}
+
+async def chat_web_search_handler(request: Request, form_data: dict, extra_params: dict, user):
+    event_emitter = extra_params['__event_emitter__']
+    await event_emitter(
+        {
+            'type': 'status',
+            'data': {
+                'action': 'web_search',
+                'description': 'Searching the web',
+                'done': False,
+            },
+        }
+    )
+
+    messages = form_data['messages']
+    user_message = get_last_user_message(messages)
+
+    queries = []
+    try:
+        res = await generate_queries(
+            request,
+            {
+                'model': form_data['model'],
+                'messages': messages,
+                'prompt': user_message,
+                'type': 'web_search',
+                'chat_id': extra_params.get('__chat_id__'),
+            },
+            user,
+        )
+
+        # generate_queries returns a JSONResponse on error (e.g. model not
+        # found, chat completion failure).  Extract the error detail and
+        # re-raise so the outer except block falls back to using the raw
+        # user message as the search query.
+        if isinstance(res, JSONResponse):
+            try:
+                error_body = json.loads(res.body)
+                detail = error_body.get('detail', 'Query generation failed')
+            except Exception:
+                detail = 'Query generation failed'
+            raise Exception(detail)
+
+        response = res['choices'][0]['message']['content']
+
+        try:
+            bracket_start = response.rfind('{')
+            bracket_end = response.rfind('}') + 1
+
+            if bracket_start == -1 or bracket_end == -1:
+                raise Exception('No JSON object found in the response')
+
+            response = response[bracket_start:bracket_end]
+            queries = json.loads(response)
+            queries = queries.get('queries', [])
+        except Exception as e:
+            queries = [response]
+
+        if ENABLE_QUERIES_CACHE:
+            request.state.cached_queries = queries
+
+    except Exception as e:
+        log.exception(e)
+        queries = [user_message or '']
+
+    # Check if generated queries are empty
+    if len(queries) == 1 and queries[0].strip() == '':
+        queries = [user_message or '']
+
+    # Check if queries are not found
+    if len(queries) == 0:
+        await event_emitter(
+            {
+                'type': 'status',
+                'data': {
+                    'action': 'web_search',
+                    'description': 'No search query generated',
+                    'done': True,
+                },
+            }
+        )
+        return form_data
+
+    await event_emitter(
+        {
+            'type': 'status',
+            'data': {
+                'action': 'web_search_queries_generated',
+                'queries': queries,
+                'done': False,
+            },
+        }
+    )
+
+    try:
+        results = await process_web_search(
+            request,
+            SearchForm(queries=queries),
+            user=user,
+        )
+
+        if results:
+            files = form_data.get('files', [])
+
+            if results.get('collection_names'):
+                for col_idx, collection_name in enumerate(results.get('collection_names')):
+                    files.append(
+                        {
+                            'collection_name': collection_name,
+                            'name': ', '.join(queries),
+                            'type': 'web_search',
+                            'urls': results['filenames'],
+                            'queries': queries,
+                        }
+                    )
+            elif results.get('docs'):
+                # Invoked when bypass embedding and retrieval is set to True
+                docs = results['docs']
+                files.append(
+                    {
+                        'docs': docs,
+                        'name': ', '.join(queries),
+                        'type': 'web_search',
+                        'urls': results['filenames'],
+                        'queries': queries,
+                    }
+                )
+
+            form_data['files'] = files
+
+            await event_emitter(
+                {
+                    'type': 'status',
+                    'data': {
+                        'action': 'web_search',
+                        'description': 'Searched {{count}} sites',
+                        'urls': results['filenames'],
+                        'items': results.get('items', []),
+                        'done': True,
+                    },
+                }
+            )
+        else:
+            await event_emitter(
+                {
+                    'type': 'status',
+                    'data': {
+                        'action': 'web_search',
+                        'description': 'No search results found',
+                        'done': True,
+                        'error': True,
+                    },
+                }
+            )
+
+    except Exception as e:
+        log.exception(e)
+        await event_emitter(
+            {
+                'type': 'status',
+                'data': {
+                    'action': 'web_search',
+                    'description': 'An error occurred while searching the web',
+                    'queries': queries,
+                    'done': True,
+                    'error': True,
+                },
+            }
+        )
+
+    return form_data
+
+
+def get_images_from_messages(message_list):
+    images = []
+
+    for message in reversed(message_list):
+        message_images = []
+        for file in message.get('files', []):
+            if file.get('type') == 'image':
+                message_images.append(file.get('url'))
+            elif file.get('content_type', '').startswith('image/'):
+                message_images.append(file.get('url'))
+
+        if message_images:
+            images.append(message_images)
+
+    return images
+
+
+async def get_image_urls(delta_images, request, metadata, user) -> list[str]:
+    if not isinstance(delta_images, list):
+        return []
+
+    image_urls = []
+    for img in delta_images:
+        if not isinstance(img, dict) or img.get('type') != 'image_url':
+            continue
+
+        url = img.get('image_url', {}).get('url')
+        if not url:
+            continue
+
+        if url.startswith('data:image/png;base64'):
+            url = await get_image_url_from_base64(request, url, metadata, user)
+
+        image_urls.append(url)
+
+    return image_urls
+
+
+async def add_file_context(messages: list, chat_id: str, user) -> list:
+    """
+    Add file URLs to messages for native function calling.
+    """
+    if not chat_id or chat_id.startswith('local:') or chat_id.startswith('channel:'):
+        return messages
+
+    chat = await Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+    if not chat:
+        return messages
+
+    history = chat.chat.get('history', {})
+    stored_messages = get_message_list(history.get('messages', {}), history.get('currentId'))
+
+    def format_file_tag(file):
+        attrs = f'type="{file.get("type", "file")}" url="{file["url"]}"'
+        if file.get('content_type'):
+            attrs += f' content_type="{file["content_type"]}"'
+        if file.get('name'):
+            attrs += f' name="{file["name"]}"'
+        return f'<file {attrs}/>'
+
+    # Pair only user-role messages from both lists to avoid misalignment.
+    # After process_messages_with_output(), assistant messages with tool calls
+    # are expanded into multiple messages (assistant + tool results), making
+    # the payload message list longer than the stored message list. A naive
+    # positional zip() would pair user messages with wrong stored messages,
+    # causing later images to lose their file context (see #21878).
+    user_messages = [m for m in messages if m.get('role') == 'user']
+    stored_user_messages = [m for m in stored_messages if m.get('role') == 'user']
+
+    for message, stored_message in zip(user_messages, stored_user_messages):
+        files_with_urls = [
+            file
+            for file in stored_message.get('files', [])
+            if file.get('url') and not file.get('url').startswith('data:')
+        ]
+        if not files_with_urls:
+            continue
+
+        file_tags = [format_file_tag(file) for file in files_with_urls]
+        file_context = '<attached_files>\n' + '\n'.join(file_tags) + '\n</attached_files>\n\n'
+
+        content = message.get('content', '')
+        if isinstance(content, list):
+            message['content'] = [{'type': 'text', 'text': file_context}] + content
+        else:
+            message['content'] = file_context + content
+
+    return messages
+
+
+async def chat_image_generation_handler(request: Request, form_data: dict, extra_params: dict, user):
+    metadata = extra_params.get('__metadata__', {})
+    chat_id = metadata.get('chat_id', None)
+    __event_emitter__ = extra_params.get('__event_emitter__', None)
+
+    if not chat_id or not isinstance(chat_id, str) or not __event_emitter__:
+        return form_data
+
+    if chat_id.startswith('local:') or chat_id.startswith('channel:'):
+        message_list = form_data.get('messages', [])
+    else:
+        chat = await Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+        await __event_emitter__(
+            {
+                'type': 'status',
+                'data': {'description': 'Creating image', 'done': False},
+            }
+        )
+
+        messages_map = chat.chat.get('history', {}).get('messages', {})
+        message_id = chat.chat.get('history', {}).get('currentId')
+        message_list = get_message_list(messages_map, message_id)
+
+    user_message = get_last_user_message(message_list)
+
+    prompt = user_message
+    message_images = get_images_from_messages(message_list)
+
+    # Limit to first 2 sets of images
+    # We may want to change this in the future to allow more images
+    input_images = []
+    for idx, images in enumerate(message_images):
+        if idx >= 2:
+            break
+        for image in images:
+            input_images.append(image)
+
+    system_message_content = ''
+
+    if len(input_images) > 0 and await Config.get('images.edit.enable'):
+        # Edit image(s)
+        try:
+            images = await image_edits(
+                request=request,
+                form_data=EditImageForm(**{'prompt': prompt, 'image': input_images}),
+                metadata={
+                    'chat_id': metadata.get('chat_id', None),
+                    'message_id': metadata.get('message_id', None),
+                },
+                user=user,
+            )
+
+            await __event_emitter__(
+                {
+                    'type': 'status',
+                    'data': {'description': 'Image created', 'done': True},
+                }
+            )
+
+            await __event_emitter__(
+                {
+                    'type': 'files',
+                    'data': {
+                        'files': [
+                            {
+                                'type': 'image',
+                                'url': image['url'],
+                            }
+                            for image in images
+                        ]
+                    },
+                }
+            )
+
+            system_message_content = '<context>The requested image has been edited and created and is now being shown to the user. Let them know that it has been generated.</context>'
+        except Exception as e:
+            log.debug(e)
+
+            error_message = ''
+            if isinstance(e, HTTPException):
+                if e.detail and isinstance(e.detail, dict):
+                    error_message = e.detail.get('message', str(e.detail))
+                else:
+                    error_message = str(e.detail)
+
+            await __event_emitter__(
+                {
+                    'type': 'status',
+                    'data': {
+                        'description': f'An error occurred while generating an image',
+                        'done': True,
+                    },
+                }
+            )
+
+            system_message_content = f'<context>Image generation was attempted but failed. The system is currently unable to generate the image. Tell the user that the following error occurred: {error_message}</context>'
+
+    else:
+        # Create image(s)
+        if await Config.get('image_generation.prompt.enable'):
+            try:
+                res = await generate_image_prompt(
+                    request,
+                    {
+                        'model': form_data['model'],
+                        'messages': form_data['messages'],
+                        'chat_id': metadata.get('chat_id'),
+                    },
+                    user,
+                )
+
+                # Handle JSONResponse from error paths
+                if isinstance(res, JSONResponse):
+                    try:
+                        error_body = json.loads(res.body)
+                        detail = error_body.get('detail', 'Image prompt generation failed')
+                    except Exception:
+                        detail = 'Image prompt generation failed'
+                    raise Exception(detail)
+
+                response = res['choices'][0]['message']['content']
+
+                try:
+                    bracket_start = response.rfind('{')
+                    bracket_end = response.rfind('}') + 1
+
+                    if bracket_start == -1 or bracket_end == -1:
+                        raise Exception('No JSON object found in the response')
+
+                    response = response[bracket_start:bracket_end]
+                    response = json.loads(response)
+                    prompt = response.get('prompt', [])
+                except Exception as e:
+                    prompt = user_message
+
+            except Exception as e:
+                log.exception(e)
+                prompt = user_message
+
+        try:
+            images = await image_generations(
+                request=request,
+                form_data=CreateImageForm(**{'prompt': prompt}),
+                metadata={
+                    'chat_id': metadata.get('chat_id', None),
+                    'message_id': metadata.get('message_id', None),
+                },
+                user=user,
+            )
+
+            await __event_emitter__(
+                {
+                    'type': 'status',
+                    'data': {'description': 'Image created', 'done': True},
+                }
+            )
+
+            await __event_emitter__(
+                {
+                    'type': 'files',
+                    'data': {
+                        'files': [
+                            {
+                                'type': 'image',
+                                'url': image['url'],
+                            }
+                            for image in images
+                        ]
+                    },
+                }
+            )
+
+            system_message_content = '<context>The requested image has been created by the system successfully and is now being shown to the user. Let the user know that the image they requested has been generated and is now shown in the chat.</context>'
+        except Exception as e:
+            log.debug(e)
+
+            error_message = ''
+            if isinstance(e, HTTPException):
+                if e.detail and isinstance(e.detail, dict):
+                    error_message = e.detail.get('message', str(e.detail))
+                else:
+                    error_message = str(e.detail)
+
+            await __event_emitter__(
+                {
+                    'type': 'status',
+                    'data': {
+                        'description': f'An error occurred while generating an image',
+                        'done': True,
+                    },
+                }
+            )
+
+            system_message_content = f'<context>Image generation was attempted but failed because of an error. The system is currently unable to generate the image. Tell the user that the following error occurred: {error_message}</context>'
+
+    if system_message_content:
+        form_data['messages'] = add_or_update_system_message(system_message_content, form_data['messages'])
+
+    return form_data
+
+
+async def chat_completion_files_handler(
+    request: Request, body: dict, extra_params: dict, user: UserModel
+) -> tuple[dict, dict[str, list]]:
+    __event_emitter__ = extra_params['__event_emitter__']
+    sources = []
+
+    if files := body.get('metadata', {}).get('files', None):
+        # Check if all files are in full context mode
+        all_full_context = all(item.get('context') == 'full' for item in files)
+
+        queries = []
+        if not all_full_context:
+            try:
+                queries_response = await generate_queries(
+                    request,
+                    {
+                        'model': body['model'],
+                        'messages': body['messages'],
+                        'type': 'retrieval',
+                        'chat_id': body.get('metadata', {}).get('chat_id'),
+                    },
+                    user,
+                )
+                queries_response = queries_response['choices'][0]['message']['content']
+
+                try:
+                    bracket_start = queries_response.rfind('{')
+                    bracket_end = queries_response.rfind('}') + 1
+
+                    if bracket_start == -1 or bracket_end == -1:
+                        raise Exception('No JSON object found in the response')
+
+                    queries_response = queries_response[bracket_start:bracket_end]
+                    queries_response = json.loads(queries_response)
+                except Exception as e:
+                    queries_response = {'queries': [queries_response]}
+
+                queries = queries_response.get('queries', [])
+            except Exception:
+                pass
+
+            await __event_emitter__(
+                {
+                    'type': 'status',
+                    'data': {
+                        'action': 'queries_generated',
+                        'queries': queries,
+                        'done': False,
+                    },
+                }
+            )
+
+        if len(queries) == 0:
+            queries = [get_last_user_message(body['messages']) or '']
+
+        try:
+            # Directly await async get_sources_from_items (no thread needed - fully async now)
+            sources = await get_sources_from_items(
+                request=request,
+                items=files,
+                queries=queries,
+                embedding_function=lambda query, prefix: request.app.state.EMBEDDING_FUNCTION(
+                    query, prefix=prefix, user=user
+                ),
+                k=await Config.get('rag.top_k'),
+                reranking_function=(
+                    (lambda query, documents: request.app.state.RERANKING_FUNCTION(query, documents, user=user))
+                    if request.app.state.RERANKING_FUNCTION
+                    else None
+                ),
+                k_reranker=await Config.get('rag.top_k_reranker'),
+                r=await Config.get('rag.relevance_threshold'),
+                hybrid_bm25_weight=await Config.get('rag.hybrid_bm25_weight'),
+                hybrid_search=await Config.get('rag.enable_hybrid_search'),
+                full_context=all_full_context or await Config.get('rag.full_context'),
+                user=user,
+            )
+        except Exception as e:
+            log.exception(e)
+
+        log.debug(f'rag_contexts:sources: {sources}')
+
+        unique_ids = set()
+        for source in sources or []:
+            if not source or len(source.keys()) == 0:
+                continue
+
+            documents = source.get('document') or []
+            metadatas = source.get('metadata') or []
+            src_info = source.get('source') or {}
+
+            for index, _ in enumerate(documents):
+                metadata = metadatas[index] if index < len(metadatas) else None
+                _id = (metadata or {}).get('source') or (src_info or {}).get('id') or 'N/A'
+                unique_ids.add(_id)
+
+        sources_count = len(unique_ids)
+        await __event_emitter__(
+            {
+                'type': 'status',
+                'data': {
+                    'action': 'sources_retrieved',
+                    'count': sources_count,
+                    'done': True,
+                },
+            }
+        )
+
+    return body, {'sources': sources}
+
+
+def apply_params_to_form_data(form_data, model):
+    params = form_data.pop('params', {})
+    custom_params = params.pop('custom_params', {})
+
+    open_webui_params = {
+        'stream_response': bool,
+        'stream_delta_chunk_size': int,
+        'function_calling': str,
+        'reasoning_tags': list,
+        'compact_token_threshold': int,
+        'system': str,
+    }
+
+    for key in list(params.keys()):
+        if key in open_webui_params:
+            del params[key]
+
+    if custom_params:
+        # Attempt to parse custom_params if they are strings
+        for key, value in custom_params.items():
+            if isinstance(value, str):
+                try:
+                    # Attempt to parse the string as JSON
+                    custom_params[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    # If it fails, keep the original string
+                    pass
+
+        # If custom_params are provided, merge them into params
+        params = deep_update(params, custom_params)
+
+    if model.get('owned_by') == 'ollama':
+        # Ollama specific parameters
+        form_data['options'] = params
+    else:
+        if isinstance(params, dict):
+            for key, value in params.items():
+                if value is not None:
+                    form_data[key] = value
+
+        if 'logit_bias' in params and params['logit_bias'] is not None:
+            try:
+                logit_bias = convert_logit_bias_input_to_json(params['logit_bias'])
+
+                if logit_bias:
+                    form_data['logit_bias'] = json.loads(logit_bias)
+            except Exception as e:
+                log.exception(f'Error parsing logit_bias: {e}')
+
+    return form_data
+
+
+async def convert_url_images_to_base64(form_data, user=None):
+    messages = form_data.get('messages', [])
+
+    for message in messages:
+        content = message.get('content')
+        if not isinstance(content, list):
+            continue
+
+        new_content = []
+
+        for item in content:
+            if not isinstance(item, dict) or item.get('type') != 'image_url':
+                new_content.append(item)
+                continue
+
+            image_url = item.get('image_url', {}).get('url', '')
+            if image_url.startswith('data:image/'):
+                new_content.append(item)
+                continue
+
+            try:
+                base64_data = await get_image_base64_from_url(image_url, user=user)
+                if base64_data:
+                    new_content.append(
+                        {
+                            'type': 'image_url',
+                            'image_url': {'url': base64_data},
+                        }
+                    )
+                else:
+                    new_content.append(item)
+            except Exception as e:
+                log.debug(f'Error converting image URL to base64: {e}')
+                new_content.append(item)
+
+        message['content'] = new_content
+
+    return form_data
+
+
+async def load_messages_from_db(chat_id: str, message_id: str) -> Optional[list[dict]]:
+    """
+    Load the message chain from DB up to message_id,
+    keeping only LLM-relevant fields (role, content, output).
+    """
+    messages_map = await Chats.get_messages_map_by_chat_id(chat_id)
+    if not messages_map:
+        return None
+
+    db_messages = get_message_list(messages_map, message_id)
+    if not db_messages:
+        return None
+
+    return [
+        {k: v for k, v in msg.items() if k in ('role', 'content', 'output', 'files', 'contextSummary')}
+        for msg in db_messages
+    ]
+
+
+def get_reasoning_format(model: dict) -> str | None:
+    """
+    Determine how reasoning should be included in reconstructed messages.
+
+    Returns:
+        'think_tags': Ollama expects <think> tags in content.
+        'reasoning_content': llama.cpp supports reasoning_content as a top-level field.
+        None: skip reasoning (safe default for strict providers).
+    """
+    provider = model.get('provider', '')
+    if provider == 'ollama':
+        return 'think_tags'
+    if provider == 'llama.cpp':
+        return 'reasoning_content'
     return None
 
 
-def add_fastapi_permission_middleware(app: FastAPI) -> None:
+def process_messages_with_output(
+    messages: list[dict],
+    reasoning_format: str | None = None,
+) -> list[dict]:
     """
-    Add permission middleware to FastAPI app for routes not handled by Flask.
+    Process messages with OR-aligned output items for LLM consumption.
 
-    This middleware mirrors the high-level logic of ``_before_request`` for routes that are
-    served directly by FastAPI (e.g., ``/gateway/`` routes) and thus bypass Flask's
-    ``before_request`` hooks. It follows the same authorization flow:
-
-    1. Skip unprotected routes
-    2. Find the appropriate validator for the route
-    3. Reject if custom authorization_function is configured (not supported for FastAPI routes)
-    4. Authenticate the request
-    5. Allow admins full access
-    6. Run the validator
-
-    Args:
-        app: The FastAPI application instance.
+    For assistant messages with 'output' field, produces properly formatted
+    OpenAI-style messages (tool_calls + tool results). Strips 'output' before LLM.
     """
+    processed = []
 
-    @app.middleware("http")
-    async def fastapi_permission_middleware(request, call_next):
-        path = request.url.path
-
-        # Skip unprotected routes
-        if is_unprotected_route(path):
-            return await call_next(request)
-
-        # Find validator for this route
-        validator = _find_fastapi_validator(path)
-        if validator is None:
-            return await call_next(request)
-
-        # Check for custom authorization_function (only affects routes with validators)
-        if auth_config.authorization_function != DEFAULT_AUTHORIZATION_FUNCTION:
-            return PlainTextResponse(
-                f"Custom authorization_function '{auth_config.authorization_function}' is not "
-                f"supported for FastAPI routes (e.g., /gateway/ endpoints). Only the default "
-                f"Basic Auth function is supported. Please use "
-                f"'{DEFAULT_AUTHORIZATION_FUNCTION}' or disable the AI Gateway feature.",
-                status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+    for message in messages:
+        if message.get('role') == 'assistant' and message.get('output'):
+            # Use output items for clean OpenAI-format messages
+            output_messages = convert_output_to_messages(
+                message['output'],
+                raw=True,
+                reasoning_format=reasoning_format,
             )
+            if output_messages:
+                processed.extend(output_messages)
+                continue
 
-        # Authenticate user
-        user = _authenticate_request(request)
-        if user is None:
-            return PlainTextResponse(
-                "You are not authenticated. Please see "
-                "https://www.mlflow.org/docs/latest/auth/index.html#authenticating-to-mlflow "
-                "on how to authenticate.",
-                status_code=HTTPStatus.UNAUTHORIZED,
-                headers={"WWW-Authenticate": 'Basic realm="mlflow"'},
-            )
+        # Strip 'output' field before adding (LLM shouldn't see it)
+        clean_message = {k: v for k, v in message.items() if k != 'output'}
+        processed.append(clean_message)
 
-        # Store user info in request state for downstream handlers (e.g., gateway tracing)
-        request.state.username = user.username
-        request.state.user_id = user.id
+    return processed
 
-        # Admins have full access
-        if user.is_admin:
-            return await call_next(request)
 
-        # Run the validator
+def strip_compaction_fields(messages: list[dict]) -> list[dict]:
+    stripped = []
+    for message in messages:
+        clean = dict(message)
+        clean.pop('contextSummary', None)
+        clean.pop('context_summary', None)
+        stripped.append(clean)
+    return stripped
+
+
+def sanitize_tool_pairs(messages: list[dict]) -> list[dict]:
+    tool_result_ids = {
+        message.get('tool_call_id')
+        for message in messages
+        if message.get('role') == 'tool' and message.get('tool_call_id')
+    }
+
+    tool_call_ids = {
+        tool_call.get('id')
+        for message in messages
+        for tool_call in (message.get('tool_calls') or [])
+        if message.get('role') == 'assistant' and tool_call.get('id')
+    }
+
+    sanitized = []
+    for message in messages:
+        if message.get('role') == 'assistant' and message.get('tool_calls'):
+            kept = [
+                tool_call for tool_call in message.get('tool_calls') or [] if tool_call.get('id') in tool_result_ids
+            ]
+            if kept:
+                sanitized.append({**message, 'tool_calls': kept})
+            else:
+                clean = dict(message)
+                clean.pop('tool_calls', None)
+                clean.pop('reasoning_items', None)
+                if clean.get('content'):
+                    sanitized.append(clean)
+        elif message.get('role') != 'tool' or message.get('tool_call_id') in tool_call_ids:
+            sanitized.append(message)
+
+    return sanitized
+
+
+SKILL_MENTION_RE = re.compile(r'<\$([^|>]+)\|?[^>]*>')
+
+
+def _get_text_parts(message: dict) -> list[str]:
+    """Return all text segments from a message's content."""
+    content = message.get('content')
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        return [p.get('text', '') for p in content if isinstance(p, dict) and p.get('type') == 'text']
+    return []
+
+
+def extract_skill_ids_from_messages(messages: list[dict]) -> set[str]:
+    """Extract skill IDs from <$skillId|label> mention tags in messages."""
+    ids: set[str] = set()
+    for message in messages:
+        for text in _get_text_parts(message):
+            ids.update(m.group(1) for m in SKILL_MENTION_RE.finditer(text))
+    return ids
+
+
+def strip_skill_mentions(messages: list[dict]) -> None:
+    """Replace <$skillId|label> mention tags with the label in message content in-place."""
+    strip_re = re.compile(r'<\$[^|>]+\|?([^>]*)>')
+    for message in messages:
+        content = message.get('content')
+        if isinstance(content, str) and strip_re.search(content):
+            message['content'] = strip_re.sub(r'\1', content).strip()
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get('type') == 'text':
+                    text = part.get('text', '')
+                    if strip_re.search(text):
+                        part['text'] = strip_re.sub(r'\1', text).strip()
+
+
+async def connect_mcp_server(
+    request,
+    server_id: str,
+    user,
+    metadata: dict,
+    extra_params: dict,
+) -> tuple[MCPClient, list[dict]] | None:
+    """Resolve an MCP server connection, authenticate, and return (client, tool_specs).
+
+    Returns None if the server is not found or access is denied.
+    """
+    mcp_server_connection = None
+    for server_connection in await Config.get('tool_server.connections', []):
+        if server_connection.get('type', '') == 'mcp' and server_connection.get('info', {}).get('id') == server_id:
+            mcp_server_connection = server_connection
+            break
+
+    if not mcp_server_connection:
+        log.error(f'MCP server with id {server_id} not found')
+        return None
+
+    if not await has_connection_access(user, mcp_server_connection):
+        log.warning(f'Access denied to MCP server {server_id} for user {user.id}')
+        return None
+
+    headers, _ = await build_tool_server_headers(
+        mcp_server_connection,
+        request,
+        user,
+        server_id=server_id,
+        metadata=metadata,
+        extra_params=extra_params,
+    )
+
+    client = MCPClient()
+    await client.connect(
+        url=mcp_server_connection.get('url', ''),
+        headers=headers if headers else None,
+    )
+
+    function_name_filter_list = mcp_server_connection.get('config', {}).get('function_name_filter_list', '')
+    if isinstance(function_name_filter_list, str):
+        function_name_filter_list = function_name_filter_list.split(',')
+
+    tool_specs = await client.list_tool_specs()
+    if function_name_filter_list:
+        tool_specs = [spec for spec in tool_specs if is_string_allowed(spec['name'], function_name_filter_list)]
+
+    return client, tool_specs
+
+
+async def process_chat_payload(request, form_data, user, metadata, model):
+    # Ensure chat_id is always a string — external API clients may omit it.
+    if not isinstance(metadata.get('chat_id'), str):
+        metadata['chat_id'] = ''
+
+    # Pipeline Inlet -> Filter Inlet -> Chat Memory -> Chat Web Search -> Chat Image Generation
+    # -> Chat Code Interpreter (Form Data Update) -> (Default) Chat Tools Function Calling
+    # -> Chat Files
+
+    # Arena model resolution — pick the sub-model now so all downstream
+    # processing (knowledge, capabilities, tools, params) uses its settings
+    # instead of the empty arena wrapper.
+    if model.get('owned_by') == 'arena':
+        arena_model_ids = model.get('info', {}).get('meta', {}).get('model_ids')
+        arena_filter_mode = model.get('info', {}).get('meta', {}).get('filter_mode')
+        if arena_model_ids and arena_filter_mode == 'exclude':
+            arena_model_ids = [
+                available_model['id']
+                for available_model in request.app.state.MODELS.values()
+                if available_model.get('owned_by') != 'arena' and available_model['id'] not in arena_model_ids
+            ]
+
+        if isinstance(arena_model_ids, list) and arena_model_ids:
+            selected_model_id = random.choice(arena_model_ids)
+        else:
+            arena_model_ids = [
+                available_model['id']
+                for available_model in request.app.state.MODELS.values()
+                if available_model.get('owned_by') != 'arena'
+            ]
+            selected_model_id = random.choice(arena_model_ids)
+
+        selected_model = request.app.state.MODELS.get(selected_model_id)
+        if selected_model:
+            model = selected_model
+            form_data['model'] = selected_model_id
+            metadata['selected_model_id'] = selected_model_id
+
+    form_data = apply_params_to_form_data(form_data, model)
+    log.debug(f'form_data: {form_data}')
+
+    # Guided regeneration: extract before it reaches the LLM provider
+    regeneration_prompt = form_data.pop('regeneration_prompt', None)
+
+    # Load messages from DB when available — DB preserves structured 'output' items
+    # which the frontend strips, causing tool calls to be merged into content.
+    chat_id = metadata.get('chat_id')
+    user_message_id = metadata.get('user_message_id')
+
+    if chat_id and user_message_id and not chat_id.startswith('local:') and not chat_id.startswith('channel:'):
+        db_messages = await load_messages_from_db(chat_id, user_message_id)
+        if db_messages:
+            # Continue: frontend sends assistant_message_id when continuing
+            # an existing response. Load its content so the LLM sees prior output.
+            assistant_message_id = metadata.get('assistant_message_id')
+            if assistant_message_id:
+                assistant_message = await Chats.get_message_by_id_and_message_id(chat_id, assistant_message_id)
+                if assistant_message and (assistant_message.get('content') or assistant_message.get('output')):
+                    db_messages.append(
+                        {
+                            k: v
+                            for k, v in assistant_message.items()
+                            if k in ('role', 'content', 'output', 'files', 'contextSummary')
+                        }
+                    )
+
+            system_message = get_system_message(form_data.get('messages', []))
+            form_data['messages'] = [system_message, *db_messages] if system_message else db_messages
+
+            # Inject image files into content as image_url parts (mirrors frontend logic)
+            for message in form_data['messages']:
+                image_files = [
+                    f
+                    for f in message.get('files', [])
+                    if f.get('type') == 'image' or (f.get('content_type') or '').startswith('image/')
+                ]
+                if message.get('role') == 'user' and image_files:
+                    text_content = message.get('content', '')
+                    if isinstance(text_content, str):
+                        message['content'] = [
+                            {'type': 'text', 'text': text_content},
+                            *[
+                                {
+                                    'type': 'image_url',
+                                    'image_url': {'url': f['url']},
+                                }
+                                for f in image_files
+                                if f.get('url')
+                            ],
+                        ]
+                # Strip files field — it's been incorporated into content
+                message.pop('files', None)
+
+    if regeneration_prompt:
+        form_data['messages'].append({'role': 'user', 'content': regeneration_prompt})
+
+    if chat_id and user_message_id and not chat_id.startswith('local:') and not chat_id.startswith('channel:'):
+        if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
+            compaction_models = {
+                request.state.model['id']: request.state.model,
+            }
+        else:
+            compaction_models = request.app.state.MODELS
+
+        system_message = get_system_message(form_data.get('messages', []))
+        system_prompt = get_content_from_message(system_message) if system_message else ''
+
         try:
-            if not await validator(user.username, request):
-                return PlainTextResponse(
-                    "Permission denied",
-                    status_code=HTTPStatus.FORBIDDEN,
+            form_data['messages'], context_summary, _ = await compact_messages_for_request(
+                request,
+                user,
+                form_data.get('messages', []),
+                metadata,
+                form_data.get('model'),
+                compaction_models,
+                system_prompt,
+            )
+            if context_summary:
+                form_data['messages'] = add_or_update_system_message(
+                    f'[CONVERSATION SUMMARY]\n{context_summary}',
+                    form_data['messages'],
+                    append=True,
                 )
-        except MlflowException as e:
-            return PlainTextResponse(
-                e.message,
-                status_code=e.get_http_status_code(),
+        except Exception:
+            log.exception('Context compaction failed; continuing with full chat history')
+
+    form_data['messages'] = strip_compaction_fields(form_data.get('messages', []))
+
+    # Process messages with OR-aligned output items for clean LLM messages
+    form_data['messages'] = process_messages_with_output(
+        form_data.get('messages', []),
+        reasoning_format=get_reasoning_format(model),
+    )
+    form_data['messages'] = sanitize_tool_pairs(form_data['messages'])
+
+    system_message = get_system_message(form_data.get('messages', []))
+    if system_message:  # Chat Controls/User Settings
+        try:
+            form_data = await apply_system_prompt_to_body(
+                system_message.get('content'), form_data, metadata, user, replace=True
+            )  # Required to handle system prompt variables
+        except Exception:
+            pass
+
+    form_data = await convert_url_images_to_base64(form_data, user=user)
+
+    event_emitter = await get_event_emitter(metadata)
+    event_caller = await get_event_call(metadata)
+
+    extra_params = {
+        '__event_emitter__': event_emitter,
+        '__event_call__': event_caller,
+        '__user__': user.model_dump() if isinstance(user, UserModel) else {},
+        '__metadata__': metadata,
+        '__oauth_token__': await get_system_oauth_token(request, user),
+        '__request__': request,
+        '__model__': model,
+        '__chat_id__': metadata.get('chat_id'),
+        '__message_id__': metadata.get('message_id'),
+    }
+    # Initialize events to store additional event to be sent to the client
+    # Initialize contexts and citation
+    if getattr(request.state, 'direct', False) and hasattr(request.state, 'model'):
+        models = {
+            request.state.model['id']: request.state.model,
+        }
+    else:
+        models = request.app.state.MODELS
+
+    task_model_id = get_task_model_id(
+        form_data['model'],
+        await Config.get('task.model.default'),
+        await Config.get('task.model.external'),
+        models,
+    )
+
+    events = []
+    sources = []
+
+    # Folder "Project" handling
+    # Check if the request has chat_id and is inside of a folder
+    # Uses lightweight column query — only fetches folder_id, not the full chat JSON blob
+    chat_id = metadata.get('chat_id', None)
+    folder_id = None
+    if chat_id and user:
+        folder_id = await Chats.get_chat_folder_id(chat_id, user.id)
+
+    # Fallback: use folder_id from metadata (temporary chats have no DB record)
+    if not folder_id:
+        folder_id = metadata.get('folder_id', None)
+
+    if folder_id and user:
+        folder = await Folders.get_folder_by_id_and_user_id(folder_id, user.id)
+
+        if folder and folder.data:
+            if 'system_prompt' in folder.data:
+                form_data = await apply_system_prompt_to_body(folder.data['system_prompt'], form_data, metadata, user)
+            if 'files' in folder.data:
+                # Defensive: filter to entries the caller can still read.
+                allowed_files = await get_accessible_folder_files(folder.data['files'], user)
+                if metadata.get('params', {}).get('function_calling') == 'legacy':
+                    form_data['files'] = [
+                        *allowed_files,
+                        *form_data.get('files', []),
+                    ]
+                else:
+                    # Native FC: skip RAG injection, builtin tools
+                    # will read folder knowledge from metadata.
+                    metadata['folder_knowledge'] = allowed_files
+
+    # Model "Knowledge" handling
+    user_message = get_last_user_message(form_data['messages'])
+    model_knowledge = model.get('info', {}).get('meta', {}).get('knowledge', False)
+
+    if model_knowledge and metadata.get('params', {}).get('function_calling') == 'legacy':
+        await event_emitter(
+            {
+                'type': 'status',
+                'data': {
+                    'action': 'knowledge_search',
+                    'query': user_message,
+                    'done': False,
+                },
+            }
+        )
+
+        knowledge_files = []
+        for item in model_knowledge:
+            if item.get('collection_name'):
+                knowledge_files.append(
+                    {
+                        'id': item.get('collection_name'),
+                        'name': item.get('name'),
+                        'legacy': True,
+                    }
+                )
+            elif item.get('collection_names'):
+                knowledge_files.append(
+                    {
+                        'name': item.get('name'),
+                        'type': 'collection',
+                        'collection_names': item.get('collection_names'),
+                        'legacy': True,
+                    }
+                )
+            else:
+                knowledge_files.append(item)
+
+        files = form_data.get('files', [])
+        files.extend(knowledge_files)
+        form_data['files'] = files
+
+    variables = form_data.pop('variables', None)
+    payload_tools = form_data.get('tools', None)  # snapshot before filters
+
+    # Process the form_data through the pipeline
+    try:
+        form_data = await process_pipeline_inlet_filter(request, form_data, user, models)
+    except Exception as e:
+        raise e
+
+    try:
+        filter_ids = await get_sorted_filter_ids(request, model, metadata.get('filter_ids', []))
+        filter_functions = await Functions.get_functions_by_ids(filter_ids)
+
+        form_data, flags = await process_filter_functions(
+            request=request,
+            filter_functions=filter_functions,
+            filter_type='inlet',
+            form_data=form_data,
+            extra_params=extra_params,
+        )
+    except Exception as e:
+        raise Exception(f'{e}')
+
+    features = form_data.pop('features', None) or {}
+    extra_params['__features__'] = features
+    if features:
+        if 'voice' in features and features['voice']:
+            if await Config.get('task.voice.prompt.enable'):
+                if await Config.get('task.voice.prompt_template'):
+                    template = await Config.get('task.voice.prompt_template')
+                else:
+                    template = DEFAULT_VOICE_MODE_PROMPT_TEMPLATE
+
+                form_data['messages'] = add_or_update_system_message(
+                    template,
+                    form_data['messages'],
+                )
+
+        if 'memory' in features and features['memory']:
+            form_data = await add_memory_context(request, form_data, user, model)
+
+        if 'web_search' in features and features['web_search']:
+            # Skip forced RAG web search when native FC is enabled - model can use web_search tool
+            if metadata.get('params', {}).get('function_calling') == 'legacy':
+                form_data = await chat_web_search_handler(request, form_data, extra_params, user)
+
+        if 'image_generation' in features and features['image_generation']:
+            # Skip forced image generation when native FC is enabled - model can use generate_image tool
+            if metadata.get('params', {}).get('function_calling') == 'legacy':
+                form_data = await chat_image_generation_handler(request, form_data, extra_params, user)
+
+        if 'code_interpreter' in features and features['code_interpreter']:
+            engine = await Config.get('code_interpreter.engine', 'pyodide')
+
+            # Skip XML-tag prompt injection when native FC is enabled —
+            # execute_code will be injected as a builtin tool instead
+            if metadata.get('params', {}).get('function_calling') == 'legacy':
+                prompt = (
+                    await Config.get('code_interpreter.prompt_template')
+                    if await Config.get('code_interpreter.prompt_template') != ''
+                    else DEFAULT_CODE_INTERPRETER_PROMPT
+                )
+
+                # Append filesystem awareness only for pyodide engine
+                if engine != 'jupyter':
+                    prompt += CODE_INTERPRETER_PYODIDE_PROMPT
+
+                form_data['messages'] = add_or_update_user_message(
+                    prompt,
+                    form_data['messages'],
+                )
+            else:
+                # Native FC: tool docstring can't be dynamic, so inject
+                # filesystem context into the system message for pyodide
+                # engine.  Appending to the system prompt (instead of the
+                # user message) keeps it in the stable cached prefix so
+                # providers with prefix caching don't re-bill the full
+                # conversation on every turn.
+                if engine != 'jupyter':
+                    form_data['messages'] = add_or_update_system_message(
+                        CODE_INTERPRETER_PYODIDE_PROMPT,
+                        form_data['messages'],
+                        append=True,
+                    )
+
+    tool_ids = form_data.pop('tool_ids', None)
+    terminal_id = form_data.pop('terminal_id', None)
+    files = form_data.pop('files', None)
+    form_data.pop('folder_id', None)
+
+    # If the original caller provided tools, use them as-is (skip resolution).
+    # Otherwise, save any tools that filter inlets added for merging later.
+    inlet_filter_tools = None if payload_tools is not None else form_data.get('tools', None)
+
+    # Skills — extract IDs from message content (<$skillId|label> tags) so
+    # persisted chats work without relying on the frontend to send skill_ids.
+    user_skill_ids = set(form_data.pop('skill_ids', None) or [])
+    user_skill_ids |= extract_skill_ids_from_messages(form_data.get('messages', []))
+    model_skill_ids = set(model.get('info', {}).get('meta', {}).get('skillIds', []))
+
+    all_skill_ids = user_skill_ids | model_skill_ids
+    available_skills = []
+    if all_skill_ids:
+        from open_webui.models.skills import Skills as SkillsModel
+
+        accessible_skill_ids = {s.id for s in await SkillsModel.get_skills_by_user_id(user.id, 'read')}
+        available_skills = []
+        for sid in all_skill_ids:
+            if sid in accessible_skill_ids:
+                s = await SkillsModel.get_skill_by_id(sid)
+                if s and s.is_active:
+                    available_skills.append(s)
+
+        skill_descriptions = ''
+        for skill in available_skills:
+            if skill.id in user_skill_ids:
+                # User-selected: inject full content
+                form_data['messages'] = add_or_update_system_message(
+                    f'<skill name="{skill.name}">\n{skill.content}\n</skill>',
+                    form_data['messages'],
+                    append=True,
+                )
+            else:
+                # Model-attached: name+description only
+                skill_descriptions += f'<skill>\n<id>{skill.id}</id>\n<name>{skill.name}</name>\n<description>{skill.description or ""}</description>\n</skill>\n'
+
+        if skill_descriptions:
+            form_data['messages'] = add_or_update_system_message(
+                f'<available_skills>\n{skill_descriptions}</available_skills>',
+                form_data['messages'],
+                append=True,
             )
 
-        return await call_next(request)
+    # Strip <$skillId|label> mention tags so the model doesn't see raw markup.
+    strip_skill_mentions(form_data.get('messages', []))
 
+    prompt = get_last_user_message(form_data['messages'])
 
-def create_app(app: Flask = app):
-    """
-    A factory to enable authentication and authorization for the MLflow server.
+    # Guard against empty user message after skill mention stripping.
+    # When a user selects a skill ($skill-name) without typing additional text,
+    # the stripped result is an empty string which causes 400 errors on providers
+    # that reject empty content blocks (e.g. AWS Bedrock ConverseStream).
+    if not prompt or not prompt.strip():
+        fallback = ', '.join(s.name for s in available_skills)
+        if fallback:
+            set_last_user_message_content(fallback, form_data['messages'])
+            prompt = fallback
+    # TODO: re-enable URL extraction from prompt
+    # urls = []
+    # if prompt and len(prompt or "") < 500 and (not files or len(files) == 0):
+    #     urls = extract_urls(prompt)
 
-    Args:
-        app: The Flask app to enable authentication and authorization for.
+    if files:
+        if not files:
+            files = []
 
-    Returns:
-        The app with authentication and authorization enabled.
-    """
-    global _auth_initialized
+        for file_item in files:
+            if file_item.get('type', 'file') == 'folder':
+                # Get folder files
+                folder_id = file_item.get('id', None)
+                if folder_id:
+                    folder = await Folders.get_folder_by_id_and_user_id(folder_id, user.id)
+                    if folder and folder.data and 'files' in folder.data:
+                        files = [f for f in files if f.get('id', None) != folder_id]
+                        files = [*files, *await get_accessible_folder_files(folder.data['files'], user)]
 
-    _logger.warning(
-        "This feature is still experimental and may change in a future release without warning"
-    )
+        # files = [*files, *[{"type": "url", "url": url, "name": url} for url in urls]]
+        # Remove duplicate files based on their content
+        files = list({json.dumps(f, sort_keys=True): f for f in files}.values())
 
-    # a secret key is required for flashing, and also for
-    # CSRF protection. it's important that this is a static key,
-    # otherwise CSRF validation won't work across workers.
-    secret_key = MLFLOW_FLASK_SERVER_SECRET_KEY.get()
-    if not secret_key:
-        raise MlflowException(
-            "A static secret key needs to be set for CSRF protection. Please set the "
-            "`MLFLOW_FLASK_SERVER_SECRET_KEY` environment variable before starting the "
-            "server. For example:\n\n"
-            "export MLFLOW_FLASK_SERVER_SECRET_KEY='my-secret-key'\n\n"
-            "If you are using multiple servers, please ensure this key is consistent between "
-            "them, in order to prevent validation issues."
+    metadata = {
+        **metadata,
+        'model_id': form_data.get('model'),
+        'tool_ids': tool_ids,
+        'terminal_id': terminal_id,
+        'files': files,
+        'features': features,
+    }
+    form_data['metadata'] = metadata
+
+    # When the caller provides an explicit `tools` key in the request body,
+    # skip all server-side tool resolution and pass the caller's tools through
+    # unchanged.  Sending `tools: []` explicitly opts out of builtin injection.
+    if payload_tools is None:
+        # Server side tools
+        tool_ids = metadata.get('tool_ids', None)
+        # Client side tools
+        direct_tool_servers = metadata.get('tool_servers', None)
+
+        log.debug(f'{tool_ids=}')
+        log.debug(f'{direct_tool_servers=}')
+
+        tools_dict = {}
+
+        mcp_clients = {}
+        mcp_tools_dict = {}
+
+        if tool_ids:
+            for tool_id in tool_ids:
+                if tool_id.startswith('server:mcp:'):
+                    try:
+                        server_id = tool_id[len('server:mcp:') :]
+
+                        result = await connect_mcp_server(
+                            request,
+                            server_id,
+                            user,
+                            metadata,
+                            extra_params,
+                        )
+                        if result is None:
+                            continue
+
+                        client, tool_specs = result
+                        mcp_clients[server_id] = client
+
+                        for tool_spec in tool_specs:
+
+                            async def make_tool_function(client, function_name):
+                                async def tool_function(**kwargs):
+                                    return await client.call_tool(
+                                        function_name,
+                                        function_args=kwargs,
+                                    )
+
+                                return tool_function
+
+                            tool_function = await make_tool_function(client, tool_spec['name'])
+
+                            mcp_tools_dict[f'{server_id}_{tool_spec["name"]}'] = {
+                                'spec': {
+                                    **tool_spec,
+                                    'name': f'{server_id}_{tool_spec["name"]}',
+                                },
+                                'callable': tool_function,
+                                'type': 'mcp',
+                                'client': client,
+                                'direct': False,
+                            }
+                    except Exception as e:
+                        log.debug(e)
+                        if event_emitter:
+                            await event_emitter(
+                                {
+                                    'type': 'chat:message:error',
+                                    'data': {'error': {'content': f"Failed to connect to MCP server '{server_id}'"}},
+                                }
+                            )
+                        continue
+
+            tools_dict = await get_tools(
+                request,
+                tool_ids,
+                user,
+                {
+                    **extra_params,
+                    '__model__': models[task_model_id],
+                    '__messages__': form_data['messages'],
+                    '__files__': metadata.get('files', []),
+                },
+            )
+
+            if mcp_tools_dict:
+                tools_dict = {**tools_dict, **mcp_tools_dict}
+
+        # Resolve terminal tools if terminal_id is set (outside tool_ids check
+        # so system terminals work even when no other tools are selected)
+        terminal_capability = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('terminal', True)
+        if terminal_id and terminal_capability:
+            try:
+                terminal_result = await get_terminal_tools(
+                    request,
+                    terminal_id,
+                    user,
+                    extra_params,
+                )
+                if isinstance(terminal_result, tuple):
+                    terminal_tools, system_prompt = terminal_result
+                else:
+                    terminal_tools = terminal_result
+                    system_prompt = None
+                if terminal_tools:
+                    tools_dict = {**tools_dict, **terminal_tools}
+                if system_prompt:
+                    form_data['messages'] = add_or_update_system_message(
+                        system_prompt,
+                        form_data['messages'],
+                        append=True,
+                    )
+            except Exception as e:
+                log.exception(e)
+
+        if direct_tool_servers:
+            for tool_server in direct_tool_servers:
+                system_prompt = tool_server.pop('system_prompt', None)
+                if system_prompt:
+                    form_data['messages'] = add_or_update_system_message(
+                        system_prompt,
+                        form_data['messages'],
+                        append=True,
+                    )
+
+                tool_specs = tool_server.pop('specs', [])
+
+                for tool in tool_specs:
+                    tools_dict[tool['name']] = {
+                        'spec': tool,
+                        'direct': True,
+                        'server': tool_server,
+                    }
+
+        if mcp_clients:
+            metadata['mcp_clients'] = mcp_clients
+
+        # Inject builtin tools for native function calling based on enabled features and model capability.
+        # Only inject when the request originates from the UI (identified by session_id).
+        # API callers don't expect hidden tools; they can explicitly request tools via tool_ids.
+        builtin_tools_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get(
+            'builtin_tools', True
         )
-    app.secret_key = secret_key
+        has_session = bool(metadata.get('session_id'))
+        if has_session and metadata.get('params', {}).get('function_calling') != 'legacy' and builtin_tools_enabled:
+            # Add file context to user messages
+            chat_id = metadata.get('chat_id')
+            form_data['messages'] = await add_file_context(form_data.get('messages', []), chat_id, user)
+            builtin_tools = await get_builtin_tools(
+                request,
+                {
+                    **extra_params,
+                    '__event_emitter__': event_emitter,
+                    '__skill_ids__': [s.id for s in available_skills if s.id not in user_skill_ids],
+                },
+                features,
+                model,
+            )
+            for name, tool_dict in builtin_tools.items():
+                if name not in tools_dict:
+                    tools_dict[name] = tool_dict
 
-    # we only need to protect the CREATE_USER_UI route, since that's
-    # the only browser-accessible route. the rest are client / REST
-    # APIs that do not have access to the CSRF token for validation
-    app.config["WTF_CSRF_CHECK_DEFAULT"] = False
-    csrf = CSRFProtect()
-    csrf.init_app(app)
+        if tools_dict:
+            # Always store resolved tools in metadata so downstream consumers
+            # (e.g. pipe functions) can access all tools including MCP and builtins.
+            metadata['tools'] = tools_dict
 
-    store.init_db(auth_config.database_uri)
-    create_admin_user(auth_config.admin_username, auth_config.admin_password)
+            if metadata.get('params', {}).get('function_calling') != 'legacy':
+                # If the function calling is native, then call the tools function calling handler
+                form_data['tools'] = [
+                    {'type': 'function', 'function': tool.get('spec', {})} for tool in tools_dict.values()
+                ]
+                if inlet_filter_tools:
+                    form_data['tools'].extend(inlet_filter_tools)
+            else:
+                # If the function calling is not native, then call the tools function calling handler
+                try:
+                    form_data, flags = await chat_completion_tools_handler(
+                        request, form_data, extra_params, user, models, tools_dict
+                    )
+                    sources.extend(flags.get('sources', []))
+                except Exception as e:
+                    log.exception(e)
 
-    _auth_initialized = True
+    # Check if file context extraction is enabled for this model (default True)
+    file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)
 
-    app.add_url_rule(
-        rule=SIGNUP,
-        view_func=signup,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=CREATE_USER_UI,
-        view_func=lambda: create_user_ui(csrf),
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=CREATE_USER,
-        view_func=create_user,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=GET_USER,
-        view_func=get_user,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=UPDATE_USER_PASSWORD,
-        view_func=update_user_password,
-        methods=["PATCH"],
-    )
-    app.add_url_rule(
-        rule=UPDATE_USER_ADMIN,
-        view_func=update_user_admin,
-        methods=["PATCH"],
-    )
-    app.add_url_rule(
-        rule=DELETE_USER,
-        view_func=delete_user,
-        methods=["DELETE"],
-    )
-    app.add_url_rule(
-        rule=CREATE_EXPERIMENT_PERMISSION,
-        view_func=create_experiment_permission,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=GET_EXPERIMENT_PERMISSION,
-        view_func=get_experiment_permission,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=UPDATE_EXPERIMENT_PERMISSION,
-        view_func=update_experiment_permission,
-        methods=["PATCH"],
-    )
-    app.add_url_rule(
-        rule=DELETE_EXPERIMENT_PERMISSION,
-        view_func=delete_experiment_permission,
-        methods=["DELETE"],
-    )
-    app.add_url_rule(
-        rule=CREATE_REGISTERED_MODEL_PERMISSION,
-        view_func=create_registered_model_permission,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=GET_REGISTERED_MODEL_PERMISSION,
-        view_func=get_registered_model_permission,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=UPDATE_REGISTERED_MODEL_PERMISSION,
-        view_func=update_registered_model_permission,
-        methods=["PATCH"],
-    )
-    app.add_url_rule(
-        rule=DELETE_REGISTERED_MODEL_PERMISSION,
-        view_func=delete_registered_model_permission,
-        methods=["DELETE"],
-    )
-    app.add_url_rule(
-        rule=CREATE_SCORER_PERMISSION,
-        view_func=create_scorer_permission,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=GET_SCORER_PERMISSION,
-        view_func=get_scorer_permission,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=UPDATE_SCORER_PERMISSION,
-        view_func=update_scorer_permission,
-        methods=["PATCH"],
-    )
-    app.add_url_rule(
-        rule=DELETE_SCORER_PERMISSION,
-        view_func=delete_scorer_permission,
-        methods=["DELETE"],
-    )
-    # Gateway secret permission routes
-    app.add_url_rule(
-        rule=CREATE_GATEWAY_SECRET_PERMISSION,
-        view_func=create_gateway_secret_permission,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=GET_GATEWAY_SECRET_PERMISSION,
-        view_func=get_gateway_secret_permission,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=UPDATE_GATEWAY_SECRET_PERMISSION,
-        view_func=update_gateway_secret_permission,
-        methods=["PATCH"],
-    )
-    app.add_url_rule(
-        rule=DELETE_GATEWAY_SECRET_PERMISSION,
-        view_func=delete_gateway_secret_permission,
-        methods=["DELETE"],
-    )
-    # Gateway endpoint permission routes
-    app.add_url_rule(
-        rule=CREATE_GATEWAY_ENDPOINT_PERMISSION,
-        view_func=create_gateway_endpoint_permission,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=GET_GATEWAY_ENDPOINT_PERMISSION,
-        view_func=get_gateway_endpoint_permission,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=UPDATE_GATEWAY_ENDPOINT_PERMISSION,
-        view_func=update_gateway_endpoint_permission,
-        methods=["PATCH"],
-    )
-    app.add_url_rule(
-        rule=DELETE_GATEWAY_ENDPOINT_PERMISSION,
-        view_func=delete_gateway_endpoint_permission,
-        methods=["DELETE"],
-    )
-    # Gateway model definition permission routes
-    app.add_url_rule(
-        rule=CREATE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-        view_func=create_gateway_model_definition_permission,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=GET_GATEWAY_MODEL_DEFINITION_PERMISSION,
-        view_func=get_gateway_model_definition_permission,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=UPDATE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-        view_func=update_gateway_model_definition_permission,
-        methods=["PATCH"],
-    )
-    app.add_url_rule(
-        rule=DELETE_GATEWAY_MODEL_DEFINITION_PERMISSION,
-        view_func=delete_gateway_model_definition_permission,
-        methods=["DELETE"],
-    )
-    app.add_url_rule(
-        rule=LIST_WORKSPACE_PERMISSIONS,
-        view_func=list_workspace_permissions,
-        methods=["GET"],
-    )
-    app.add_url_rule(
-        rule=LIST_WORKSPACE_PERMISSIONS,
-        view_func=set_workspace_permission,
-        methods=["POST"],
-    )
-    app.add_url_rule(
-        rule=LIST_WORKSPACE_PERMISSIONS,
-        view_func=delete_workspace_permission,
-        methods=["DELETE"],
-    )
-    app.add_url_rule(
-        rule=LIST_USER_WORKSPACE_PERMISSIONS,
-        view_func=list_user_workspace_permissions,
-        methods=["GET"],
-    )
+    if file_context_enabled:
+        try:
+            form_data, flags = await chat_completion_files_handler(request, form_data, extra_params, user)
+            sources.extend(flags.get('sources', []))
+        except Exception as e:
+            log.exception(e)
 
-    app.before_request(_before_request)
-    app.after_request(_after_request)
+    # Save the pre-RAG message state so the native tool call loop can
+    # restore to the true original (before file-source injection) rather
+    # than a snapshot that already has the RAG template baked in.
+    system_message = get_system_message(form_data['messages'])
+    system_content = get_content_from_message(system_message) if system_message else ''
+    model_system_prompt = await resolve_system_prompt(
+        (form_data.get('params') or {}).get('system'),
+        metadata,
+        user,
+    )
+    if model_system_prompt:
+        system_content = f'{model_system_prompt}\n{system_content}' if system_content else model_system_prompt
+    metadata['system_prompt'] = system_content or None
+    metadata['user_prompt'] = get_last_user_message(form_data['messages'])
+    metadata['sources'] = sources[:] if sources else []
 
-    if _MLFLOW_SGI_NAME.get() == "uvicorn":
-        fastapi_app = create_fastapi_app(app)
-        add_fastapi_permission_middleware(fastapi_app)
-        return fastapi_app
+    # If context is not empty, insert it into the messages
+    if sources and prompt:
+        form_data['messages'] = await apply_source_context_to_messages(request, form_data['messages'], sources, prompt)
+
+    # If there are citations, add them to the data_items
+    sources = [
+        source
+        for source in sources
+        if source.get('source', {}).get('name', '') or source.get('source', {}).get('id', '')
+    ]
+
+    if len(sources) > 0:
+        events.append({'sources': sources})
+
+    if model_knowledge:
+        await event_emitter(
+            {
+                'type': 'status',
+                'data': {
+                    'action': 'knowledge_search',
+                    'query': user_message,
+                    'done': True,
+                    'hidden': True,
+                },
+            }
+        )
+
+    # Strip empty text content blocks from multimodal messages
+    # to prevent errors from providers like Gemini and Claude
+    form_data['messages'] = strip_empty_content_blocks(form_data.get('messages', []))
+
+    # Merge any duplicate system messages into a single message at position 0
+    # to prevent template parsing errors with strict chat templates (e.g. Qwen)
+    form_data['messages'] = merge_system_messages(form_data.get('messages', []))
+
+    return form_data, metadata, events
+
+
+async def get_event_emitter_and_caller(metadata):
+    event_emitter = None
+    event_caller = None
+
+    # event_emitter only needs user_id + chat_id + message_id.
+    # It broadcasts to user:{user_id} room AND persists to DB,
+    # so it works for backend-initiated calls (automations, API).
+    if metadata.get('chat_id') and metadata.get('message_id'):
+        event_emitter = await get_event_emitter(metadata)
+
+    # event_caller needs session_id — it calls back to a specific
+    # websocket session (used by direct tools, pyodide code interpreter).
+    if metadata.get('session_id') and metadata.get('chat_id') and metadata.get('message_id'):
+        event_caller = await get_event_call(metadata)
+
+    return event_emitter, event_caller
+
+
+async def build_chat_response_context(request, form_data, user, model, metadata, tasks, events):
+    event_emitter, event_caller = await get_event_emitter_and_caller(metadata)
+    return {
+        'request': request,
+        'form_data': form_data,
+        'user': user,
+        'model': model,
+        'metadata': metadata,
+        'tasks': tasks,
+        'events': events,
+        'event_emitter': event_emitter,
+        'event_caller': event_caller,
+    }
+
+
+def get_response_data(response):
+    if isinstance(response, list) and len(response) == 1:
+        # If the response is a single-item list, unwrap it #17213
+        response = response[0]
+
+    if isinstance(response, JSONResponse):
+        if isinstance(response.body, bytes):
+            try:
+                response_data = json.loads(response.body.decode('utf-8', 'replace'))
+            except json.JSONDecodeError:
+                response_data = {'error': {'detail': 'Invalid JSON response'}}
+        else:
+            response_data = response
+    elif isinstance(response, dict):
+        response_data = response
     else:
-        return app
+        response_data = None
+
+    return response, response_data
+
+
+def merge_events_into_response(response_data, events):
+    if events and isinstance(events, list):
+        extra_response = {}
+        for event in events:
+            if isinstance(event, dict):
+                extra_response.update(event)
+            else:
+                extra_response[event] = True
+
+        return {
+            **extra_response,
+            **response_data,
+        }
+    return response_data
+
+
+def build_response_object(response, response_data):
+    if isinstance(response, dict):
+        return response_data
+    if isinstance(response, JSONResponse):
+        return JSONResponse(
+            content=response_data,
+            headers=response.headers,
+            status_code=response.status_code,
+        )
+    return response
+
+
+async def get_system_oauth_token(request, user):
+    """Get the system OAuth token for a user.
+
+    Primary path: use the oauth_session_id cookie (browser requests).
+    Fallback: look up the user's most recent OAuth session from the DB
+    (covers automations, API calls, and other cookie-less contexts).
+    """
+    oauth_token = None
+    try:
+        oauth_session_id = request.cookies.get('oauth_session_id', None)
+        if oauth_session_id:
+            oauth_token = await request.app.state.oauth_manager.get_oauth_token(
+                user.id,
+                oauth_session_id,
+            )
+
+        # Fallback: no cookie (automation, API key, etc.) — use most recent session
+        if oauth_token is None:
+            from open_webui.models.oauth_sessions import OAuthSessions
+
+            sessions = await OAuthSessions.get_sessions_by_user_id(user.id)
+            # Filter out MCP-provider sessions — their token refresh is handled
+            # separately by oauth_client_manager.  Passing them to the SSO
+            # oauth_manager causes a failed refresh and session deletion (#24618).
+            sessions = [s for s in sessions if not (s.provider or '').startswith('mcp:')]
+            if sessions:
+                best = max(sessions, key=lambda s: s.updated_at)
+                oauth_token = await request.app.state.oauth_manager.get_oauth_token(
+                    user.id,
+                    best.id,
+                )
+    except Exception as e:
+        log.error(f'Error getting OAuth token: {e}')
+    return oauth_token
+
+
+async def background_tasks_handler(ctx):
+    request = ctx['request']
+    form_data = ctx['form_data']
+    user = ctx['user']
+    metadata = ctx['metadata']
+    tasks = ctx['tasks']
+    event_emitter = ctx['event_emitter']
+
+    message = None
+    messages = []
+
+    if (
+        'chat_id' in metadata
+        and not metadata.get('chat_id', '').startswith('local:')
+        and not metadata.get('chat_id', '').startswith('channel:')
+    ):
+        messages_map = await Chats.get_messages_map_by_chat_id(metadata['chat_id'])
+        if not messages_map:
+            # Chat was deleted while the response was streaming — skip background tasks
+            return
+        message = messages_map.get(metadata['message_id'])
+
+        message_list = get_message_list(messages_map, metadata['message_id'])
+
+        # Remove details tags and files from the messages.
+        # as get_message_list creates a new list, it does not affect
+        # the original messages outside of this handler
+
+        messages = []
+        for message in message_list:
+            content = message.get('content', '')
+            if isinstance(content, list):
+                for item in content:
+                    if item.get('type') == 'text':
+                        content = item['text']
+                        break
+
+            if isinstance(content, str):
+                content = re.sub(
+                    r'<details\b[^>]*>.*?<\/details>|!\[.*?\]\(.*?\)',
+                    '',
+                    content,
+                    flags=re.S | re.I,
+                ).strip()
+
+            messages.append(
+                {
+                    **message,
+                    'role': message.get('role', 'assistant'),  # Safe fallback for missing role
+                    'content': content,
+                }
+            )
+    else:
+        # Local temp chat, get the model and message from the form_data
+        message = get_last_user_message_item(form_data.get('messages', []))
+        messages = form_data.get('messages', [])
+        if message:
+            message['model'] = form_data.get('model')
+
+    if message and 'model' in message:
+        if tasks and messages:
+            if TASKS.FOLLOW_UP_GENERATION in tasks and tasks[TASKS.FOLLOW_UP_GENERATION]:
+                res = await generate_follow_ups(
+                    request,
+                    {
+                        'model': message['model'],
+                        'messages': messages,
+                        'message_id': metadata['message_id'],
+                        'chat_id': metadata['chat_id'],
+                    },
+                    user,
+                )
+
+                if res and isinstance(res, dict):
+                    if len(res.get('choices', [])) == 1:
+                        response_message = res.get('choices', [])[0].get('message', {})
+
+                        follow_ups_string = response_message.get('content') or response_message.get(
+                            'reasoning_content', ''
+                        )
+                    else:
+                        follow_ups_string = ''
+
+                    follow_ups_string = follow_ups_string[
+                        follow_ups_string.find('{') : follow_ups_string.rfind('}') + 1
+                    ]
+
+                    try:
+                        follow_ups = json.loads(follow_ups_string).get('follow_ups', [])
+                        await event_emitter(
+                            {
+                                'type': 'chat:message:follow_ups',
+                                'data': {
+                                    'follow_ups': follow_ups,
+                                },
+                            }
+                        )
+
+                        if not metadata.get('chat_id', '').startswith('local:') and not metadata.get(
+                            'chat_id', ''
+                        ).startswith('channel:'):
+                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                metadata['chat_id'],
+                                metadata['message_id'],
+                                {
+                                    'followUps': follow_ups,
+                                },
+                            )
+
+                    except Exception as e:
+                        pass
+
+            if not metadata.get('chat_id', '').startswith('local:') and not metadata.get('chat_id', '').startswith(
+                'channel:'
+            ):  # Only update titles and tags for non-temp chats
+                if TASKS.TITLE_GENERATION in tasks:
+                    user_message = get_last_user_message(messages)
+                    if user_message and len(user_message) > 100:
+                        user_message = user_message[:100] + '...'
+
+                    title = None
+                    if tasks[TASKS.TITLE_GENERATION]:
+                        res = await generate_title(
+                            request,
+                            {
+                                'model': message['model'],
+                                'messages': messages,
+                                'chat_id': metadata['chat_id'],
+                            },
+                            user,
+                        )
+
+                        if res and isinstance(res, dict):
+                            if len(res.get('choices', [])) == 1:
+                                response_message = res.get('choices', [])[0].get('message', {})
+
+                                title_string = (
+                                    response_message.get('content')
+                                    or response_message.get(
+                                        'reasoning_content',
+                                    )
+                                    or message.get('content', user_message)
+                                )
+                            else:
+                                title_string = ''
+
+                            title_string = title_string[title_string.find('{') : title_string.rfind('}') + 1]
+
+                            try:
+                                title = json.loads(title_string).get('title', user_message)
+                            except Exception as e:
+                                title = ''
+
+                            if not title:
+                                title = messages[0].get('content', user_message)
+
+                            await Chats.update_chat_title_by_id(metadata['chat_id'], title)
+
+                            await event_emitter(
+                                {
+                                    'type': 'chat:title',
+                                    'data': title,
+                                }
+                            )
+
+                    if title == None and len(messages) == 2 and (not messages_map or len(messages_map) <= 2):
+                        title = messages[0].get('content', user_message)
+
+                        await Chats.update_chat_title_by_id(metadata['chat_id'], title)
+
+                        await event_emitter(
+                            {
+                                'type': 'chat:title',
+                                'data': message.get('content', user_message),
+                            }
+                        )
+
+                if TASKS.TAGS_GENERATION in tasks and tasks[TASKS.TAGS_GENERATION]:
+                    res = await generate_chat_tags(
+                        request,
+                        {
+                            'model': message['model'],
+                            'messages': messages,
+                            'chat_id': metadata['chat_id'],
+                        },
+                        user,
+                    )
+
+                    if res and isinstance(res, dict):
+                        if len(res.get('choices', [])) == 1:
+                            response_message = res.get('choices', [])[0].get('message', {})
+
+                            tags_string = response_message.get('content') or response_message.get(
+                                'reasoning_content', ''
+                            )
+                        else:
+                            tags_string = ''
+
+                        tags_string = tags_string[tags_string.find('{') : tags_string.rfind('}') + 1]
+
+                        try:
+                            tags = json.loads(tags_string).get('tags', [])
+                            await Chats.update_chat_tags_by_id(metadata['chat_id'], tags, user)
+
+                            await event_emitter(
+                                {
+                                    'type': 'chat:tags',
+                                    'data': tags,
+                                }
+                            )
+                        except Exception as e:
+                            pass
+
+        if messages:
+            await review_memory_after_turn(
+                request=request,
+                user=user,
+                model=ctx['model'],
+                metadata=metadata,
+                form_data=form_data,
+                assistant_message=ctx.get('assistant_message') or {},
+                messages=messages,
+            )
+
+
+async def outlet_filter_handler(ctx):
+    """Run outlet filters inline after chat completion.
+
+    Replaces the separate POST /api/chat/completed round-trip.
+    Persists outlet-modified content to DB and emits a chat:outlet event
+    so the frontend can sync its in-memory state.
+
+    For temp chats (local: prefix), messages are built from form_data
+    plus the assistant response message stored in ctx['assistant_message'],
+    since temp chats have no DB-persisted history.
+    """
+    request = ctx['request']
+    user = ctx['user']
+    model = ctx['model']
+    metadata = ctx['metadata']
+    event_emitter = ctx.get('event_emitter')
+    event_caller = ctx.get('event_caller')
+
+    chat_id = metadata.get('chat_id', '')
+    message_id = metadata.get('message_id')
+
+    if not chat_id or not message_id:
+        return
+
+    is_temp_chat = chat_id.startswith('local:') or chat_id.startswith('channel:')
+
+    try:
+        messages_map = None
+
+        if is_temp_chat:
+            # Temp chats have no DB record — build message list from
+            # the in-memory form_data plus the assistant response.
+            form_messages = ctx.get('form_data', {}).get('messages', [])
+            assistant_message = ctx.get('assistant_message', {})
+
+            message_list = [
+                {
+                    'role': m.get('role'),
+                    'content': m.get('content', ''),
+                }
+                for m in form_messages
+            ]
+
+            # Append the full assistant message (content, output, usage, etc.)
+            if assistant_message:
+                message_list.append(
+                    {
+                        'id': message_id,
+                        'role': 'assistant',
+                        **assistant_message,
+                    }
+                )
+        else:
+            messages_map = await Chats.get_messages_map_by_chat_id(chat_id)
+            if not messages_map:
+                return
+
+            message_list = get_message_list(messages_map, message_id)
+            if not message_list:
+                return
+
+        model_id = model.get('id') if isinstance(model, dict) else model
+
+        outlet_data = {
+            'model': model_id,
+            'messages': [
+                {
+                    'id': m.get('id'),
+                    'role': m.get('role'),
+                    'content': m.get('content', ''),
+                    'info': m.get('info'),
+                    'timestamp': m.get('timestamp'),
+                    **({'output': m['output']} if m.get('output') else {}),
+                    **({'usage': m['usage']} if m.get('usage') else {}),
+                    **({'sources': m['sources']} if m.get('sources') else {}),
+                }
+                for m in message_list
+            ],
+            'filter_ids': metadata.get('filter_ids', []),
+            'chat_id': chat_id,
+            'session_id': metadata.get('session_id'),
+            'id': message_id,
+        }
+
+        # Pipeline outlet filters
+        models = request.app.state.MODELS
+        try:
+            outlet_data = await process_pipeline_outlet_filter(request, outlet_data, user, models)
+        except Exception as e:
+            log.debug(f'Pipeline outlet filter error: {e}')
+
+        # Function outlet filters
+        extra_params = {
+            '__event_emitter__': event_emitter,
+            '__event_call__': event_caller,
+            '__user__': user.model_dump() if isinstance(user, UserModel) else {},
+            '__metadata__': metadata,
+            '__request__': request,
+            '__model__': model,
+        }
+
+        filter_ids = await get_sorted_filter_ids(request, model, metadata.get('filter_ids', []))
+        filter_functions = await Functions.get_functions_by_ids(filter_ids)
+
+        outlet_result, _ = await process_filter_functions(
+            request=request,
+            filter_functions=filter_functions,
+            filter_type='outlet',
+            form_data=outlet_data,
+            extra_params=extra_params,
+        )
+
+        # Persist outlet-modified content and notify frontend
+        # (skip DB persistence for temp chats — they have no DB record)
+        if outlet_result and outlet_result.get('messages'):
+            if not is_temp_chat and messages_map:
+                for message in outlet_result['messages']:
+                    outlet_message_id = message.get('id')
+                    if outlet_message_id and outlet_message_id in messages_map:
+                        original_message = messages_map[outlet_message_id]
+                        content_changed = original_message.get('content') != message.get('content')
+                        output_changed = message.get('output') and message.get('output') != original_message.get(
+                            'output'
+                        )
+                        if content_changed or output_changed:
+                            # If output was modified, re-derive content from it
+                            new_content = message.get('content', original_message.get('content', ''))
+                            if output_changed:
+                                new_content = serialize_output(message['output'])
+                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                chat_id,
+                                outlet_message_id,
+                                {
+                                    'content': new_content,
+                                    'originalContent': original_message.get('content'),
+                                    **({'output': message['output']} if output_changed else {}),
+                                },
+                            )
+
+            if event_emitter:
+                await event_emitter(
+                    {
+                        'type': 'chat:outlet',
+                        'data': {'messages': outlet_result['messages']},
+                    }
+                )
+    except Exception as e:
+        log.debug(f'Error running outlet filters: {e}')
+
+
+async def non_streaming_chat_response_handler(response, ctx):
+    request = ctx['request']
+
+    user = ctx['user']
+    metadata = ctx['metadata']
+    events = ctx['events']
+
+    event_emitter = ctx['event_emitter']
+
+    response, response_data = get_response_data(response)
+    if response_data is None:
+        return response
+
+    if event_emitter:
+        try:
+            if 'error' in response_data:
+                error = response_data.get('error')
+
+                if isinstance(error, dict):
+                    error = error.get('detail', error)
+                else:
+                    error = str(error)
+
+                log.error('Provider returned error (non-streaming): %s', error)
+
+                if not metadata.get('chat_id', '').startswith('channel:'):
+                    await Chats.upsert_message_to_chat_by_id_and_message_id(
+                        metadata['chat_id'],
+                        metadata['message_id'],
+                        {
+                            'error': {'content': error},
+                        },
+                    )
+                if isinstance(error, str) or isinstance(error, dict):
+                    await event_emitter(
+                        {
+                            'type': 'chat:message:error',
+                            'data': {'error': {'content': error}},
+                        }
+                    )
+
+            if 'selected_model_id' in response_data and not metadata.get('chat_id', '').startswith('channel:'):
+                await Chats.upsert_message_to_chat_by_id_and_message_id(
+                    metadata['chat_id'],
+                    metadata['message_id'],
+                    {
+                        'selectedModelId': response_data['selected_model_id'],
+                    },
+                )
+
+            choices = response_data.get('choices', [])
+            if choices and choices[0].get('message', {}).get('content'):
+                content = response_data['choices'][0]['message']['content']
+
+                if content:
+                    await event_emitter(
+                        {
+                            'type': 'chat:completion',
+                            'data': response_data,
+                        }
+                    )
+
+                    title = (
+                        await Chats.get_chat_title_by_id(metadata['chat_id'])
+                        if not metadata.get('chat_id', '').startswith('channel:')
+                        else ''
+                    )
+
+                    # Use output from backend if provided (OR-compliant backends),
+                    # otherwise generate from response content
+                    response_output = response_data.get('output')
+                    if not response_output:
+                        response_output = [
+                            {
+                                'type': 'message',
+                                'id': output_id('msg'),
+                                'status': 'completed',
+                                'role': 'assistant',
+                                'content': [{'type': 'output_text', 'text': content}],
+                            }
+                        ]
+
+                    await event_emitter(
+                        {
+                            'type': 'chat:completion',
+                            'data': {
+                                'done': True,
+                                'content': content,
+                                'output': response_output,
+                                'title': title,
+                            },
+                        }
+                    )
+
+                    # Save message in the database
+                    usage = normalize_usage(response_data.get('usage', {}) or {})
+
+                    if not metadata.get('chat_id', '').startswith('channel:'):
+                        await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata['chat_id'],
+                            metadata['message_id'],
+                            {
+                                'done': True,
+                                'role': 'assistant',
+                                'content': content,
+                                'output': response_output,
+                                **({'usage': usage} if usage else {}),
+                            },
+                        )
+
+                    # Send a webhook notification if the user is not active
+                    if await Config.get('ui.enable_user_webhooks') and not await Users.is_user_active(user.id):
+                        webhook_url = await Users.get_user_webhook_url_by_id(user.id)
+                        if webhook_url:
+                            webui_url = await Config.get('webui.url')
+                            await post_webhook(
+                                request.app.state.WEBUI_NAME,
+                                webhook_url,
+                                f'{content}\n\n{title} - {webui_url}/c/{metadata["chat_id"]}',
+                                {
+                                    'action': 'chat',
+                                    'message': content,
+                                    'title': title,
+                                    'url': f'{webui_url}/c/{metadata["chat_id"]}',
+                                },
+                            )
+
+                    ctx['assistant_message'] = {
+                        'content': content,
+                        'output': response_output,
+                        **({'usage': usage} if usage else {}),
+                    }
+                    await outlet_filter_handler(ctx)
+                    await background_tasks_handler(ctx)
+
+            response = build_response_object(response, merge_events_into_response(response_data, events))
+        except Exception as e:
+            log.debug(f'Error occurred while processing request: {e}')
+            pass
+
+        return response
+
+    if isinstance(response, dict):
+        response = merge_events_into_response(response_data, events)
+
+    return response
+
+
+async def streaming_chat_response_handler(response, ctx):
+    request = ctx['request']
+
+    form_data = ctx['form_data']
+
+    user = ctx['user']
+    model = ctx['model']
+
+    metadata = ctx['metadata']
+    events = ctx['events']
+
+    event_emitter = ctx['event_emitter']
+    event_caller = ctx['event_caller']
+
+    extra_params = {
+        '__event_emitter__': event_emitter,
+        '__event_call__': event_caller,
+        '__user__': user.model_dump() if isinstance(user, UserModel) else {},
+        '__metadata__': metadata,
+        '__oauth_token__': await get_system_oauth_token(request, user),
+        '__request__': request,
+        '__model__': model,
+    }
+
+    filter_functions = [
+        await Functions.get_function_by_id(filter_id)
+        for filter_id in await get_sorted_filter_ids(request, model, metadata.get('filter_ids', []))
+    ]
+
+    # Standard streaming response handler
+    # event_caller is optional — only needed for direct (client-side) tools
+    # and pyodide code interpreter. Server-side tools work without it.
+    if event_emitter:
+        task_id = str(uuid4())  # Create a unique task ID.
+        model_id = form_data.get('model', '')
+
+        # Handle as a background task
+        async def response_handler(response, events):
+            def tag_output_handler(content_type, tags, output):
+                """
+                Detect special tags (reasoning, solution, code_interpreter) in streaming
+                content and create corresponding OR-aligned output items directly.
+                Operates on output items instead of content_blocks.
+
+                Uses the text from the output items themselves for tag detection,
+                eliminating state divergence between accumulated content and items.
+                """
+                end_flag = False
+
+                def extract_attributes(tag_content):
+                    """Extract attributes from a tag if they exist."""
+                    attributes = {}
+                    if not tag_content:
+                        return attributes
+                    matches = re.findall(r'(\w+)\s*=\s*"([^"]+)"', tag_content)
+                    for key, value in matches:
+                        attributes[key] = value
+                    return attributes
+
+                def get_last_text(out):
+                    """Get text from last message item, or empty string."""
+                    if out and out[-1].get('type') == 'message':
+                        parts = out[-1].get('content', [])
+                        if parts and parts[-1].get('type') == 'output_text':
+                            return parts[-1].get('text', '')
+                    return ''
+
+                def set_last_text(out, text):
+                    """Set text on last message item's output_text."""
+                    if out and out[-1].get('type') == 'message':
+                        parts = out[-1].get('content', [])
+                        if parts and parts[-1].get('type') == 'output_text':
+                            parts[-1]['text'] = text
+
+                # Map content_type to output item type
+                output_type_map = {
+                    'reasoning': 'reasoning',
+                    'solution': 'message',  # solution tags just produce text
+                    'code_interpreter': 'open_webui:code_interpreter',
+                }
+                output_item_type = output_type_map.get(content_type, content_type)
+
+                last_type = output[-1].get('type', '') if output else ''
+
+                if last_type == 'message':
+                    # Use the output item's own text for tag detection
+                    item_text = get_last_text(output)
+                    for start_tag, end_tag in tags:
+                        start_tag_pattern = rf'{re.escape(start_tag)}'
+                        if start_tag.startswith('<') and start_tag.endswith('>'):
+                            start_tag_pattern = rf'<{re.escape(start_tag[1:-1])}(\s.*?)?>'
+
+                        match = re.search(start_tag_pattern, item_text)
+                        if match:
+                            try:
+                                attr_content = match.group(1) if match.group(1) else ''
+                            except Exception:
+                                attr_content = ''
+
+                            attributes = extract_attributes(attr_content)
+
+                            before_tag = item_text[: match.start()]
+                            after_tag = item_text[match.end() :]
+
+                            # Keep only text before the tag in the message
+                            set_last_text(output, before_tag)
+
+                            if not before_tag.strip():
+                                # Remove empty message item
+                                if output and output[-1].get('type') == 'message':
+                                    output.pop()
+
+                            # Append the new output item
+                            if output_item_type == 'reasoning':
+                                output.append(
+                                    {
+                                        'type': 'reasoning',
+                                        'id': output_id('r'),
+                                        'status': 'in_progress',
+                                        'start_tag': start_tag,
+                                        'end_tag': end_tag,
+                                        'attributes': attributes,
+                                        'content': [],
+                                        'summary': None,
+                                        'started_at': time.time(),
+                                    }
+                                )
+                            elif output_item_type == 'open_webui:code_interpreter':
+                                output.append(
+                                    {
+                                        'type': 'open_webui:code_interpreter',
+                                        'id': output_id('ci'),
+                                        'status': 'in_progress',
+                                        'start_tag': start_tag,
+                                        'end_tag': end_tag,
+                                        'attributes': attributes,
+                                        'lang': attributes.get('lang', 'python'),
+                                        'code': '',
+                                        'output': None,
+                                        'started_at': time.time(),
+                                    }
+                                )
+                            else:
+                                # solution or other text-producing tag
+                                output.append(
+                                    {
+                                        'type': 'message',
+                                        'id': output_id('msg'),
+                                        'status': 'in_progress',
+                                        'role': 'assistant',
+                                        'content': [{'type': 'output_text', 'text': ''}],
+                                        '_tag_type': content_type,
+                                        'start_tag': start_tag,
+                                        'end_tag': end_tag,
+                                        'attributes': attributes,
+                                        'started_at': time.time(),
+                                    }
+                                )
+
+                            if after_tag:
+                                # Set the after_tag content on the new item
+                                if output_item_type == 'reasoning':
+                                    output[-1]['content'] = [{'type': 'output_text', 'text': after_tag}]
+                                elif output_item_type == 'open_webui:code_interpreter':
+                                    output[-1]['code'] = after_tag
+                                else:
+                                    set_last_text(output, after_tag)
+
+                                _, recursive_end = tag_output_handler(content_type, tags, output)
+                                if recursive_end:
+                                    end_flag = True
+
+                            break
+
+                elif (
+                    (last_type == 'reasoning' and content_type == 'reasoning')
+                    or (last_type == 'open_webui:code_interpreter' and content_type == 'code_interpreter')
+                    or (last_type == 'message' and output[-1].get('_tag_type') == content_type)
+                ):
+                    item = output[-1]
+                    start_tag = item.get('start_tag', '')
+                    end_tag = item.get('end_tag', '')
+
+                    end_tag_pattern = rf'{re.escape(end_tag)}'
+
+                    # Get the block content from the item itself
+                    if last_type == 'reasoning':
+                        parts = item.get('content', [])
+                        block_content = ''
+                        if parts and parts[-1].get('type') == 'output_text':
+                            block_content = parts[-1].get('text', '')
+                    elif last_type == 'open_webui:code_interpreter':
+                        block_content = item.get('code', '')
+                    else:
+                        block_content = get_last_text(output)
+
+                    if re.search(end_tag_pattern, block_content):
+                        end_flag = True
+
+                        # Strip start and end tags from content
+                        start_tag_pattern = rf'{re.escape(start_tag)}'
+                        if start_tag.startswith('<') and start_tag.endswith('>'):
+                            start_tag_pattern = rf'<{re.escape(start_tag[1:-1])}(\s.*?)?>'
+                        block_content = re.sub(start_tag_pattern, '', block_content).strip()
+
+                        end_tag_regex = re.compile(end_tag_pattern, re.DOTALL)
+                        split_content = end_tag_regex.split(block_content, maxsplit=1)
+
+                        block_content = split_content[0].strip() if split_content else ''
+                        leftover_content = split_content[1].strip() if len(split_content) > 1 else ''
+
+                        if block_content:
+                            # Update the item with final content
+                            if last_type == 'reasoning':
+                                item['content'] = [{'type': 'output_text', 'text': block_content}]
+                                item['ended_at'] = time.time()
+                                item['duration'] = int(item['ended_at'] - item['started_at'])
+                                item['status'] = 'completed'
+                            elif last_type == 'open_webui:code_interpreter':
+                                item['code'] = block_content
+                                item['ended_at'] = time.time()
+                                item['duration'] = int(item['ended_at'] - item['started_at'])
+                            else:
+                                set_last_text(output, block_content)
+                                item['ended_at'] = time.time()
+
+                            # Reset by appending a new message item for leftover
+                            output.append(
+                                {
+                                    'type': 'message',
+                                    'id': output_id('msg'),
+                                    'status': 'in_progress',
+                                    'role': 'assistant',
+                                    'content': [
+                                        {
+                                            'type': 'output_text',
+                                            'text': leftover_content,
+                                        }
+                                    ],
+                                }
+                            )
+                        else:
+                            # Remove the block if content is empty
+                            output.pop()
+                            output.append(
+                                {
+                                    'type': 'message',
+                                    'id': output_id('msg'),
+                                    'status': 'in_progress',
+                                    'role': 'assistant',
+                                    'content': [
+                                        {
+                                            'type': 'output_text',
+                                            'text': leftover_content,
+                                        }
+                                    ],
+                                }
+                            )
+
+                return output, end_flag
+
+            message = await Chats.get_message_by_id_and_message_id(metadata['chat_id'], metadata['message_id'])
+
+            tool_calls = []
+
+            last_assistant_message = None
+            try:
+                if form_data['messages'][-1]['role'] == 'assistant':
+                    last_assistant_message = get_last_assistant_message(form_data['messages'])
+            except Exception as e:
+                pass
+
+            content = (
+                message.get('content', '') if message else last_assistant_message if last_assistant_message else ''
+            )
+
+            # Initialize output: use existing from message if continuing, else create new
+            existing_output = message.get('output') if message else None
+            if existing_output:
+                output = existing_output
+            else:
+                # Only create an initial message item if there is content to initialize with
+                if content:
+                    output = [
+                        {
+                            'type': 'message',
+                            'id': output_id('msg'),
+                            'status': 'in_progress',
+                            'role': 'assistant',
+                            'content': [{'type': 'output_text', 'text': content}],
+                        }
+                    ]
+                else:
+                    output = []
+
+            usage = None
+            prior_output = []
+            last_response_id = None
+
+            def full_output():
+                return prior_output + output if prior_output else output
+
+            reasoning_tags_param = metadata.get('params', {}).get('reasoning_tags')
+            DETECT_REASONING_TAGS = reasoning_tags_param is not False
+
+            # Mirror the five gates from utils/tools.py get_builtin_tools so the
+            # legacy XML-tag path enforces the same authz as native FC.
+            features = metadata.get('features', {}) or {}
+            model_capabilities = model.get('info', {}).get('meta', {}).get('capabilities') or {}
+            builtin_tools_meta = model.get('info', {}).get('meta', {}).get('builtinTools', {})
+            DETECT_CODE_INTERPRETER = (
+                bool(features.get('code_interpreter'))
+                and builtin_tools_meta.get('code_interpreter', True)
+                and await Config.get('code_interpreter.enable')
+                and model_capabilities.get('code_interpreter', True)
+                and (
+                    getattr(user, 'role', None) == 'admin'
+                    or await has_permission(
+                        getattr(user, 'id', ''),
+                        'features.code_interpreter',
+                        await Config.get('user.permissions'),
+                    )
+                )
+            )
+
+            reasoning_tags = []
+            if DETECT_REASONING_TAGS:
+                if isinstance(reasoning_tags_param, list) and len(reasoning_tags_param) == 2:
+                    reasoning_tags = [(reasoning_tags_param[0], reasoning_tags_param[1])]
+                else:
+                    reasoning_tags = DEFAULT_REASONING_TAGS
+
+            try:
+                for event in events:
+                    await event_emitter(
+                        {
+                            'type': 'chat:completion',
+                            'data': event,
+                        }
+                    )
+
+                    # Save message in the database
+                    await Chats.upsert_message_to_chat_by_id_and_message_id(
+                        metadata['chat_id'],
+                        metadata['message_id'],
+                        {
+                            **event,
+                        },
+                    )
+
+                async def stream_body_handler(response, form_data):
+                    nonlocal content
+                    nonlocal usage
+                    nonlocal output
+                    nonlocal prior_output
+                    nonlocal last_response_id
+
+                    response_tool_calls = []
+
+                    delta_count = 0
+                    delta_chunk_size = max(
+                        CHAT_RESPONSE_STREAM_DELTA_CHUNK_SIZE,
+                        int(metadata.get('params', {}).get('stream_delta_chunk_size') or 1),
+                    )
+                    last_delta_data = None
+                    last_delta_type = None
+
+                    async def flush_pending_delta_data(threshold: int = 0):
+                        nonlocal delta_count
+                        nonlocal last_delta_data
+                        nonlocal last_delta_type
+
+                        if delta_count >= threshold and last_delta_data:
+                            await event_emitter(
+                                {
+                                    'type': 'chat:completion',
+                                    'data': last_delta_data,
+                                }
+                            )
+                            delta_count = 0
+                            last_delta_data = None
+                            last_delta_type = None
+
+                    async def queue_pending_delta_data(delta_data: dict, delta_type: str):
+                        nonlocal delta_count
+                        nonlocal last_delta_data
+                        nonlocal last_delta_type
+
+                        if last_delta_type and last_delta_type != delta_type:
+                            await flush_pending_delta_data()
+
+                        delta_count += 1
+                        last_delta_data = delta_data
+                        last_delta_type = delta_type
+
+                        if delta_count >= delta_chunk_size:
+                            await flush_pending_delta_data(delta_chunk_size)
+
+                    async for line in response.body_iterator:
+                        line = line.decode('utf-8', 'replace') if isinstance(line, bytes) else line
+                        data = line
+
+                        # Skip empty lines
+                        if not data.strip():
+                            continue
+
+                        # "data:" is the prefix for each event
+                        if not data.startswith('data:'):
+                            continue
+
+                        # Remove the prefix
+                        data = data[len('data:') :].strip()
+
+                        try:
+                            data = json.loads(data)
+
+                            data, _ = await process_filter_functions(
+                                request=request,
+                                filter_functions=filter_functions,
+                                filter_type='stream',
+                                form_data=data,
+                                extra_params={'__body__': form_data, **extra_params},
+                            )
+
+                            if data:
+                                if 'event' in data and not getattr(request.state, 'direct', False):
+                                    await event_emitter(data.get('event', {}))
+
+                                if 'selected_model_id' in data:
+                                    model_id = data['selected_model_id']
+                                    await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                        metadata['chat_id'],
+                                        metadata['message_id'],
+                                        {
+                                            'selectedModelId': model_id,
+                                        },
+                                    )
+                                    await event_emitter(
+                                        {
+                                            'type': 'chat:completion',
+                                            'data': data,
+                                        }
+                                    )
+                                # Check for Responses API events (type field starts with "response.")
+                                elif data.get('type', '').startswith('response.'):
+                                    response_event_type = data.get('type', '')
+                                    response_event_is_delta = response_event_type.endswith('.delta')
+                                    output, response_metadata = handle_responses_streaming_event(data, output)
+
+                                    if not response_event_is_delta:
+                                        await flush_pending_delta_data()
+
+                                    # Emit citation sources from finalized output items
+                                    # (mirrors Chat Completions annotation handling at delta level)
+                                    if response_event_type == 'response.output_item.done':
+                                        item = data.get('item', {})
+                                        if item.get('type') == 'message':
+                                            for part in item.get('content', []):
+                                                for annotation in part.get('annotations', []):
+                                                    if annotation.get('type') == 'url_citation':
+                                                        # Handle both flat (Responses API) and nested (Chat Completions) formats
+                                                        url_citation = annotation.get('url_citation', annotation)
+
+                                                        url = url_citation.get('url', '')
+                                                        title = url_citation.get('title', url)
+
+                                                        if url:
+                                                            await event_emitter(
+                                                                {
+                                                                    'type': 'source',
+                                                                    'data': {
+                                                                        'source': {
+                                                                            'name': title,
+                                                                            'url': url,
+                                                                        },
+                                                                        'document': [title],
+                                                                        'metadata': [
+                                                                            {
+                                                                                'source': url,
+                                                                                'name': title,
+                                                                            }
+                                                                        ],
+                                                                    },
+                                                                }
+                                                            )
+
+                                    processed_data = {
+                                        'output': full_output(),
+                                        'content': serialize_output(full_output()),
+                                    }
+
+                                    # print(data)
+                                    # print(processed_data)
+
+                                    # Merge any metadata (usage, etc.)
+                                    # Strip 'done' — response.completed emits
+                                    # it but we may still need to execute tool
+                                    # calls. The outer middleware manages the
+                                    # actual completion signal.
+                                    if response_metadata:
+                                        if ENABLE_RESPONSES_API_STATEFUL:
+                                            response_id = response_metadata.pop('response_id', None)
+                                            if response_id:
+                                                last_response_id = response_id
+
+                                        # Normalize and capture usage for DB persistence
+                                        if response_metadata.get('usage'):
+                                            usage = merge_usage(usage, response_metadata['usage'])
+                                            response_metadata['usage'] = usage
+
+                                        processed_data.update(response_metadata)
+                                        processed_data.pop('done', None)
+
+                                    if response_event_is_delta:
+                                        response_delta_type = response_event_type.split('.')[1]
+                                        await queue_pending_delta_data(
+                                            processed_data,
+                                            'tool_call'
+                                            if response_delta_type == 'function_call_arguments'
+                                            else 'content',
+                                        )
+                                    else:
+                                        await event_emitter(
+                                            {
+                                                'type': 'chat:completion',
+                                                'data': processed_data,
+                                            }
+                                        )
+                                    continue
+                                else:
+                                    choices = data.get('choices', [])
+
+                                    # Normalize usage data to standard format
+                                    raw_usage = data.get('usage', {}) or {}
+                                    raw_usage.update(data.get('timings', {}))  # llama.cpp
+                                    if raw_usage:
+                                        usage = merge_usage(usage, raw_usage)
+                                        await event_emitter(
+                                            {
+                                                'type': 'chat:completion',
+                                                'data': {
+                                                    'usage': usage,
+                                                },
+                                            }
+                                        )
+
+                                    if not choices:
+                                        error = data.get('error', {})
+                                        if error:
+                                            log.error('Provider returned error (streaming): %s', error)
+                                            try:
+                                                await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                                    metadata['chat_id'],
+                                                    metadata['message_id'],
+                                                    {
+                                                        'error': {'content': error},
+                                                    },
+                                                )
+                                            except Exception:
+                                                pass
+                                            await event_emitter(
+                                                {
+                                                    'type': 'chat:completion',
+                                                    'data': {
+                                                        'error': error,
+                                                    },
+                                                }
+                                            )
+                                        continue
+
+                                    delta = choices[0].get('delta', {})
+                                    delta_type = 'content'
+
+                                    # Handle delta annotations
+                                    annotations = delta.get('annotations')
+                                    if annotations:
+                                        for annotation in annotations:
+                                            if (
+                                                annotation.get('type') == 'url_citation'
+                                                and 'url_citation' in annotation
+                                            ):
+                                                url_citation = annotation['url_citation']
+
+                                                url = url_citation.get('url', '')
+                                                title = url_citation.get('title', url)
+
+                                                await event_emitter(
+                                                    {
+                                                        'type': 'source',
+                                                        'data': {
+                                                            'source': {
+                                                                'name': title,
+                                                                'url': url,
+                                                            },
+                                                            'document': [title],
+                                                            'metadata': [
+                                                                {
+                                                                    'source': url,
+                                                                    'name': title,
+                                                                }
+                                                            ],
+                                                        },
+                                                    }
+                                                )
+
+                                    delta_tool_calls = delta.get('tool_calls', None)
+                                    if delta_tool_calls:
+                                        for delta_tool_call in delta_tool_calls:
+                                            tool_call_index = delta_tool_call.get('index')
+
+                                            if tool_call_index is not None:
+                                                # Check if the tool call already exists
+                                                current_response_tool_call = None
+                                                for response_tool_call in response_tool_calls:
+                                                    if response_tool_call.get('index') == tool_call_index:
+                                                        current_response_tool_call = response_tool_call
+                                                        break
+
+                                                if current_response_tool_call is None:
+                                                    # Add the new tool call
+                                                    delta_tool_call.setdefault('function', {})
+                                                    delta_tool_call['function'].setdefault('name', '')
+                                                    delta_tool_call['function'].setdefault('arguments', '')
+                                                    response_tool_calls.append(delta_tool_call)
+                                                else:
+                                                    # Update the existing tool call
+                                                    delta_name = delta_tool_call.get('function', {}).get('name')
+                                                    delta_arguments = delta_tool_call.get('function', {}).get(
+                                                        'arguments'
+                                                    )
+
+                                                    if delta_name:
+                                                        current_response_tool_call['function']['name'] = delta_name
+
+                                                    if delta_arguments:
+                                                        current_response_tool_call['function'][
+                                                            'arguments'
+                                                        ] += delta_arguments
+
+                                        # Emit pending tool calls in real-time
+                                        if response_tool_calls:
+                                            # Build pending function_call output items for display
+                                            pending_fc_items = []
+                                            for tc in response_tool_calls:
+                                                call_id = tc.get('id', '')
+                                                func = tc.get('function', {})
+                                                pending_fc_items.append(
+                                                    {
+                                                        'type': 'function_call',
+                                                        'id': call_id or output_id('fc'),
+                                                        'call_id': call_id,
+                                                        'name': func.get('name', ''),
+                                                        'arguments': func.get('arguments', '{}'),
+                                                        'status': 'in_progress',
+                                                    }
+                                                )
+
+                                            data = {
+                                                'content': serialize_output(full_output() + pending_fc_items),
+                                            }
+                                            delta_type = 'tool_call'
+
+                                    image_urls = await get_image_urls(delta.get('images', []), request, metadata, user)
+                                    if image_urls:
+                                        image_file_list = [{'type': 'image', 'url': url} for url in image_urls]
+                                        message_files = await Chats.add_message_files_by_id_and_message_id(
+                                            metadata['chat_id'],
+                                            metadata['message_id'],
+                                            image_file_list,
+                                        )
+                                        if message_files is None:
+                                            message_files = image_file_list
+
+                                        await event_emitter(
+                                            {
+                                                'type': 'files',
+                                                'data': {'files': message_files},
+                                            }
+                                        )
+
+                                    value = delta.get('content')
+
+                                    reasoning_content = (
+                                        delta.get('reasoning_content')
+                                        or delta.get('reasoning')
+                                        or delta.get('thinking')
+                                    )
+                                    if reasoning_content:
+                                        if not output or output[-1].get('type') != 'reasoning':
+                                            reasoning_item = {
+                                                'type': 'reasoning',
+                                                'id': output_id('r'),
+                                                'status': 'in_progress',
+                                                'start_tag': '<think>',
+                                                'end_tag': '</think>',
+                                                'attributes': {'type': 'reasoning_content'},
+                                                'content': [],
+                                                'summary': None,
+                                                'started_at': time.time(),
+                                            }
+                                            output.append(reasoning_item)
+                                        else:
+                                            reasoning_item = output[-1]
+
+                                        # Append to reasoning content
+                                        parts = reasoning_item.get('content', [])
+                                        if parts and parts[-1].get('type') == 'output_text':
+                                            parts[-1]['text'] += reasoning_content
+                                        else:
+                                            reasoning_item['content'] = [
+                                                {
+                                                    'type': 'output_text',
+                                                    'text': reasoning_content,
+                                                }
+                                            ]
+
+                                        data = {'content': serialize_output(full_output())}
+                                        delta_type = 'content'
+
+                                    if value:
+                                        if (
+                                            output
+                                            and output[-1].get('type') == 'reasoning'
+                                            and output[-1].get('attributes', {}).get('type') == 'reasoning_content'
+                                        ):
+                                            reasoning_item = output[-1]
+                                            reasoning_item['ended_at'] = time.time()
+                                            reasoning_item['duration'] = int(
+                                                reasoning_item['ended_at'] - reasoning_item['started_at']
+                                            )
+                                            reasoning_item['status'] = 'completed'
+
+                                            output.append(
+                                                {
+                                                    'type': 'message',
+                                                    'id': output_id('msg'),
+                                                    'status': 'in_progress',
+                                                    'role': 'assistant',
+                                                    'content': [
+                                                        {
+                                                            'type': 'output_text',
+                                                            'text': '',
+                                                        }
+                                                    ],
+                                                }
+                                            )
+
+                                        if ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION:
+                                            value = await convert_markdown_base64_images(
+                                                request,
+                                                value,
+                                                {
+                                                    'chat_id': metadata.get('chat_id', None),
+                                                    'message_id': metadata.get('message_id', None),
+                                                },
+                                                user,
+                                            )
+
+                                        content = f'{content}{value}'
+
+                                        # Check if we're inside a tag-based block
+                                        # (reasoning, code_interpreter, or solution).
+                                        # If so, append to the existing in-progress
+                                        # item instead of creating a new message —
+                                        # otherwise tag_output_handler re-detects the
+                                        # start tag on every chunk and fragments the
+                                        # output.
+                                        last_item = output[-1] if output else None
+                                        last_item_type = last_item.get('type', '') if last_item else ''
+                                        inside_tag_block = (
+                                            last_item is not None
+                                            and last_item.get('status') == 'in_progress'
+                                            and last_item.get('attributes', {}).get('type') != 'reasoning_content'
+                                            and (
+                                                last_item_type == 'reasoning'
+                                                or last_item_type == 'open_webui:code_interpreter'
+                                                or (
+                                                    last_item_type == 'message'
+                                                    and last_item.get('_tag_type') is not None
+                                                )
+                                            )
+                                        )
+
+                                        if inside_tag_block:
+                                            # Append to the existing tag-based item
+                                            if last_item_type == 'open_webui:code_interpreter':
+                                                last_item['code'] = last_item.get('code', '') + value
+                                            elif last_item_type == 'reasoning':
+                                                parts = last_item.get('content', [])
+                                                if parts and parts[-1].get('type') == 'output_text':
+                                                    parts[-1]['text'] += value
+                                                else:
+                                                    last_item['content'] = [
+                                                        {
+                                                            'type': 'output_text',
+                                                            'text': value,
+                                                        }
+                                                    ]
+                                            else:
+                                                # solution or other _tag_type message
+                                                msg_parts = last_item.get('content', [])
+                                                if msg_parts and msg_parts[-1].get('type') == 'output_text':
+                                                    msg_parts[-1]['text'] += value
+                                                else:
+                                                    last_item['content'] = [
+                                                        {
+                                                            'type': 'output_text',
+                                                            'text': value,
+                                                        }
+                                                    ]
+                                        else:
+                                            if not output or output[-1].get('type') != 'message':
+                                                output.append(
+                                                    {
+                                                        'type': 'message',
+                                                        'id': output_id('msg'),
+                                                        'status': 'in_progress',
+                                                        'role': 'assistant',
+                                                        'content': [
+                                                            {
+                                                                'type': 'output_text',
+                                                                'text': '',
+                                                            }
+                                                        ],
+                                                    }
+                                                )
+
+                                            # Append value to last message item's text
+                                            msg_parts = output[-1].get('content', [])
+                                            if msg_parts and msg_parts[-1].get('type') == 'output_text':
+                                                msg_parts[-1]['text'] += value
+                                            else:
+                                                output[-1]['content'] = [
+                                                    {
+                                                        'type': 'output_text',
+                                                        'text': value,
+                                                    }
+                                                ]
+
+                                        if DETECT_REASONING_TAGS:
+                                            output, _ = tag_output_handler(
+                                                'reasoning',
+                                                reasoning_tags,
+                                                output,
+                                            )
+
+                                            output, _ = tag_output_handler(
+                                                'solution',
+                                                DEFAULT_SOLUTION_TAGS,
+                                                output,
+                                            )
+
+                                        if DETECT_CODE_INTERPRETER:
+                                            output, end = tag_output_handler(
+                                                'code_interpreter',
+                                                DEFAULT_CODE_INTERPRETER_TAGS,
+                                                output,
+                                            )
+
+                                            if end:
+                                                break
+
+                                        if ENABLE_REALTIME_CHAT_SAVE and not metadata.get('chat_id', '').startswith(
+                                            'channel:'
+                                        ):
+                                            # Save message in the database
+                                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                                metadata['chat_id'],
+                                                metadata['message_id'],
+                                                {
+                                                    'content': serialize_output(full_output()),
+                                                    'output': full_output(),
+                                                },
+                                            )
+                                        else:
+                                            data = {
+                                                'content': serialize_output(full_output()),
+                                            }
+                                            delta_type = 'content'
+
+                                if delta:
+                                    await queue_pending_delta_data(data, delta_type)
+                                else:
+                                    await event_emitter(
+                                        {
+                                            'type': 'chat:completion',
+                                            'data': data,
+                                        }
+                                    )
+                        except (asyncio.CancelledError, KeyboardInterrupt):
+                            raise
+                        except Exception as e:
+                            done = 'data: [DONE]' in line
+                            if done:
+                                pass
+                            else:
+                                log.debug(f'Error: {e}')
+                                continue
+                    await flush_pending_delta_data()
+
+                    if output:
+                        # Clean up the last message item
+                        if output[-1].get('type') == 'message':
+                            parts = output[-1].get('content', [])
+                            if parts and parts[-1].get('type') == 'output_text':
+                                parts[-1]['text'] = parts[-1]['text'].strip()
+
+                                if not parts[-1]['text']:
+                                    output.pop()
+
+                                    if not output:
+                                        output.append(
+                                            {
+                                                'type': 'message',
+                                                'id': output_id('msg'),
+                                                'status': 'in_progress',
+                                                'role': 'assistant',
+                                                'content': [{'type': 'output_text', 'text': ''}],
+                                            }
+                                        )
+
+                        if output[-1].get('type') == 'reasoning':
+                            reasoning_item = output[-1]
+                            if reasoning_item.get('ended_at') is None:
+                                reasoning_item['ended_at'] = time.time()
+                                reasoning_item['duration'] = int(
+                                    reasoning_item['ended_at'] - reasoning_item['started_at']
+                                )
+                                reasoning_item['status'] = 'completed'
+
+                    if response_tool_calls:
+                        tool_calls.append(_split_tool_calls(response_tool_calls))
+
+                    # Responses API path: extract function_call items from output
+                    if not response_tool_calls and output:
+                        # Collect call_ids that already have results,
+                        # including those from prior_output so we don't
+                        # re-process tool calls from a previous turn.
+                        handled_call_ids = {
+                            item.get('call_id')
+                            for item in (prior_output + output)
+                            if item.get('type') == 'function_call_output'
+                        }
+                        responses_api_tool_calls = []
+                        for item in output:
+                            if item.get('type') == 'function_call' and item.get('call_id') not in handled_call_ids:
+                                arguments = item.get('arguments', '{}')
+                                responses_api_tool_calls.append(
+                                    {
+                                        'id': item.get('call_id', ''),
+                                        'index': len(responses_api_tool_calls),
+                                        'function': {
+                                            'name': item.get('name', ''),
+                                            'arguments': (
+                                                arguments if isinstance(arguments, str) else json.dumps(arguments)
+                                            ),
+                                        },
+                                    }
+                                )
+                        if responses_api_tool_calls:
+                            tool_calls.append(_split_tool_calls(responses_api_tool_calls))
+
+                try:
+                    await stream_body_handler(response, form_data)
+                finally:
+                    if response.background:
+                        await response.background()
+
+                tool_call_iterations = 0
+                tool_call_sources = []  # Track citation sources from tool results
+                all_tool_call_sources = []  # Accumulated sources across all iterations
+                user_message = get_last_user_message(form_data['messages'])
+
+                # Check if citations are enabled for this model
+                citations_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get(
+                    'citations', True
+                )
+
+                # Use the pre-RAG system content captured before the
+                # initial file-source injection in process_chat_payload.
+                # This ensures restore truly undoes the RAG template.
+                original_system_content = metadata.get('system_prompt')
+                if original_system_content is None:
+                    original_system_message = get_system_message(form_data['messages'])
+                    original_system_content = (
+                        get_content_from_message(original_system_message) if original_system_message else None
+                    )
+
+                while tool_calls and (
+                    CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS is None
+                    or tool_call_iterations < CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS
+                ):
+                    tool_call_iterations += 1
+
+                    response_tool_calls = tool_calls.pop(0)
+
+                    # Append function_call items for each tool call
+                    # (Responses API already has them from streaming, so skip duplicates)
+                    existing_call_ids = {item.get('call_id') for item in output if item.get('type') == 'function_call'}
+                    for tc in response_tool_calls:
+                        call_id = tc.get('id', '')
+                        if call_id not in existing_call_ids:
+                            func = tc.get('function', {})
+                            output.append(
+                                {
+                                    'type': 'function_call',
+                                    'id': call_id or output_id('fc'),
+                                    'call_id': call_id,
+                                    'name': func.get('name', ''),
+                                    'arguments': func.get('arguments', '{}'),
+                                    'status': 'in_progress',
+                                }
+                            )
+
+                    await event_emitter(
+                        {
+                            'type': 'chat:completion',
+                            'data': {
+                                'content': serialize_output(full_output()),
+                                'output': full_output(),
+                            },
+                        }
+                    )
+
+                    tools = metadata.get('tools', {})
+
+                    results = []
+
+                    for tool_call in response_tool_calls:
+                        tool_call_id = tool_call.get('id', '')
+                        tool_function_name = tool_call.get('function', {}).get('name', '')
+                        tool_args = tool_call.get('function', {}).get('arguments', '{}')
+
+                        tool_function_params = {}
+                        if tool_args and tool_args.strip():
+                            try:
+                                # json.loads cannot be used because some models do not produce valid JSON
+                                tool_function_params = ast.literal_eval(tool_args)
+                            except Exception as e:
+                                log.debug(e)
+                                # Fallback to JSON parsing
+                                try:
+                                    tool_function_params = json.loads(tool_args)
+                                except Exception as e:
+                                    log.error(f'Error parsing tool call arguments: {tool_args}')
+                                    results.append(
+                                        {
+                                            'tool_call_id': tool_call_id,
+                                            'content': f'Error: Tool call arguments could not be parsed. The model generated malformed or incomplete JSON for `{tool_function_name}`. Please try again.',
+                                        }
+                                    )
+                                    continue
+
+                        # Ensure arguments are valid JSON for downstream LLM integrations
+                        log.debug(f'Parsed args from {tool_args} to {tool_function_params}')
+                        tool_call.setdefault('function', {})['arguments'] = json.dumps(tool_function_params)
+
+                        tool_result = None
+                        tool = None
+                        tool_type = None
+                        direct_tool = False
+
+                        if tool_function_name in tools:
+                            tool = tools[tool_function_name]
+                            spec = tool.get('spec', {})
+
+                            tool_type = tool.get('type', '')
+                            direct_tool = tool.get('direct', False)
+
+                            try:
+                                allowed_params = spec.get('parameters', {}).get('properties', {}).keys()
+
+                                tool_function_params = {
+                                    k: v for k, v in tool_function_params.items() if k in allowed_params
+                                }
+
+                                if direct_tool:
+                                    tool_result = await event_caller(
+                                        {
+                                            'type': 'execute:tool',
+                                            'data': {
+                                                'id': str(uuid4()),
+                                                'name': tool_function_name,
+                                                'params': tool_function_params,
+                                                'server': tool.get('server', {}),
+                                                'session_id': metadata.get('session_id', None),
+                                            },
+                                        }
+                                    )
+
+                                else:
+                                    tool_function = await get_updated_tool_function(
+                                        function=tool['callable'],
+                                        extra_params={
+                                            '__messages__': form_data.get('messages', []),
+                                            '__files__': metadata.get('files', []),
+                                        },
+                                    )
+
+                                    tool_result = await tool_function(**tool_function_params)
+
+                            except Exception as e:
+                                tool_result = str(e)
+                        else:
+                            tool_result = f'Error: Tool "{tool_function_name}" not found.'
+
+                        tool_result, tool_result_files, tool_result_embeds = await process_tool_result(
+                            request,
+                            tool_function_name,
+                            tool_result,
+                            tool_type,
+                            direct_tool,
+                            metadata,
+                            user,
+                        )
+
+                        await terminal_event_handler(
+                            tool_function_name,
+                            tool_function_params,
+                            tool_result,
+                            event_emitter,
+                        )
+
+                        # Extract citation sources from tool results
+                        if (
+                            citations_enabled
+                            and tool_function_name
+                            in [
+                                'search_web',
+                                'fetch_url',
+                                'view_file',
+                                'view_knowledge_file',
+                                'query_knowledge_files',
+                            ]
+                            and tool_result
+                        ):
+                            try:
+                                citation_sources = get_citation_source_from_tool_result(
+                                    tool_name=tool_function_name,
+                                    tool_params=tool_function_params,
+                                    tool_result=tool_result,
+                                    tool_id=tool.get('tool_id', '') if tool else '',
+                                )
+                                tool_call_sources.extend(citation_sources)
+                            except Exception as e:
+                                log.exception(f'Error extracting citation source: {e}')
+
+                        results.append(
+                            {
+                                'tool_call_id': tool_call_id,
+                                'content': str(tool_result) if tool_result else '',
+                                **({'files': tool_result_files} if tool_result_files else {}),
+                                **({'embeds': tool_result_embeds} if tool_result_embeds else {}),
+                            }
+                        )
+
+                    # Update function_call statuses and append function_call_output items
+                    for tc in response_tool_calls:
+                        call_id = tc.get('id', '')
+                        # Mark function_call as completed
+                        for item in output:
+                            if item.get('type') == 'function_call' and item.get('call_id') == call_id:
+                                item['status'] = 'completed'
+                                # Update arguments with parsed/sanitized version
+                                item['arguments'] = tc.get('function', {}).get('arguments', '{}')
+                                break
+
+                    for result in results:
+                        output_parts = [{'type': 'input_text', 'text': result.get('content', '')}]
+
+                        # Separate image data URIs (for LLM via input_image) from
+                        # other files (for frontend display via files attribute).
+                        display_files = []
+                        for file_item in result.get('files', []):
+                            if file_item.get('type') == 'image' and file_item.get('url', '').startswith('data:'):
+                                # LLM-only: add as input_image part (invisible to serialize_output)
+                                output_parts.append({'type': 'input_image', 'image_url': file_item['url']})
+                            else:
+                                # Frontend display (MCP images, audio, etc.)
+                                display_files.append(file_item)
+
+                        output.append(
+                            {
+                                'type': 'function_call_output',
+                                'id': output_id('fco'),
+                                'call_id': result.get('tool_call_id', ''),
+                                'output': output_parts,
+                                'status': 'completed',
+                                **({'files': display_files} if display_files else {}),
+                                **({'embeds': result.get('embeds')} if result.get('embeds') else {}),
+                            }
+                        )
+
+                    # Append a new empty message item for the next response
+                    output.append(
+                        {
+                            'type': 'message',
+                            'id': output_id('msg'),
+                            'status': 'in_progress',
+                            'role': 'assistant',
+                            'content': [{'type': 'output_text', 'text': ''}],
+                        }
+                    )
+
+                    # Emit citation sources to the frontend for display
+                    if citations_enabled:
+                        for source in tool_call_sources:
+                            await event_emitter({'type': 'source', 'data': source})
+
+                        # Apply tool source context to messages for the model.
+                        # Restoring to pre-RAG original prevents duplicating
+                        # the RAG template across file and tool sources.
+                        all_tool_call_sources.extend(tool_call_sources)
+                        if all_tool_call_sources and user_message:
+                            # Restore pre-RAG message state before re-applying
+                            # to prevent RAG template duplication.
+                            original_user_message = metadata.get('user_prompt') or user_message
+                            set_last_user_message_content(
+                                original_user_message,
+                                form_data['messages'],
+                            )
+                            if original_system_content is not None:
+                                if get_system_message(form_data['messages']):
+                                    replace_system_message_content(
+                                        original_system_content,
+                                        form_data['messages'],
+                                    )
+                                else:
+                                    form_data['messages'] = add_or_update_system_message(
+                                        original_system_content,
+                                        form_data['messages'],
+                                    )
+                            else:
+                                replace_system_message_content('', form_data['messages'])
+
+                            # Build context: file sources with content,
+                            # tool sources as citation markers only.
+                            source_ids = {}
+                            source_context = get_source_context(
+                                metadata.get('sources', []), source_ids
+                            ) + get_source_context(
+                                all_tool_call_sources,
+                                source_ids,
+                                include_content=False,
+                            )
+                            source_context = source_context.strip()
+                            if source_context:
+                                rag_content = await rag_template(
+                                    await Config.get('rag.template'),
+                                    source_context,
+                                    user_message,
+                                )
+                                if RAG_SYSTEM_CONTEXT:
+                                    form_data['messages'] = add_or_update_system_message(
+                                        rag_content,
+                                        form_data['messages'],
+                                        append=True,
+                                    )
+                                else:
+                                    form_data['messages'] = add_or_update_user_message(
+                                        rag_content,
+                                        form_data['messages'],
+                                        append=False,
+                                    )
+                        tool_call_sources.clear()
+
+                    # Strip input_image parts (large base64 data URIs) from the
+                    # output sent to the frontend — they're only for LLM consumption
+                    # via convert_output_to_messages.
+                    frontend_output = []
+                    for item in output:
+                        if item.get('type') == 'function_call_output':
+                            parts = item.get('output', [])
+                            if any(p.get('type') == 'input_image' for p in parts):
+                                item = {**item, 'output': [p for p in parts if p.get('type') != 'input_image']}
+                        frontend_output.append(item)
+
+                    await event_emitter(
+                        {
+                            'type': 'chat:completion',
+                            'data': {
+                                'content': serialize_output(output),
+                                'output': frontend_output,
+                            },
+                        }
+                    )
+
+                    try:
+                        new_form_data = {
+                            **form_data,
+                            'model': model_id,
+                            'stream': True,
+                            'metadata': metadata,
+                        }
+
+                        if ENABLE_RESPONSES_API_STATEFUL and last_response_id:
+                            system_message = get_system_message(form_data['messages'])
+                            new_form_data['messages'] = (
+                                [system_message] if system_message else []
+                            ) + convert_output_to_messages(
+                                output, raw=True, reasoning_format=get_reasoning_format(model)
+                            )
+                            new_form_data['previous_response_id'] = last_response_id
+                        else:
+                            tool_messages = convert_output_to_messages(
+                                output, raw=True, reasoning_format=get_reasoning_format(model)
+                            )
+
+                            # Chat Completions providers don't support multimodal
+                            # tool messages.  Extract images into a user message.
+                            image_urls = []
+                            for message in tool_messages:
+                                if message.get('role') == 'tool' and isinstance(message.get('content'), list):
+                                    text_parts = []
+                                    for part in message['content']:
+                                        if part.get('type') == 'input_text':
+                                            text_parts.append(part.get('text', ''))
+                                        elif part.get('type') == 'input_image':
+                                            image_urls.append(part.get('image_url', ''))
+                                    message['content'] = ''.join(text_parts)
+
+                            new_form_data['messages'] = [
+                                *form_data['messages'],
+                                *tool_messages,
+                            ]
+
+                            if image_urls:
+                                new_form_data['messages'].append(
+                                    {
+                                        'role': 'user',
+                                        'content': [
+                                            {
+                                                'type': 'text',
+                                                'text': 'Here are the images from the tool results above. Please analyze them.',
+                                            },
+                                            *[{'type': 'image_url', 'image_url': {'url': url}} for url in image_urls],
+                                        ],
+                                    }
+                                )
+
+                        res = await generate_chat_completion(
+                            request,
+                            new_form_data,
+                            user,
+                            bypass_system_prompt=True,
+                        )
+
+                        if isinstance(res, StreamingResponse):
+                            # Save accumulated output and start fresh.
+                            # Responses API output_index values are relative
+                            # to the current response — a clean output list
+                            # keeps indices aligned. The display prefix
+                            # ensures the UI shows tool history during
+                            # streaming.
+                            prior_output = list(output)
+                            # Trim the trailing empty placeholder message
+                            # so it doesn't persist as a ghost item once
+                            # the new stream produces real content.
+                            if (
+                                prior_output
+                                and prior_output[-1].get('type') == 'message'
+                                and prior_output[-1].get('status') == 'in_progress'
+                            ):
+                                msg_parts = prior_output[-1].get('content', [])
+                                if not msg_parts or (len(msg_parts) == 1 and not msg_parts[0].get('text', '').strip()):
+                                    prior_output.pop()
+                            output = []
+                            await stream_body_handler(res, new_form_data)
+                            output[:0] = prior_output
+                            prior_output = []
+                        else:
+                            break
+                    except Exception as e:
+                        log.debug(e)
+                        break
+
+                if (
+                    CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS is not None
+                    and tool_calls
+                    and tool_call_iterations >= CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS
+                ):
+                    log.warning('Tool-call iteration limit reached (%s)', CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS)
+                    error_content = f'Tool-call limit reached ({CHAT_RESPONSE_MAX_TOOL_CALL_ITERATIONS} iterations).'
+                    if not metadata.get('chat_id', '').startswith('channel:'):
+                        await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata['chat_id'],
+                            metadata['message_id'],
+                            {'error': {'content': error_content}},
+                        )
+                    await event_emitter(
+                        {
+                            'type': 'chat:message:error',
+                            'data': {'error': {'content': error_content}},
+                        }
+                    )
+
+                if DETECT_CODE_INTERPRETER:
+                    MAX_RETRIES = 5
+                    retries = 0
+
+                    while output and output[-1].get('type') == 'open_webui:code_interpreter' and retries < MAX_RETRIES:
+                        await event_emitter(
+                            {
+                                'type': 'chat:completion',
+                                'data': {
+                                    'content': serialize_output(output),
+                                    'output': output,
+                                },
+                            }
+                        )
+
+                        retries += 1
+                        log.debug(f'Attempt count: {retries}')
+
+                        ci_item = output[-1]
+                        ci_output = ''
+                        try:
+                            if ci_item.get('attributes', {}).get('type') == 'code':
+                                code = ci_item.get('code', '')
+                                # Sanitize code (strips ANSI codes and markdown fences)
+                                code = sanitize_code(code)
+
+                                if CODE_INTERPRETER_BLOCKED_MODULES:
+                                    blocking_code = textwrap.dedent(f"""
+                                        import builtins
+    
+                                        BLOCKED_MODULES = {CODE_INTERPRETER_BLOCKED_MODULES}
+    
+                                        _real_import = builtins.__import__
+                                        async def restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
+                                            if name.split('.')[0] in BLOCKED_MODULES:
+                                                importer_name = globals.get('__name__') if globals else None
+                                                if importer_name == '__main__':
+                                                    raise ImportError(
+                                                        f"Direct import of module {{name}} is restricted."
+                                                    )
+                                            return _real_import(name, globals, locals, fromlist, level)
+    
+                                        builtins.__import__ = restricted_import
+                                    """)
+                                    code = blocking_code + '\n' + code
+
+                                if await Config.get('code_interpreter.engine') == 'pyodide':
+                                    ci_output = await event_caller(
+                                        {
+                                            'type': 'execute:python',
+                                            'data': {
+                                                'id': str(uuid4()),
+                                                'code': code,
+                                                'session_id': metadata.get('session_id', None),
+                                                'files': metadata.get('files', []),
+                                            },
+                                        }
+                                    )
+                                elif await Config.get('code_interpreter.engine') == 'jupyter':
+                                    ci_output = await execute_code_jupyter(
+                                        await Config.get('code_interpreter.jupyter.url'),
+                                        code,
+                                        (
+                                            await Config.get('code_interpreter.jupyter.auth_token')
+                                            if await Config.get('code_interpreter.jupyter.auth') == 'token'
+                                            else None
+                                        ),
+                                        (
+                                            await Config.get('code_interpreter.jupyter.auth_password')
+                                            if await Config.get('code_interpreter.jupyter.auth') == 'password'
+                                            else None
+                                        ),
+                                        await Config.get('code_interpreter.jupyter.timeout'),
+                                    )
+                                else:
+                                    ci_output = {'stdout': 'Code interpreter engine not configured.'}
+
+                                log.debug(f'Code interpreter output: {ci_output}')
+
+                                # Handle error responses from event_caller
+                                # (e.g. session disconnected, timeout)
+                                if isinstance(ci_output, dict) and ci_output.get('error'):
+                                    ci_output = {'stderr': ci_output['error']}
+
+                                if isinstance(ci_output, dict):
+                                    stdout = ci_output.get('stdout', '')
+
+                                    if isinstance(stdout, str):
+                                        stdoutLines = stdout.split('\n')
+                                        for idx, line in enumerate(stdoutLines):
+                                            if re.match(r'data:image/\w+;base64', line):
+                                                image_url = await get_image_url_from_base64(
+                                                    request,
+                                                    line,
+                                                    metadata,
+                                                    user,
+                                                )
+                                                if image_url:
+                                                    stdoutLines[idx] = f'![Output Image]({image_url})'
+
+                                        ci_output['stdout'] = '\n'.join(stdoutLines)
+
+                                    result = ci_output.get('result', '')
+
+                                    if isinstance(result, str):
+                                        resultLines = result.split('\n')
+                                        for idx, line in enumerate(resultLines):
+                                            if re.match(r'data:image/\w+;base64', line):
+                                                image_url = await get_image_url_from_base64(
+                                                    request,
+                                                    line,
+                                                    metadata,
+                                                    user,
+                                                )
+                                                resultLines[idx] = f'![Output Image]({image_url})'
+                                        ci_output['result'] = '\n'.join(resultLines)
+                        except Exception as e:
+                            ci_output = str(e)
+
+                        ci_item['output'] = ci_output
+                        ci_item['status'] = 'completed'
+
+                        output.append(
+                            {
+                                'type': 'message',
+                                'id': output_id('msg'),
+                                'status': 'in_progress',
+                                'role': 'assistant',
+                                'content': [{'type': 'output_text', 'text': ''}],
+                            }
+                        )
+
+                        await event_emitter(
+                            {
+                                'type': 'chat:completion',
+                                'data': {
+                                    'content': serialize_output(output),
+                                    'output': output,
+                                },
+                            }
+                        )
+
+                        try:
+                            new_form_data = {
+                                **form_data,
+                                'model': model_id,
+                                'stream': True,
+                                'metadata': metadata,
+                                'messages': [
+                                    *form_data['messages'],
+                                    *convert_output_to_messages(
+                                        output, raw=True, reasoning_format=get_reasoning_format(model)
+                                    ),
+                                ],
+                            }
+
+                            res = await generate_chat_completion(
+                                request,
+                                new_form_data,
+                                user,
+                                bypass_system_prompt=True,
+                            )
+
+                            if isinstance(res, StreamingResponse):
+                                await stream_body_handler(res, new_form_data)
+                            else:
+                                break
+                        except Exception as e:
+                            log.debug(e)
+                            break
+
+                # Mark all in-progress items as completed
+                for item in output:
+                    if item.get('status') == 'in_progress':
+                        item['status'] = 'completed'
+
+                title = (
+                    await Chats.get_chat_title_by_id(metadata['chat_id'])
+                    if not metadata.get('chat_id', '').startswith('channel:')
+                    else ''
+                )
+                data = {
+                    'done': True,
+                    'content': serialize_output(output),
+                    'output': output,
+                    'title': title,
+                    **({'usage': usage} if usage else {}),
+                }
+
+                if not metadata.get('chat_id', '').startswith('channel:'):
+                    if not ENABLE_REALTIME_CHAT_SAVE:
+                        # Save message in the database
+                        await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata['chat_id'],
+                            metadata['message_id'],
+                            {
+                                'done': True,
+                                'content': serialize_output(output),
+                                'output': output,
+                                **({'usage': usage} if usage else {}),
+                            },
+                        )
+                    elif usage:
+                        await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata['chat_id'],
+                            metadata['message_id'],
+                            {'done': True, 'usage': usage},
+                        )
+                    else:
+                        await Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata['chat_id'],
+                            metadata['message_id'],
+                            {'done': True},
+                        )
+
+                # Send a webhook notification if the user is not active
+                if await Config.get('ui.enable_user_webhooks') and not await Users.is_user_active(user.id):
+                    webhook_url = await Users.get_user_webhook_url_by_id(user.id)
+                    if webhook_url:
+                        webui_url = await Config.get('webui.url')
+                        await post_webhook(
+                            request.app.state.WEBUI_NAME,
+                            webhook_url,
+                            f'{content}\n\n{title} - {webui_url}/c/{metadata["chat_id"]}',
+                            {
+                                'action': 'chat',
+                                'message': content,
+                                'title': title,
+                                'url': f'{webui_url}/c/{metadata["chat_id"]}',
+                            },
+                        )
+
+                await event_emitter(
+                    {
+                        'type': 'chat:completion',
+                        'data': data,
+                    }
+                )
+
+                ctx['assistant_message'] = {
+                    'content': serialize_output(output),
+                    'output': output,
+                    **({'usage': usage} if usage else {}),
+                }
+                await outlet_filter_handler(ctx)
+                await background_tasks_handler(ctx)
+            except asyncio.CancelledError:
+                log.warning('Task was cancelled!')
+
+                # Close the response body iterator to trigger cleanup
+                # in stream_wrapper's finally block and release the
+                # upstream connection.  Without this, the async
+                # generator is orphaned and may spin in anyio internals.
+                if hasattr(response, 'body_iterator') and hasattr(response.body_iterator, 'aclose'):
+                    try:
+                        await asyncio.shield(response.body_iterator.aclose())
+                    except (asyncio.CancelledError, Exception):
+                        pass
+
+                async def save_cancelled_state():
+                    await event_emitter({'type': 'chat:tasks:cancel'})
+                    if not metadata.get('chat_id', '').startswith('channel:'):
+                        if not ENABLE_REALTIME_CHAT_SAVE:
+                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                metadata['chat_id'],
+                                metadata['message_id'],
+                                {
+                                    'done': True,
+                                    'content': serialize_output(output),
+                                    'output': output,
+                                },
+                            )
+                        else:
+                            await Chats.upsert_message_to_chat_by_id_and_message_id(
+                                metadata['chat_id'],
+                                metadata['message_id'],
+                                {'done': True},
+                            )
+
+                try:
+                    await asyncio.shield(save_cancelled_state())
+                except (asyncio.CancelledError, Exception):
+                    pass
+                raise  # re-raise CancelledError for proper propagation
+
+            if response.background is not None:
+                await response.background()
+
+        return await response_handler(response, events)
+
+    else:
+        # Fallback to the original response
+        async def stream_wrapper(original_generator, events):
+            def wrap_item(item):
+                return f'data: {item}\n\n'
+
+            for event in events:
+                event, _ = await process_filter_functions(
+                    request=request,
+                    filter_functions=filter_functions,
+                    filter_type='stream',
+                    form_data=event,
+                    extra_params=extra_params,
+                )
+
+                if event:
+                    yield wrap_item(json.dumps(event))
+
+            async for data in original_generator:
+                data, _ = await process_filter_functions(
+                    request=request,
+                    filter_functions=filter_functions,
+                    filter_type='stream',
+                    form_data=data,
+                    extra_params=extra_params,
+                )
+
+                if data:
+                    yield data
+
+        return StreamingResponse(
+            stream_wrapper(response.body_iterator, events),
+            headers=dict(response.headers),
+            background=response.background,
+        )
+
+
+async def process_chat_response(response, ctx):
+    # Non-streaming response
+    if not isinstance(response, StreamingResponse):
+        return await non_streaming_chat_response_handler(response, ctx)
+
+    # Non standard response
+    if not any(
+        content_type in response.headers['Content-Type']
+        for content_type in ['text/event-stream', 'application/x-ndjson']
+    ):
+        return response
+
+    # Streaming response
+    return await streaming_chat_response_handler(response, ctx)

@@ -1,656 +1,405 @@
-package api
+package frankenphp
 
+// #cgo nocallback frankenphp_register_server_vars
+// #cgo nocallback frankenphp_register_variable_safe
+// #cgo nocallback frankenphp_register_known_variable
+// #cgo nocallback frankenphp_init_persistent_string
+// #cgo noescape frankenphp_register_server_vars
+// #cgo noescape frankenphp_register_variable_safe
+// #cgo noescape frankenphp_register_known_variable
+// #cgo noescape frankenphp_init_persistent_string
+// #include "frankenphp.h"
+// #include <php_variables.h>
+import "C"
 import (
-	"fmt"
+	"context"
+	"crypto/tls"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"unicode/utf8"
+	"unsafe"
 
-	ac "github.com/grafana/grafana/pkg/services/accesscontrol"
-	contextmodel "github.com/grafana/grafana/pkg/services/contexthandler/model"
-	"github.com/grafana/grafana/pkg/services/dashboards"
-	"github.com/grafana/grafana/pkg/services/datasources"
-	"github.com/grafana/grafana/pkg/services/folder"
-	"github.com/grafana/grafana/pkg/services/libraryelements"
-	"github.com/grafana/grafana/pkg/services/org"
-	"github.com/grafana/grafana/pkg/services/pluginsintegration/pluginaccesscontrol"
-	"github.com/grafana/grafana/pkg/services/publicdashboards"
-	"github.com/grafana/grafana/pkg/tsdb/grafanads"
+	"github.com/dunglas/frankenphp/internal/phpheaders"
+	"golang.org/x/text/language"
+	"golang.org/x/text/search"
 )
 
-// API related actions
-const (
-	ActionProvisioningReload = "provisioning:reload"
-)
-
-// API related scopes
-var (
-	ScopeProvisionersAll           = ac.Scope("provisioners", "*")
-	ScopeProvisionersDashboards    = ac.Scope("provisioners", "dashboards")
-	ScopeProvisionersPlugins       = ac.Scope("provisioners", "plugins")
-	ScopeProvisionersDatasources   = ac.Scope("provisioners", "datasources")
-	ScopeProvisionersNotifications = ac.Scope("provisioners", "notifications")
-	ScopeProvisionersAlertRules    = ac.Scope("provisioners", "alerting")
-)
-
-const (
-	datasourcesExplorerRoleName = "fixed:datasources:explorer"
-	datasourcesReaderRoleName   = "fixed:datasources:reader"
-)
-
-// declareFixedRoles declares to the AccessControl service fixed roles and their
-// grants to organization roles ("Viewer", "Editor", "Admin") or "Grafana Admin"
-// that HTTPServer needs
-func (hs *HTTPServer) declareFixedRoles() error {
-	if err := pluginaccesscontrol.DeclareRBACRoles(hs.accesscontrolService, hs.Cfg); err != nil {
-		return err
-	}
-
-	//nolint:staticcheck // ViewersCanEdit is deprecated but still used for backward compatibility
-	return hs.accesscontrolService.DeclareFixedRoles(
-		FixedRoleRegistrations(hs.Cfg.ViewersCanEdit, hs.License.FeatureEnabled("dspermissions.enforcement"))...)
+// cStringHTTPMethods caches C string versions of common HTTP methods
+// to avoid allocations in pinCString on every request.
+var cStringHTTPMethods = map[string]*C.char{
+	"GET":     C.CString("GET"),
+	"HEAD":    C.CString("HEAD"),
+	"POST":    C.CString("POST"),
+	"PUT":     C.CString("PUT"),
+	"DELETE":  C.CString("DELETE"),
+	"CONNECT": C.CString("CONNECT"),
+	"OPTIONS": C.CString("OPTIONS"),
+	"TRACE":   C.CString("TRACE"),
+	"PATCH":   C.CString("PATCH"),
 }
 
-// FixedRoleRegistrations returns all HTTP API role registrations with grants
-// adjusted for the running instance.
+// computeKnownVariables returns a set of CGI environment variables for the request.
 //
-// viewersCanEdit: when true the datasources explorer role also grants Viewer.
-// dsPermissionsEnforced: when false (OSS / enterprise without license) the
-// datasources reader role is granted to Viewer.
-func FixedRoleRegistrations(viewersCanEdit, dsPermissionsEnforced bool) []ac.RoleRegistration {
-	provisioningWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:provisioning:writer",
-			DisplayName: "Writer",
-			Description: "Reload provisioning.",
-			Group:       "Provisioning",
-			Permissions: []ac.Permission{
-				{
-					Action: ActionProvisioningReload,
-					Scope:  ScopeProvisionersAll,
-				},
-			},
-		},
-		Grants: []string{ac.RoleGrafanaAdmin},
+// TODO: handle this case https://github.com/caddyserver/caddy/issues/3718
+// Inspired by https://github.com/caddyserver/caddy/blob/master/modules/caddyhttp/reverseproxy/fastcgi/fastcgi.go
+func addKnownVariablesToServer(fc *frankenPHPContext, trackVarsArray *C.zval) {
+	request := fc.request
+	// Separate remote IP and port; more lenient than net.SplitHostPort
+	var ip, port string
+	if idx := strings.LastIndex(request.RemoteAddr, ":"); idx > -1 {
+		ip = request.RemoteAddr[:idx]
+		port = request.RemoteAddr[idx+1:]
+	} else {
+		ip = request.RemoteAddr
 	}
 
-	explorerGrants := []string{string(org.RoleEditor)}
-	if viewersCanEdit {
-		explorerGrants = append(explorerGrants, string(org.RoleViewer))
-	}
-	datasourcesExplorerRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        datasourcesExplorerRoleName,
-			DisplayName: "Explorer",
-			Description: "Enable the Explore and Drilldown features. Data source permissions still apply; you can only query data sources for which you have query permissions.",
-			Group:       "Data sources",
-			Permissions: []ac.Permission{
-				{
-					Action: ac.ActionDatasourcesExplore,
-				},
-			},
-		},
-		Grants: explorerGrants,
+	// Remove [] from IPv6 addresses
+	if len(ip) > 0 && ip[0] == '[' {
+		ip = ip[1 : len(ip)-1]
 	}
 
-	dsReaderGrants := []string{string(org.RoleAdmin)}
-	if !dsPermissionsEnforced {
-		dsReaderGrants = []string{string(org.RoleViewer)}
-	}
-	datasourcesReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        datasourcesReaderRoleName,
-			DisplayName: "Reader",
-			Description: "Read and query all data sources.",
-			Group:       "Data sources",
-			Permissions: []ac.Permission{
-				{
-					Action: datasources.ActionRead,
-					Scope:  datasources.ScopeAll,
-				},
-				{
-					Action: datasources.ActionQuery,
-					Scope:  datasources.ScopeAll,
-				},
-			},
-		},
-		Grants: dsReaderGrants,
+	var rs, https, sslProtocol *C.zend_string
+	var sslCipher string
+
+	if request.TLS == nil {
+		rs = C.frankenphp_strings.httpLowercase
+		https = C.frankenphp_strings.empty
+		sslProtocol = C.frankenphp_strings.empty
+		sslCipher = ""
+	} else {
+		rs = C.frankenphp_strings.httpsLowercase
+		https = C.frankenphp_strings.on
+
+		// and pass the protocol details in a manner compatible with Apache's mod_ssl
+		// (which is why these have an SSL_ prefix and not TLS_).
+		sslProtocol = tlsProtocol(request.TLS.Version)
+
+		if request.TLS.CipherSuite != 0 {
+			sslCipher = tls.CipherSuiteName(request.TLS.CipherSuite)
+		}
 	}
 
-	builtInDatasourceReader := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:datasources.builtin:reader",
-			DisplayName: "Built in data source reader",
-			Description: "Read and query Grafana's built in test data sources.",
-			Group:       "Data sources",
-			Permissions: []ac.Permission{
-				{
-					Action: datasources.ActionRead,
-					Scope:  fmt.Sprintf("%s%s", datasources.ScopePrefix, grafanads.DatasourceUID),
-				},
-				{
-					Action: datasources.ActionQuery,
-					Scope:  fmt.Sprintf("%s%s", datasources.ScopePrefix, grafanads.DatasourceUID),
-				},
-			},
-			Hidden: true,
-		},
-		Grants: []string{string(org.RoleViewer)},
+	reqHost, reqPort, _ := net.SplitHostPort(request.Host)
+
+	if reqHost == "" {
+		// whatever, just assume there was no port
+		reqHost = request.Host
 	}
 
-	datasourcesCreatorRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:datasources:creator",
-			DisplayName: "Creator",
-			Description: "Create data sources.",
-			Group:       "Data sources",
-			Permissions: []ac.Permission{
-				{
-					Action: datasources.ActionCreate,
-				},
-			},
-		},
-		Grants: []string{},
+	if reqPort == "" {
+		// compliance with the CGI specification requires that
+		// the SERVER_PORT variable MUST be set to the TCP/IP port number on which this request is received from the client
+		// even if the port is the default port for the scheme and could otherwise be omitted from a URI.
+		// https://tools.ietf.org/html/rfc3875#section-4.1.15
+		switch rs {
+		case C.frankenphp_strings.httpsLowercase:
+			reqPort = "443"
+		case C.frankenphp_strings.httpLowercase:
+			reqPort = "80"
+		}
 	}
 
-	datasourcesWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:datasources:writer",
-			DisplayName: "Writer",
-			Description: "Create, update, delete, read, or query data sources.",
-			Group:       "Data sources",
-			Permissions: ac.ConcatPermissions(datasourcesReaderRole.Role.Permissions, []ac.Permission{
-				{
-					Action: datasources.ActionWrite,
-					Scope:  datasources.ScopeAll,
-				},
-				{
-					Action: datasources.ActionCreate,
-				},
-				{
-					Action: datasources.ActionDelete,
-					Scope:  datasources.ScopeAll,
-				},
-			}),
-		},
-		Grants: []string{string(org.RoleAdmin)},
+	serverPort := reqPort
+	contentLength := request.Header.Get("Content-Length")
+
+	var requestURI string
+	if fc.originalRequest != nil {
+		requestURI = fc.originalRequest.URL.RequestURI()
+	} else {
+		requestURI = fc.requestURI
 	}
 
-	datasourcesIdReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:datasources.id:reader",
-			DisplayName: "Data source ID reader",
-			Description: "Read the ID of a data source based on its name.",
-			Group:       "Infrequently used",
-			Permissions: []ac.Permission{
-				{
-					Action: datasources.ActionIDRead,
-					Scope:  datasources.ScopeAll,
-				},
-			},
-		},
-		Grants: []string{string(org.RoleViewer)},
-	}
+	phpSelf := fc.scriptName + fc.pathInfo
 
-	orgReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:organization:reader",
-			DisplayName: "Reader",
-			Description: "Read an organization, such as its ID, name, address, or quotas.",
-			Group:       "Organizations",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionOrgsRead},
-				{Action: ac.ActionOrgsQuotasRead},
-			},
-		},
-		Grants: []string{string(org.RoleViewer), ac.RoleGrafanaAdmin},
-	}
+	C.frankenphp_register_server_vars(trackVarsArray, C.frankenphp_server_vars{
+		// approximate total length to avoid array re-hashing:
+		// 28 CGI vars + headers + environment
+		total_num_vars: C.size_t(28 + len(request.Header) + len(fc.env) + lengthOfEnv),
 
-	orgWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:organization:writer",
-			DisplayName: "Writer",
-			Description: "Read an organization, its quotas, or its preferences. Update organization properties, or its preferences.",
-			Group:       "Organizations",
-			Permissions: ac.ConcatPermissions(orgReaderRole.Role.Permissions, []ac.Permission{
-				{Action: ac.ActionOrgsPreferencesRead},
-				{Action: ac.ActionOrgsWrite},
-				{Action: ac.ActionOrgsPreferencesWrite},
-			}),
-		},
-		Grants: []string{string(org.RoleAdmin)},
-	}
+		// CGI vars with variable values
+		remote_addr:         toUnsafeChar(ip),
+		remote_addr_len:     C.size_t(len(ip)),
+		remote_host:         toUnsafeChar(ip),
+		remote_host_len:     C.size_t(len(ip)),
+		remote_port:         toUnsafeChar(port),
+		remote_port_len:     C.size_t(len(port)),
+		document_root:       toUnsafeChar(fc.documentRoot),
+		document_root_len:   C.size_t(len(fc.documentRoot)),
+		path_info:           toUnsafeChar(fc.pathInfo),
+		path_info_len:       C.size_t(len(fc.pathInfo)),
+		php_self:            toUnsafeChar(phpSelf),
+		php_self_len:        C.size_t(len(phpSelf)),
+		document_uri:        toUnsafeChar(fc.docURI),
+		document_uri_len:    C.size_t(len(fc.docURI)),
+		script_filename:     toUnsafeChar(fc.scriptFilename),
+		script_filename_len: C.size_t(len(fc.scriptFilename)),
+		script_name:         toUnsafeChar(fc.scriptName),
+		script_name_len:     C.size_t(len(fc.scriptName)),
+		server_name:         toUnsafeChar(reqHost),
+		server_name_len:     C.size_t(len(reqHost)),
+		server_port:         toUnsafeChar(serverPort),
+		server_port_len:     C.size_t(len(serverPort)),
+		content_length:      toUnsafeChar(contentLength),
+		content_length_len:  C.size_t(len(contentLength)),
+		server_protocol:     toUnsafeChar(request.Proto),
+		server_protocol_len: C.size_t(len(request.Proto)),
+		http_host:           toUnsafeChar(request.Host),
+		http_host_len:       C.size_t(len(request.Host)),
+		request_uri:         toUnsafeChar(requestURI),
+		request_uri_len:     C.size_t(len(requestURI)),
+		ssl_cipher:          toUnsafeChar(sslCipher),
+		ssl_cipher_len:      C.size_t(len(sslCipher)),
 
-	orgMaintainerRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:organization:maintainer",
-			DisplayName: "Maintainer",
-			Description: "Create, read, write, or delete an organization. Read or write an organization's quotas. Needs to be assigned globally.",
-			Group:       "Organizations",
-			Permissions: ac.ConcatPermissions(orgReaderRole.Role.Permissions, []ac.Permission{
-				{Action: ac.ActionOrgsCreate},
-				{Action: ac.ActionOrgsWrite},
-				{Action: ac.ActionOrgsDelete},
-				{Action: ac.ActionOrgsQuotasWrite},
-			}),
-		},
-		Grants: []string{string(ac.RoleGrafanaAdmin)},
-	}
-
-	teamCreatorGrants := []string{string(org.RoleAdmin)}
-
-	teamsCreatorRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:teams:creator",
-			DisplayName: "Creator",
-			Description: "Create teams and read organisation users (required to manage the created teams).",
-			Group:       "Teams",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionTeamsCreate},
-				{Action: ac.ActionOrgUsersRead, Scope: ac.ScopeUsersAll},
-			},
-		},
-		Grants: teamCreatorGrants,
-	}
-
-	teamsReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:teams:read",
-			DisplayName: "Reader",
-			Description: "List all teams.",
-			Group:       "Teams",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionTeamsRead, Scope: ac.ScopeTeamsAll},
-			},
-		},
-		Grants: []string{},
-	}
-
-	teamsWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:teams:writer",
-			DisplayName: "Writer",
-			Description: "Create, read, write, or delete a team as well as controlling team memberships.",
-			Group:       "Teams",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionTeamsCreate},
-				{Action: ac.ActionTeamsDelete, Scope: ac.ScopeTeamsAll},
-				{Action: ac.ActionTeamsPermissionsRead, Scope: ac.ScopeTeamsAll},
-				{Action: ac.ActionTeamsPermissionsWrite, Scope: ac.ScopeTeamsAll},
-				{Action: ac.ActionTeamsRead, Scope: ac.ScopeTeamsAll},
-				{Action: ac.ActionTeamsWrite, Scope: ac.ScopeTeamsAll},
-			},
-		},
-		Grants: []string{string(org.RoleAdmin)},
-	}
-
-	// Keeping the name to avoid breaking changes (for users who have assigned this role to grant permissions on organization annotations)
-	annotationsReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:annotations:reader",
-			DisplayName: "Reader (organization)",
-			Description: "Read organization annotations and annotation tags",
-			Group:       "Annotations",
-			Permissions: []ac.Permission{
-				// Need to leave the permissions as they are, so that the seeder doesn't replace permissions when they have been removed from the basic role by the user
-				// Otherwise we could split this into ac.ScopeAnnotationsTypeOrganization and ac.ScopeAnnotationsTypeDashboard scopes and eventually remove the dashboard scope.
-				// https://github.com/grafana/identity-access-team/issues/524
-				{Action: ac.ActionAnnotationsRead, Scope: ac.ScopeAnnotationsAll},
-			},
-		},
-		Grants: []string{string(org.RoleViewer)},
-	}
-
-	// Keeping the name to avoid breaking changes (for users who have assigned this role to grant permissions on organization annotations)
-	annotationsWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:annotations:writer",
-			DisplayName: "Writer (organization)",
-			Description: "Update organization annotations.",
-			Group:       "Annotations",
-			Permissions: []ac.Permission{
-				// Need to leave the permissions as they are, so that the seeder doesn't replace permissions when they have been removed from the basic role by the user
-				// Otherwise we could split this into ac.ScopeAnnotationsTypeOrganization and ac.ScopeAnnotationsTypeDashboard scopes and eventually remove the dashboard scope.
-				// https://github.com/grafana/identity-access-team/issues/524
-				{Action: ac.ActionAnnotationsCreate, Scope: ac.ScopeAnnotationsAll},
-				{Action: ac.ActionAnnotationsDelete, Scope: ac.ScopeAnnotationsAll},
-				{Action: ac.ActionAnnotationsWrite, Scope: ac.ScopeAnnotationsAll},
-			},
-		},
-		Grants: []string{string(org.RoleEditor)},
-	}
-
-	dashboardsCreatorRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:dashboards:creator",
-			DisplayName: "Creator",
-			Description: "Create dashboards under the root folder.",
-			Group:       "Dashboards",
-			Permissions: []ac.Permission{
-				{Action: folder.ActionFoldersRead, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-				{Action: dashboards.ActionDashboardsCreate, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-			},
-		},
-		Grants: []string{"Editor"},
-	}
-
-	dashboardsReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:dashboards:reader",
-			DisplayName: "Reader",
-			Description: "Read all dashboards.",
-			Group:       "Dashboards",
-			Permissions: []ac.Permission{
-				{Action: dashboards.ActionDashboardsRead, Scope: dashboards.ScopeDashboardsAll},
-			},
-		},
-		Grants: []string{"Admin"},
-	}
-
-	dashboardsWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:dashboards:writer",
-			DisplayName: "Writer",
-			Group:       "Dashboards",
-			Description: "Create, read, write or delete all dashboards and their permissions.",
-			Permissions: ac.ConcatPermissions(dashboardsReaderRole.Role.Permissions, []ac.Permission{
-				{Action: dashboards.ActionDashboardsWrite, Scope: dashboards.ScopeDashboardsAll},
-				{Action: dashboards.ActionDashboardsDelete, Scope: dashboards.ScopeDashboardsAll},
-				{Action: dashboards.ActionDashboardsCreate, Scope: folder.ScopeFoldersAll},
-				{Action: dashboards.ActionDashboardsPermissionsRead, Scope: dashboards.ScopeDashboardsAll},
-				{Action: dashboards.ActionDashboardsPermissionsWrite, Scope: dashboards.ScopeDashboardsAll},
-			}),
-		},
-		Grants: []string{"Admin"},
-	}
-
-	foldersCreatorRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:folders:creator",
-			DisplayName: "Creator",
-			Description: "Create folders under root level",
-			Group:       "Folders",
-			Permissions: []ac.Permission{
-				{Action: folder.ActionFoldersCreate, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(folder.GeneralFolderUID)},
-			},
-		},
-		Grants: []string{"Editor"},
-		// Don't grant fixed:folders:creator to Admin
-		Exclude: []string{"Admin"},
-	}
-
-	foldersReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:folders:reader",
-			DisplayName: "Reader",
-			Description: "Read all folders and dashboards.",
-			Group:       "Folders",
-			Permissions: []ac.Permission{
-				{Action: folder.ActionFoldersRead, Scope: folder.ScopeFoldersAll},
-				{Action: dashboards.ActionDashboardsRead, Scope: folder.ScopeFoldersAll},
-			},
-		},
-		Grants: []string{"Admin"},
-	}
-
-	// Needed to be able to list permissions on the general folder for viewers, doesn't actually grant access to any resources
-	generalFolderReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:folders.general:reader",
-			DisplayName: "Reader (root)",
-			Description: "Access the general (root) folder.",
-			Group:       "Folders",
-			Hidden:      true,
-			Permissions: []ac.Permission{
-				{Action: folder.ActionFoldersRead, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-			},
-		},
-		Grants: []string{string(org.RoleViewer)},
-	}
-
-	foldersWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:folders:writer",
-			DisplayName: "Writer",
-			Description: "Create, read, write or delete all folders and dashboards and their permissions.",
-			Group:       "Folders",
-			Permissions: ac.ConcatPermissions(
-				foldersReaderRole.Role.Permissions,
-				[]ac.Permission{
-					{Action: folder.ActionFoldersCreate, Scope: folder.ScopeFoldersAll},
-					{Action: folder.ActionFoldersWrite, Scope: folder.ScopeFoldersAll},
-					{Action: folder.ActionFoldersDelete, Scope: folder.ScopeFoldersAll},
-					{Action: dashboards.ActionDashboardsWrite, Scope: folder.ScopeFoldersAll},
-					{Action: dashboards.ActionDashboardsDelete, Scope: folder.ScopeFoldersAll},
-					{Action: dashboards.ActionDashboardsCreate, Scope: folder.ScopeFoldersAll},
-					{Action: dashboards.ActionDashboardsPermissionsRead, Scope: folder.ScopeFoldersAll},
-					{Action: dashboards.ActionDashboardsPermissionsWrite, Scope: folder.ScopeFoldersAll},
-				}),
-		},
-		Grants: []string{"Admin"},
-	}
-
-	libraryPanelsCreatorRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:library.panels:creator",
-			DisplayName: "Creator",
-			Description: "Create library panel under the root folder.",
-			Group:       "Library panels",
-			Permissions: []ac.Permission{
-				{Action: folder.ActionFoldersRead, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-				{Action: libraryelements.ActionLibraryPanelsCreate, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-			},
-		},
-		Grants: []string{"Editor"},
-	}
-
-	libraryPanelsReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:library.panels:reader",
-			DisplayName: "Reader",
-			Description: "Read all library panels.",
-			Group:       "Library panels",
-			Permissions: []ac.Permission{
-				{Action: libraryelements.ActionLibraryPanelsRead, Scope: folder.ScopeFoldersAll},
-			},
-		},
-		Grants: []string{"Admin"},
-	}
-
-	libraryPanelsGeneralReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:library.panels:general.reader",
-			DisplayName: "Reader (root)",
-			Description: "Read all library panels under the root folder.",
-			Group:       "Library panels",
-			Permissions: []ac.Permission{
-				{Action: libraryelements.ActionLibraryPanelsRead, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-			},
-		},
-		Grants: []string{"Viewer"},
-	}
-
-	libraryPanelsWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:library.panels:writer",
-			DisplayName: "Writer",
-			Group:       "Library panels",
-			Description: "Create, read, write or delete all library panels and their permissions.",
-			Permissions: ac.ConcatPermissions(libraryPanelsReaderRole.Role.Permissions, []ac.Permission{
-				{Action: libraryelements.ActionLibraryPanelsWrite, Scope: folder.ScopeFoldersAll},
-				{Action: libraryelements.ActionLibraryPanelsDelete, Scope: folder.ScopeFoldersAll},
-				{Action: libraryelements.ActionLibraryPanelsCreate, Scope: folder.ScopeFoldersAll},
-			}),
-		},
-		Grants: []string{"Admin"},
-	}
-
-	libraryPanelsGeneralWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:library.panels:general.writer",
-			DisplayName: "Writer (root)",
-			Group:       "Library panels",
-			Description: "Create, read, write or delete all library panels and their permissions under the root folder.",
-			Permissions: ac.ConcatPermissions(libraryPanelsGeneralReaderRole.Role.Permissions, []ac.Permission{
-				{Action: libraryelements.ActionLibraryPanelsWrite, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-				{Action: libraryelements.ActionLibraryPanelsDelete, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-				{Action: libraryelements.ActionLibraryPanelsCreate, Scope: folder.ScopeFoldersProvider.GetResourceScopeUID(ac.GeneralFolderUID)},
-			}),
-		},
-		Grants: []string{"Editor"},
-	}
-
-	publicDashboardsWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:dashboards.public:writer",
-			DisplayName: "Writer (public)",
-			Description: "Create, write or disable a public dashboard.",
-			Group:       "Dashboards",
-			Permissions: []ac.Permission{
-				{Action: publicdashboards.ActionDashboardsPublicWrite, Scope: dashboards.ScopeDashboardsAll},
-			},
-		},
-		Grants: []string{"Admin"},
-	}
-
-	featuremgmtReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:featuremgmt:reader",
-			DisplayName: "Reader",
-			Description: "Read feature toggles",
-			Group:       "Feature Management",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionFeatureManagementRead},
-			},
-		},
-		Grants: []string{"Admin"},
-	}
-
-	featuremgmtWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:featuremgmt:writer",
-			DisplayName: "Writer",
-			Description: "Write feature toggles",
-			Group:       "Feature Management",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionFeatureManagementWrite},
-			},
-		},
-		Grants: []string{"Admin"},
-	}
-
-	snapshotsCreatorRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:snapshots:creator",
-			DisplayName: "Creator",
-			Description: "Create snapshots",
-			Group:       "Snapshots",
-			Permissions: []ac.Permission{
-				{Action: dashboards.ActionSnapshotsCreate},
-			},
-		},
-		Grants: []string{string(org.RoleEditor)},
-	}
-
-	snapshotsDeleterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:snapshots:deleter",
-			DisplayName: "Deleter",
-			Description: "Delete snapshots",
-			Group:       "Snapshots",
-			Permissions: []ac.Permission{
-				{Action: dashboards.ActionSnapshotsDelete},
-			},
-		},
-		Grants: []string{string(org.RoleEditor)},
-	}
-
-	snapshotsReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:snapshots:reader",
-			DisplayName: "Reader",
-			Description: "Read snapshots",
-			Group:       "Snapshots",
-			Permissions: []ac.Permission{
-				{Action: dashboards.ActionSnapshotsRead},
-			},
-		},
-		Grants: []string{string(org.RoleViewer)},
-	}
-
-	allAnnotationsReaderRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:annotations.all:reader",
-			DisplayName: "Reader (all)",
-			Description: "Read all annotations and tags",
-			Group:       "Annotations",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionAnnotationsRead, Scope: ac.ScopeAnnotationsTypeOrganization},
-				{Action: ac.ActionAnnotationsRead, Scope: folder.ScopeFoldersAll},
-			},
-		},
-		Grants: []string{string(org.RoleAdmin)},
-	}
-
-	allAnnotationsWriterRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:annotations.all:writer",
-			DisplayName: "Writer (all)",
-			Description: "Update all annotations.",
-			Group:       "Annotations",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionAnnotationsCreate, Scope: ac.ScopeAnnotationsTypeOrganization},
-				{Action: ac.ActionAnnotationsCreate, Scope: folder.ScopeFoldersAll},
-				{Action: ac.ActionAnnotationsDelete, Scope: ac.ScopeAnnotationsTypeOrganization},
-				{Action: ac.ActionAnnotationsDelete, Scope: folder.ScopeFoldersAll},
-				{Action: ac.ActionAnnotationsWrite, Scope: ac.ScopeAnnotationsTypeOrganization},
-				{Action: ac.ActionAnnotationsWrite, Scope: folder.ScopeFoldersAll},
-			},
-		},
-		Grants: []string{string(org.RoleAdmin)},
-	}
-
-	livePushRole := ac.RoleRegistration{
-		Role: ac.RoleDTO{
-			Name:        "fixed:live:writer",
-			DisplayName: "Writer",
-			Description: "Push metrics and events to Grafana Live streams (via /api/live/push).",
-			Group:       "Live",
-			Permissions: []ac.Permission{
-				{Action: ac.ActionLivePush},
-			},
-		},
-		Grants: []string{string(org.RoleEditor), string(org.RoleAdmin)},
-	}
-
-	return []ac.RoleRegistration{provisioningWriterRole, datasourcesReaderRole, builtInDatasourceReader, datasourcesWriterRole,
-		datasourcesIdReaderRole, datasourcesCreatorRole, orgReaderRole, orgWriterRole,
-		orgMaintainerRole, teamsCreatorRole, teamsWriterRole, teamsReaderRole, datasourcesExplorerRole,
-		annotationsReaderRole, annotationsWriterRole,
-		dashboardsCreatorRole, dashboardsReaderRole, dashboardsWriterRole,
-		foldersCreatorRole, foldersReaderRole, generalFolderReaderRole, foldersWriterRole,
-		publicDashboardsWriterRole, featuremgmtReaderRole, featuremgmtWriterRole, libraryPanelsCreatorRole,
-		libraryPanelsReaderRole, libraryPanelsWriterRole, libraryPanelsGeneralReaderRole, libraryPanelsGeneralWriterRole,
-		snapshotsCreatorRole, snapshotsDeleterRole, snapshotsReaderRole, allAnnotationsReaderRole, allAnnotationsWriterRole,
-		livePushRole}
+		// CGI vars with known values
+		request_scheme: rs,          // "http" or "https"
+		ssl_protocol:   sslProtocol, // values from tlsProtocol
+		https:          https,       // "on" or empty
+	})
 }
 
-// Metadata helpers
-// getAccessControlMetadata returns the accesscontrol metadata associated with a given resource
-func getAccessControlMetadata(c *contextmodel.ReqContext,
-	prefix string, resourceID string) ac.Metadata {
-	ids := map[string]bool{resourceID: true}
-	return getMultiAccessControlMetadata(c, prefix, ids)[resourceID]
+func addHeadersToServer(ctx context.Context, request *http.Request, trackVarsArray *C.zval) {
+	for field, val := range request.Header {
+		if k := commonHeaders[field]; k != nil {
+			v := strings.Join(val, ", ")
+			C.frankenphp_register_known_variable(k, toUnsafeChar(v), C.size_t(len(v)), trackVarsArray)
+			continue
+		}
+
+		// if the header name could not be cached, it needs to be registered safely
+		// this is more inefficient but allows additional sanitizing by PHP
+		k := phpheaders.GetUnCommonHeader(ctx, field)
+		v := strings.Join(val, ", ")
+		C.frankenphp_register_variable_safe(toUnsafeChar(k), toUnsafeChar(v), C.size_t(len(v)), trackVarsArray)
+	}
 }
 
-// getMultiAccessControlMetadata returns the accesscontrol metadata associated with a given set of resources
-// Context must contain permissions in the given org (see LoadPermissionsMiddleware or AuthorizeInOrgMiddleware)
-func getMultiAccessControlMetadata(c *contextmodel.ReqContext,
-	prefix string, resourceIDs map[string]bool) map[string]ac.Metadata {
-	if !c.QueryBool("accesscontrol") {
-		return map[string]ac.Metadata{}
+func addPreparedEnvToServer(fc *frankenPHPContext, trackVarsArray *C.zval) {
+	for k, v := range fc.env {
+		C.frankenphp_register_variable_safe(toUnsafeChar(k), toUnsafeChar(v), C.size_t(len(v)), trackVarsArray)
+	}
+	fc.env = nil
+}
+
+//export go_register_server_variables
+func go_register_server_variables(threadIndex C.uintptr_t, trackVarsArray *C.zval) {
+	thread := phpThreads[threadIndex]
+	fc := thread.frankenPHPContext()
+
+	if fc.request != nil {
+		addKnownVariablesToServer(fc, trackVarsArray)
+		addHeadersToServer(thread.context(), fc.request, trackVarsArray)
 	}
 
-	if len(c.GetPermissions()) == 0 {
-		return map[string]ac.Metadata{}
+	// The Prepared Environment is registered last and can overwrite any previous values
+	addPreparedEnvToServer(fc, trackVarsArray)
+}
+
+// splitCgiPath splits the request path into SCRIPT_NAME, SCRIPT_FILENAME, PATH_INFO, DOCUMENT_URI
+func splitCgiPath(fc *frankenPHPContext) {
+	path := fc.request.URL.Path
+	splitPath := fc.splitPath
+
+	if splitPath == nil {
+		splitPath = []string{".php"}
 	}
 
-	return ac.GetResourcesMetadata(c.Req.Context(), c.GetPermissions(), prefix, resourceIDs)
+	if splitPos := splitPos(path, splitPath); splitPos > -1 {
+		fc.docURI = path[:splitPos]
+		fc.pathInfo = path[splitPos:]
+	}
+
+	// If a worker is already assigned explicitly, derive SCRIPT_NAME from its filename
+	if fc.worker != nil {
+		fc.scriptFilename = fc.worker.fileName
+		docRootWithSep := fc.documentRoot + string(filepath.Separator)
+		if strings.HasPrefix(fc.worker.fileName, docRootWithSep) {
+			fc.scriptName = filepath.ToSlash(strings.TrimPrefix(fc.worker.fileName, fc.documentRoot))
+		} else {
+			fc.docURI = ""
+			fc.pathInfo = ""
+		}
+		return
+	}
+
+	// Strip PATH_INFO from SCRIPT_NAME
+	// Ensure the SCRIPT_NAME has a leading slash for compliance with RFC3875
+	// Info: https://tools.ietf.org/html/rfc3875#section-4.1.13
+	fc.scriptName = ensureLeadingSlash(strings.TrimSuffix(path, fc.pathInfo))
+
+	// TODO: is it possible to delay this and avoid saving everything in the context?
+	// SCRIPT_FILENAME is the absolute path of SCRIPT_NAME
+	fc.scriptFilename = sanitizedPathJoin(fc.documentRoot, fc.scriptName)
+	fc.worker = workersByPath[fc.scriptFilename]
+}
+
+var splitSearchNonASCII = search.New(language.Und, search.IgnoreCase)
+
+// splitPos returns the index where path should be split based on splitPath.
+// example: if splitPath is [".php"]
+// "/path/to/script.php/some/path": ("/path/to/script.php", "/some/path")
+func splitPos(path string, splitPath []string) int {
+	if len(splitPath) == 0 {
+		return 0
+	}
+
+	pathLen := len(path)
+
+	// We are sure that split strings are all ASCII-only and lower-case because of validation and normalization in WithRequestSplitPath
+	for _, split := range splitPath {
+		splitLen := len(split)
+
+		for i := 0; i < pathLen; i++ {
+			if path[i] >= utf8.RuneSelf {
+				if _, end := splitSearchNonASCII.IndexString(path, split); end > -1 {
+					return end
+				}
+
+				break
+			}
+
+			if i+splitLen > pathLen {
+				continue
+			}
+
+			match := true
+			for j := 0; j < splitLen; j++ {
+				c := path[i+j]
+
+				if c >= utf8.RuneSelf {
+					if _, end := splitSearchNonASCII.IndexString(path, split); end > -1 {
+						return end
+					}
+
+					break
+				}
+
+				if 'A' <= c && c <= 'Z' {
+					c += 'a' - 'A'
+				}
+
+				if c != split[j] {
+					match = false
+
+					break
+				}
+			}
+
+			if match {
+				return i + splitLen
+			}
+		}
+	}
+
+	return -1
+}
+
+// go_update_request_info updates the sapi_request_info struct
+// See: https://github.com/php/php-src/blob/345e04b619c3bc11ea17ee02cdecad6ae8ce5891/main/SAPI.h#L72
+//
+//export go_update_request_info
+func go_update_request_info(threadIndex C.uintptr_t, info *C.sapi_request_info) *C.char {
+	thread := phpThreads[threadIndex]
+	fc := thread.frankenPHPContext()
+	request := fc.request
+
+	if request == nil {
+		return nil
+	}
+
+	if m, ok := cStringHTTPMethods[request.Method]; ok {
+		info.request_method = m
+	} else {
+		info.request_method = thread.pinCString(request.Method)
+	}
+	info.query_string = thread.pinCString(request.URL.RawQuery)
+	info.content_length = C.zend_long(request.ContentLength)
+
+	if contentType := request.Header.Get("Content-Type"); contentType != "" {
+		info.content_type = thread.pinCString(contentType)
+	}
+
+	if fc.pathInfo != "" {
+		info.path_translated = thread.pinCString(sanitizedPathJoin(fc.documentRoot, fc.pathInfo)) // See: http://www.oreilly.com/openbook/cgi/ch02_04.html
+	}
+
+	info.request_uri = thread.pinCString(fc.requestURI)
+
+	info.proto_num = C.int(request.ProtoMajor*1000 + request.ProtoMinor)
+
+	authorizationHeader := request.Header.Get("Authorization")
+	if authorizationHeader == "" {
+		return nil
+	}
+
+	return thread.pinCString(authorizationHeader)
+}
+
+// SanitizedPathJoin performs filepath.Join(root, reqPath) that
+// is safe against directory traversal attacks. It uses logic
+// similar to that in the Go standard library, specifically
+// in the implementation of http.Dir. The root is assumed to
+// be a trusted path, but reqPath is not; and the output will
+// never be outside of root. The resulting path can be used
+// with the local file system.
+//
+// Adapted from https://github.com/caddyserver/caddy/blob/master/modules/caddyhttp/reverseproxy/fastcgi/fastcgi.go
+// Copyright 2015 Matthew Holt and The Caddy Authors
+func sanitizedPathJoin(root, reqPath string) string {
+	if root == "" {
+		root = "."
+	}
+
+	path := filepath.Join(root, filepath.Clean("/"+reqPath))
+
+	// filepath.Join also cleans the path, and cleaning strips
+	// the trailing slash, so we need to re-add it afterward.
+	// if the length is 1, then it's a path to the root,
+	// and that should return ".", so we don't append the separator.
+	if strings.HasSuffix(reqPath, "/") && len(reqPath) > 1 {
+		path += separator
+	}
+
+	return path
+}
+
+const separator = string(filepath.Separator)
+
+func ensureLeadingSlash(path string) string {
+	if path == "" || path[0] == '/' {
+		return path
+	}
+
+	return "/" + path
+}
+
+// toUnsafeChar returns a *C.char pointing at the backing bytes the Go string.
+// If C does not store the string, it may be passed directly in a Cgo call (most efficient).
+// If C stores the string, it must be pinned explicitly instead (inefficient).
+// C may never modify the string.
+func toUnsafeChar(s string) *C.char {
+	return (*C.char)(unsafe.Pointer(unsafe.StringData(s)))
+}
+
+// initialize a global zend_string that must never be freed and is ignored by GC
+func newPersistentZendString(str string) *C.zend_string {
+	return C.frankenphp_init_persistent_string(toUnsafeChar(str), C.size_t(len(str)))
+}
+
+// Protocol versions, in Apache mod_ssl format: https://httpd.apache.org/docs/current/mod/mod_ssl.html
+// Note that these are slightly different from SupportedProtocols in caddytls/config.go
+func tlsProtocol(proto uint16) *C.zend_string {
+	switch proto {
+	case tls.VersionTLS10:
+		return C.frankenphp_strings.tls1
+	case tls.VersionTLS11:
+		return C.frankenphp_strings.tls11
+	case tls.VersionTLS12:
+		return C.frankenphp_strings.tls12
+	case tls.VersionTLS13:
+		return C.frankenphp_strings.tls13
+	default:
+		return C.frankenphp_strings.empty
+	}
 }

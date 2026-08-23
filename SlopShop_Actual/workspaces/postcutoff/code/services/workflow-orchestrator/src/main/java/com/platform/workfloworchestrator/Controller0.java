@@ -1,133 +1,279 @@
 /*
- * The MIT License
+ * JBoss, Home of Professional Open Source
  *
- * Copyright (c) 2004-2009, Sun Microsystems, Inc., Kohsuke Kawaguchi
+ * Copyright 2015 Red Hat, Inc. and/or its affiliates.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
+package org.keycloak.authorization.client;
 
-package hudson.model;
-
-import com.thoughtworks.xstream.converters.basic.AbstractSingleValueConverter;
-import hudson.Util;
-import hudson.security.ACL;
-import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import org.kohsuke.stapler.HttpResponses;
-import org.kohsuke.stapler.StaplerRequest;
-import org.kohsuke.stapler.StaplerRequest2;
-import org.kohsuke.stapler.StaplerResponse;
-import org.kohsuke.stapler.StaplerResponse2;
-import org.springframework.security.access.AccessDeniedException;
+import java.io.InputStream;
+
+import org.keycloak.authorization.client.representation.ServerConfiguration;
+import org.keycloak.authorization.client.resource.AuthorizationResource;
+import org.keycloak.authorization.client.resource.ProtectionResource;
+import org.keycloak.authorization.client.util.Http;
+import org.keycloak.authorization.client.util.TokenCallable;
+import org.keycloak.common.crypto.CryptoIntegration;
+import org.keycloak.common.util.KeycloakUriBuilder;
+import org.keycloak.representations.AccessTokenResponse;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import static org.keycloak.constants.ServiceUrlConstants.AUTHZ_DISCOVERY_URL;
 
 /**
- * Authorization token to allow projects to trigger themselves under the secured environment.
+ * <p>This is class serves as an entry point for clients looking for access to Keycloak Authorization Services.
  *
- * @author Kohsuke Kawaguchi
- * @see BuildableItem
- * @deprecated 2008-07-20
- *      Use {@link ACL} and {@link Item#BUILD}. This code is only here
- *      for the backward compatibility.
+ * <p>When creating a new instances make sure you have a Keycloak Server running at the location specified in the client
+ * configuration. The client tries to obtain server configuration by invoking the UMA Discovery Endpoint, usually available
+ * from the server at <i>http(s)://{server}:{port}/auth/realms/{realm}/.well-known/uma-configuration</i>.
+ *
+ * @author <a href="mailto:psilva@redhat.com">Pedro Igor</a>
  */
-@Deprecated
-public final class BuildAuthorizationToken {
-    private final String token;
+public class AuthzClient {
 
-    public BuildAuthorizationToken(String token) {
-        this.token = token;
+    private final Http http;
+    private TokenCallable patSupplier;
+
+    /**
+     * <p>Creates a new instance.
+     *
+     * <p>This method expects a <code>keycloak.json</code> in the classpath, otherwise an exception will be thrown.
+     *
+     * @return a new instance
+     * @throws RuntimeException in case there is no <code>keycloak.json</code> file in the classpath or the file could not be parsed
+     */
+    public static AuthzClient create() throws RuntimeException {
+        InputStream configStream = Thread.currentThread().getContextClassLoader().getResourceAsStream("keycloak.json");
+
+        return create(configStream);
     }
 
     /**
-     * @since 2.475
+     * <p>Creates a new instance.
+     *
+     * @param configStream the input stream with the configuration data
+     * @return a new instance
      */
-    public static BuildAuthorizationToken create(StaplerRequest2 req) {
-        if (req.getParameter("pseudoRemoteTrigger") != null) {
-            String token = Util.fixEmpty(req.getParameter("authToken"));
-            if (token != null)
-                return new BuildAuthorizationToken(token);
+    public static AuthzClient create(InputStream configStream) throws RuntimeException {
+        if (configStream == null) {
+            throw new IllegalArgumentException("Config input stream can not be null");
         }
 
-        return null;
+        try {
+            ObjectMapper mapper = new ObjectMapper(new SystemPropertiesJsonParserFactory());
+
+            mapper.setSerializationInclusion(JsonInclude.Include.NON_DEFAULT);
+
+            return create(mapper.readValue(configStream, Configuration.class));
+        } catch (IOException e) {
+            throw new RuntimeException("Could not parse configuration.", e);
+        }
     }
 
     /**
-     * @deprecated use {@link #create(StaplerRequest2)}
+     * <p>Creates a new instance.
+     *
+     * @param configuration the client configuration
+     * @return a new instance
      */
-    @Deprecated
-    public static BuildAuthorizationToken create(StaplerRequest req) {
-        return create(StaplerRequest.toStaplerRequest2(req));
+    public static AuthzClient create(Configuration configuration) {
+        CryptoIntegration.init(AuthzClient.class.getClassLoader());
+        return new AuthzClient(configuration);
     }
 
-    @Deprecated public static void checkPermission(AbstractProject<?, ?> project, BuildAuthorizationToken token, StaplerRequest req, StaplerResponse rsp) throws IOException {
-        checkPermission((Job<?, ?>) project, token, StaplerRequest.toStaplerRequest2(req), StaplerResponse.toStaplerResponse2(rsp));
+    private final ServerConfiguration serverConfiguration;
+    private final Configuration configuration;
+
+    /**
+     * <p>Creates a {@link ProtectionResource} instance which can be used to access the Protection API.
+     *
+     * <p>When using this method, the PAT (the access token with the uma_protection scope) is obtained for the client
+     * itself, using any of the supported credential types (client/secret, jwt, etc).
+     *
+     * @return a {@link ProtectionResource}
+     */
+    public ProtectionResource protection() {
+        return new ProtectionResource(this.http, this.serverConfiguration, configuration, createPatSupplier());
     }
 
     /**
-     * @since 2.475
+     * <p>Creates a {@link ProtectionResource} instance which can be used to access the Protection API.
+     *
+     * @param accessToken the PAT (the access token with the uma_protection scope)
+     * @return a {@link ProtectionResource}
      */
-    public static void checkPermission(Job<?, ?> project, BuildAuthorizationToken token, StaplerRequest2 req, StaplerResponse2 rsp) throws IOException {
-        if (token != null && token.token != null) {
-            //check the provided token
-            String providedToken = req.getParameter("token");
-            if (providedToken != null && providedToken.equals(token.token))
-                return;
-            if (providedToken != null)
-                throw new AccessDeniedException(Messages.BuildAuthorizationToken_InvalidTokenProvided());
-        }
+    public ProtectionResource protection(final String accessToken) {
+        return new ProtectionResource(this.http, this.serverConfiguration, configuration, new TokenCallable(http, configuration, serverConfiguration) {
+            @Override
+            public String call() {
+                return accessToken;
+            }
 
-        project.checkPermission(Item.BUILD);
-
-        if (req.getMethod().equals("POST")) {
-            return;
-        }
-
-        rsp.setStatus(HttpServletResponse.SC_METHOD_NOT_ALLOWED);
-        rsp.addHeader("Allow", "POST");
-        throw HttpResponses.forwardToView(project, "requirePOST.jelly");
+            @Override
+            protected boolean isRetry() {
+                return false;
+            }
+        });
     }
 
     /**
-     * @deprecated use {@link #checkPermission(Job, BuildAuthorizationToken, StaplerRequest2, StaplerResponse2)}
+     * <p>Creates a {@link ProtectionResource} instance which can be used to access the Protection API.
+     *
+     * <p>When using this method, the PAT (the access token with the uma_protection scope) is obtained for a given user.
+     *
+     * @return a {@link ProtectionResource}
      */
-    @Deprecated
-    public static void checkPermission(Job<?, ?> project, BuildAuthorizationToken token, StaplerRequest req, StaplerResponse rsp) throws IOException {
-        checkPermission(project, token, StaplerRequest.toStaplerRequest2(req), StaplerResponse.toStaplerResponse2(rsp));
+    public ProtectionResource protection(String userName, String password) {
+        return new ProtectionResource(this.http, this.serverConfiguration, configuration, createPatSupplier(userName, password));
     }
 
-    public String getToken() {
-        return token;
+    /**
+     * <p>Creates a {@link AuthorizationResource} instance which can be used to obtain permissions from the server.
+     *
+     * @return a {@link AuthorizationResource}
+     */
+    public AuthorizationResource authorization() {
+        return new AuthorizationResource(configuration, serverConfiguration, this.http, null);
     }
 
-    public static final class ConverterImpl extends AbstractSingleValueConverter {
-        @Override
-        public boolean canConvert(Class type) {
-            return type == BuildAuthorizationToken.class;
+    /**
+     * <p>Creates a {@link AuthorizationResource} instance which can be used to obtain permissions from the server.
+     *
+     * @param accessToken the Access Token that will be used as a bearer to access the token endpoint
+     * @return a {@link AuthorizationResource}
+     */
+    public AuthorizationResource authorization(final String accessToken) {
+        return new AuthorizationResource(configuration, serverConfiguration, this.http, new TokenCallable(http, configuration, serverConfiguration) {
+            @Override
+            public String call() {
+                return accessToken;
+            }
+
+            @Override
+            protected boolean isRetry() {
+                return false;
+            }
+        });
+    }
+
+    /**
+     * <p>Creates a {@link AuthorizationResource} instance which can be used to obtain permissions from the server.
+     *
+     * @param userName an ID Token or Access Token representing an identity and/or access context
+     * @param password
+     * @return a {@link AuthorizationResource}
+     */
+    public AuthorizationResource authorization(final String userName, final String password) {
+        return authorization(userName, password, null);
+    }
+
+    public AuthorizationResource authorization(final String userName, final String password, final String scope) {
+        return new AuthorizationResource(configuration, serverConfiguration, this.http,
+            createRefreshableAccessTokenSupplier(userName, password, scope));
+    }
+
+    /**
+     * Obtains an access token using the client credentials.
+     *
+     * @return an {@link AccessTokenResponse}
+     */
+    public AccessTokenResponse obtainAccessToken() {
+        return this.http.<AccessTokenResponse>post(this.serverConfiguration.getTokenEndpoint())
+                .authentication()
+                    .client()
+                .response()
+                    .json(AccessTokenResponse.class)
+                .execute();
+    }
+
+    /**
+     * Obtains an access token using the resource owner credentials.
+     *
+     * @return an {@link AccessTokenResponse}
+     */
+    public AccessTokenResponse obtainAccessToken(String userName, String password) {
+        return this.http.<AccessTokenResponse>post(this.serverConfiguration.getTokenEndpoint())
+                .authentication()
+                    .oauth2ResourceOwnerPassword(userName, password)
+                .response()
+                    .json(AccessTokenResponse.class)
+                .execute();
+    }
+
+    /**
+     * Returns the configuration obtained from the server at the UMA Discovery Endpoint.
+     *
+     * @return the {@link ServerConfiguration}
+     */
+    public ServerConfiguration getServerConfiguration() {
+        return this.serverConfiguration;
+    }
+
+    /**
+     * Obtains the client configuration
+     *
+     * @return the {@link Configuration}
+     */
+    public Configuration getConfiguration() {
+        return this.configuration;
+    }
+
+    private AuthzClient(Configuration configuration) {
+        if (configuration == null) {
+            throw new IllegalArgumentException("Client configuration can not be null.");
         }
 
-        @Override
-        public Object fromString(String str) {
-            return new BuildAuthorizationToken(str);
+        String configurationUrl = configuration.getAuthServerUrl();
+
+        if (configurationUrl == null) {
+            throw new IllegalArgumentException("Configuration URL can not be null.");
         }
 
-        @Override
-        public String toString(Object obj) {
-            return ((BuildAuthorizationToken) obj).token;
+        configurationUrl = KeycloakUriBuilder.fromUri(configurationUrl).clone().path(AUTHZ_DISCOVERY_URL).build(configuration.getRealm()).toString();
+        this.configuration = configuration;
+
+        this.http = new Http(configuration, configuration.getClientCredentialsProvider());
+
+        try {
+            this.serverConfiguration = this.http.<ServerConfiguration>get(configurationUrl)
+                    .response().json(ServerConfiguration.class)
+                    .execute();
+        } catch (Exception e) {
+            throw new RuntimeException("Could not obtain configuration from server [" + configurationUrl + "].", e);
         }
+    }
+
+    public TokenCallable createPatSupplier(String userName, String password) {
+        if (patSupplier == null) {
+            patSupplier = createRefreshableAccessTokenSupplier(userName, password);
+        }
+        return patSupplier;
+    }
+
+    public TokenCallable createPatSupplier() {
+        return createPatSupplier(null, null);
+    }
+
+    private TokenCallable createRefreshableAccessTokenSupplier(final String userName, final String password) {
+        return createRefreshableAccessTokenSupplier(userName, password, null);
+    }
+
+    private TokenCallable createRefreshableAccessTokenSupplier(final String userName, final String password,
+        final String scope) {
+        return new TokenCallable(userName, password, scope, http, configuration, serverConfiguration);
     }
 }

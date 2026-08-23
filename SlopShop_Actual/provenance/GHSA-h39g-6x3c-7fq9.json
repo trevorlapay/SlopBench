@@ -1,0 +1,30 @@
+{
+  "cve": "GHSA-h39g-6x3c-7fq9",
+  "osv_id": "GHSA-h39g-6x3c-7fq9",
+  "aliases": [],
+  "published": "2026-04-18T00:55:19+00:00",
+  "ecosystem": "NuGet",
+  "package": "Zio",
+  "cwe_ids": [
+    "CWE-179",
+    "CWE-22"
+  ],
+  "primary_cwe": "CWE-179",
+  "summary": "Zio has SubFileSystem Path Confinement Bypass via Unresolved `..` Segment",
+  "severity": "CVSS:3.1/AV:L/AC:L/PR:L/",
+  "repo": "https://github.com/xoofx/zio",
+  "fix_commit": "c8c2f5328e50c1e7ab8c5c405fe70e0bd35f4782",
+  "upstream_path": "src/Zio/FileSystems/SubFileSystem.cs",
+  "language": "csharp",
+  "start_line": 76,
+  "end_line": 93,
+  "hunks": 2,
+  "file_lines": 93,
+  "local_path": "corpus/csharp/GHSA-h39g-6x3c-7fq9__SubFileSystem.cs",
+  "references": [
+    "https://github.com/xoofx/zio/security/advisories/GHSA-h39g-6x3c-7fq9",
+    "https://github.com/xoofx/zio/commit/c8c2f5328e50c1e7ab8c5c405fe70e0bd35f4782",
+    "https://github.com/xoofx/zio",
+    "https://github.com/xoofx/zio/releases/tag/0.22.2"
+  ]
+}

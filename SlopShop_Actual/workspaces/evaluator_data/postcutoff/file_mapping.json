@@ -1,902 +1,986 @@
 {
-  "code/services/analytics-engine/src/handler0.py": {
-    "cve": "CVE-2026-55514",
-    "opaque_id": "vuln_0108",
-    "language": "python",
-    "primary_cwe": "CWE-617"
-  },
-  "code/services/edge-proxy/internal/handler0.go": {
-    "cve": "CVE-2025-66630",
-    "opaque_id": "vuln_0010",
-    "language": "go",
-    "primary_cwe": "CWE-338"
-  },
   "code/services/api-gateway/src/handler0.js": {
-    "cve": "CVE-2026-3304",
-    "opaque_id": "vuln_0049",
+    "cve": "CVE-2026-47210",
+    "opaque_id": "vuln_0095",
     "language": "javascript",
-    "primary_cwe": "CWE-459"
-  },
-  "code/services/scheduler/internal/service1.go": {
-    "cve": "CVE-2026-33221",
-    "opaque_id": "vuln_0050",
-    "language": "go",
-    "primary_cwe": "CWE-343"
-  },
-  "code/services/fleet-controller/internal/client2.go": {
-    "cve": "CVE-2026-25890",
-    "opaque_id": "vuln_0030",
-    "language": "go",
-    "primary_cwe": "CWE-706"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Controller0.java": {
-    "cve": "CVE-2025-67638",
-    "opaque_id": "vuln_0011",
-    "language": "java",
-    "primary_cwe": "CWE-312"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Service1.java": {
-    "cve": "CVE-2025-54947",
-    "opaque_id": "vuln_0008",
-    "language": "java",
-    "primary_cwe": "CWE-321"
+    "primary_cwe": "CWE-913"
   },
   "code/services/api-gateway/src/service1.js": {
-    "cve": "CVE-2026-34573",
-    "opaque_id": "vuln_0058",
-    "language": "javascript",
-    "primary_cwe": "CWE-407"
-  },
-  "code/services/api-gateway/src/client2.js": {
-    "cve": "CVE-2026-13676",
-    "opaque_id": "vuln_0017",
-    "language": "javascript",
-    "primary_cwe": "CWE-436"
-  },
-  "code/services/object-gateway/internal/store3.go": {
-    "cve": "GHSA-jfwg-rxf3-p7r9",
-    "opaque_id": "vuln_0142",
-    "language": "go",
-    "primary_cwe": "CWE-209"
-  },
-  "code/services/edge-proxy/internal/router4.go": {
-    "cve": "CVE-2026-9739",
-    "opaque_id": "vuln_0134",
-    "language": "go",
-    "primary_cwe": "CWE-942"
-  },
-  "code/services/scheduler/internal/worker5.go": {
-    "cve": "CVE-2026-27586",
-    "opaque_id": "vuln_0037",
-    "language": "go",
-    "primary_cwe": "CWE-755"
-  },
-  "code/services/billing-service/src/Controller0.php": {
-    "cve": "CVE-2026-26992",
-    "opaque_id": "vuln_0033",
-    "language": "php",
-    "primary_cwe": "CWE-79"
-  },
-  "code/services/crypto-core/src/handler0.rs": {
-    "cve": "GHSA-3288-p39f-rqpv",
-    "opaque_id": "vuln_0135",
-    "language": "rust",
-    "primary_cwe": "CWE-758"
-  },
-  "code/services/fleet-controller/internal/middleware6.go": {
-    "cve": "CVE-2026-62685",
-    "opaque_id": "vuln_0115",
-    "language": "go",
-    "primary_cwe": "CWE-647"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Repository2.java": {
-    "cve": "CVE-2026-50559",
-    "opaque_id": "vuln_0095",
-    "language": "java",
-    "primary_cwe": "CWE-178"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Handler3.java": {
-    "cve": "CVE-2025-14813",
-    "opaque_id": "vuln_0006",
-    "language": "java",
-    "primary_cwe": "CWE-323"
-  },
-  "code/services/web-console/src/handler0.ts": {
-    "cve": "CVE-2026-53668",
-    "opaque_id": "vuln_0103",
-    "language": "typescript",
-    "primary_cwe": "CWE-601"
-  },
-  "code/services/content-hub/src/Service1.php": {
-    "cve": "CVE-2026-35544",
-    "opaque_id": "vuln_0065",
-    "language": "php",
-    "primary_cwe": "CWE-669"
-  },
-  "code/services/object-gateway/internal/gateway7.go": {
-    "cve": "CVE-2026-53475",
-    "opaque_id": "vuln_0101",
-    "language": "go",
-    "primary_cwe": "CWE-295"
-  },
-  "code/services/edge-proxy/internal/proxy8.go": {
-    "cve": "GHSA-gx4c-2hqx-cw2r",
-    "opaque_id": "vuln_0139",
-    "language": "go",
-    "primary_cwe": "CWE-319"
-  },
-  "code/services/api-gateway/src/store3.js": {
-    "cve": "CVE-2026-71851",
-    "opaque_id": "vuln_0123",
-    "language": "javascript",
-    "primary_cwe": "CWE-331"
-  },
-  "code/services/packfile-lib/src/service1.rs": {
-    "cve": "CVE-2026-40034",
-    "opaque_id": "vuln_0067",
-    "language": "rust",
-    "primary_cwe": "CWE-183"
-  },
-  "code/services/scheduler/internal/cache9.go": {
-    "cve": "CVE-2025-67717",
-    "opaque_id": "vuln_0012",
-    "language": "go",
-    "primary_cwe": "CWE-497"
-  },
-  "code/services/admin-portal/src/service1.ts": {
-    "cve": "CVE-2026-71439",
-    "opaque_id": "vuln_0122",
-    "language": "typescript",
-    "primary_cwe": "CWE-1322"
-  },
-  "code/services/crypto-core/src/client2.rs": {
-    "cve": "GHSA-vfvv-c25p-m7mm",
-    "opaque_id": "vuln_0148",
-    "language": "rust",
-    "primary_cwe": "CWE-415"
-  },
-  "code/services/billing-service/src/Repository2.php": {
-    "cve": "CVE-2026-25494",
-    "opaque_id": "vuln_0026",
-    "language": "php",
-    "primary_cwe": "CWE-918"
-  },
-  "code/services/ml-router/src/service1.py": {
-    "cve": "CVE-2026-22779",
-    "opaque_id": "vuln_0022",
-    "language": "python",
-    "primary_cwe": "CWE-113"
-  },
-  "code/services/content-hub/src/Handler3.php": {
-    "cve": "CVE-2026-45064",
-    "opaque_id": "vuln_0084",
-    "language": "php",
-    "primary_cwe": "CWE-1007"
-  },
-  "code/services/fleet-controller/internal/queue10.go": {
-    "cve": "CVE-2026-44523",
-    "opaque_id": "vuln_0082",
-    "language": "go",
-    "primary_cwe": "CWE-326"
-  },
-  "code/services/api-gateway/src/router4.js": {
-    "cve": "CVE-2026-35039",
-    "opaque_id": "vuln_0060",
-    "language": "javascript",
-    "primary_cwe": "CWE-1289"
-  },
-  "code/services/web-console/src/client2.ts": {
-    "cve": "CVE-2026-73420",
-    "opaque_id": "vuln_0125",
-    "language": "typescript",
-    "primary_cwe": "CWE-180"
-  },
-  "code/services/admin-portal/src/store3.ts": {
-    "cve": "CVE-2026-46480",
-    "opaque_id": "vuln_0085",
-    "language": "typescript",
-    "primary_cwe": "CWE-915"
-  },
-  "code/services/object-gateway/internal/codec11.go": {
-    "cve": "GHSA-p64j-f4x9-wq66",
-    "opaque_id": "vuln_0144",
-    "language": "go",
-    "primary_cwe": "CWE-1173"
-  },
-  "code/services/api-gateway/src/worker5.js": {
-    "cve": "CVE-2026-59817",
-    "opaque_id": "vuln_0112",
-    "language": "javascript",
-    "primary_cwe": "CWE-472"
-  },
-  "code/services/edge-proxy/internal/parser12.go": {
-    "cve": "CVE-2026-41174",
-    "opaque_id": "vuln_0071",
-    "language": "go",
-    "primary_cwe": "CWE-653"
-  },
-  "code/services/analytics-engine/src/client2.py": {
-    "cve": "CVE-2026-74873",
-    "opaque_id": "vuln_0131",
-    "language": "python",
-    "primary_cwe": "CWE-256"
-  },
-  "code/services/ml-router/src/store3.py": {
-    "cve": "CVE-2026-48156",
-    "opaque_id": "vuln_0088",
-    "language": "python",
-    "primary_cwe": "CWE-834"
-  },
-  "code/services/packfile-lib/src/store3.rs": {
-    "cve": "CVE-2026-43868",
-    "opaque_id": "vuln_0081",
-    "language": "rust",
-    "primary_cwe": "CWE-1285"
-  },
-  "code/services/web-console/src/router4.ts": {
-    "cve": "GHSA-pqh8-p93p-2rx7",
-    "opaque_id": "vuln_0146",
-    "language": "typescript",
-    "primary_cwe": "CWE-943"
-  },
-  "code/services/analytics-engine/src/router4.py": {
-    "cve": "CVE-2025-69662",
-    "opaque_id": "vuln_0016",
-    "language": "python",
-    "primary_cwe": "CWE-202"
-  },
-  "code/services/crypto-core/src/router4.rs": {
-    "cve": "CVE-2025-13327",
-    "opaque_id": "vuln_0004",
-    "language": "rust",
-    "primary_cwe": "CWE-1286"
-  },
-  "code/services/ml-router/src/worker5.py": {
-    "cve": "CVE-2026-2652",
-    "opaque_id": "vuln_0032",
-    "language": "python",
-    "primary_cwe": "CWE-305"
-  },
-  "code/services/scheduler/internal/engine13.go": {
-    "cve": "GHSA-7qjx-gp9h-65qj",
-    "opaque_id": "vuln_0136",
-    "language": "go",
-    "primary_cwe": "CWE-285"
-  },
-  "code/services/packfile-lib/src/worker5.rs": {
-    "cve": "CVE-2026-35339",
-    "opaque_id": "vuln_0063",
-    "language": "rust",
-    "primary_cwe": "CWE-252"
-  },
-  "code/services/fleet-controller/internal/provider14.go": {
-    "cve": "CVE-2025-68383",
-    "opaque_id": "vuln_0013",
-    "language": "go",
-    "primary_cwe": "CWE-120"
-  },
-  "code/services/admin-portal/src/worker5.ts": {
-    "cve": "CVE-2026-73565",
-    "opaque_id": "vuln_0129",
-    "language": "typescript",
-    "primary_cwe": "CWE-401"
-  },
-  "code/services/web-console/src/middleware6.ts": {
-    "cve": "CVE-2026-29086",
-    "opaque_id": "vuln_0042",
-    "language": "typescript",
-    "primary_cwe": "CWE-1113"
-  },
-  "code/services/admin-portal/src/gateway7.ts": {
-    "cve": "CVE-2026-26278",
-    "opaque_id": "vuln_0031",
-    "language": "typescript",
-    "primary_cwe": "CWE-776"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Provider4.java": {
-    "cve": "CVE-2026-42577",
-    "opaque_id": "vuln_0079",
-    "language": "java",
-    "primary_cwe": "CWE-772"
-  },
-  "code/services/api-gateway/src/middleware6.js": {
     "cve": "CVE-2026-65898",
-    "opaque_id": "vuln_0117",
+    "opaque_id": "vuln_0129",
     "language": "javascript",
     "primary_cwe": "CWE-471"
   },
-  "code/services/web-console/src/proxy8.ts": {
-    "cve": "CVE-2026-50029",
-    "opaque_id": "vuln_0094",
+  "code/services/billing-service/src/Controller0.php": {
+    "cve": "GHSA-h4hf-v6w5-897x",
+    "opaque_id": "vuln_0156",
+    "language": "php",
+    "primary_cwe": "CWE-620"
+  },
+  "code/services/web-console/src/handler0.ts": {
+    "cve": "CVE-2026-73565",
+    "opaque_id": "vuln_0140",
     "language": "typescript",
-    "primary_cwe": "CWE-697"
+    "primary_cwe": "CWE-401"
   },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Resolver5.java": {
-    "cve": "CVE-2026-9088",
-    "opaque_id": "vuln_0132",
-    "language": "java",
-    "primary_cwe": "CWE-1220"
+  "code/services/payments-adapter/src/Controller0.cs": {
+    "cve": "CVE-2026-50201",
+    "opaque_id": "vuln_0101",
+    "language": "csharp",
+    "primary_cwe": "CWE-269"
   },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Manager6.java": {
-    "cve": "CVE-2026-29129",
-    "opaque_id": "vuln_0043",
-    "language": "java",
-    "primary_cwe": "CWE-327"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Client7.java": {
-    "cve": "CVE-2025-53960",
-    "opaque_id": "vuln_0007",
-    "language": "java",
-    "primary_cwe": "CWE-1240"
-  },
-  "code/services/billing-service/src/Provider4.php": {
-    "cve": "CVE-2026-33681",
-    "opaque_id": "vuln_0055",
-    "language": "php",
-    "primary_cwe": "CWE-22"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Filter8.java": {
-    "cve": "CVE-2026-41699",
-    "opaque_id": "vuln_0077",
-    "language": "java",
-    "primary_cwe": "CWE-502"
-  },
-  "code/services/analytics-engine/src/middleware6.py": {
-    "cve": "CVE-2026-28802",
-    "opaque_id": "vuln_0040",
-    "language": "python",
-    "primary_cwe": "CWE-347"
-  },
-  "code/services/object-gateway/internal/resolver15.go": {
-    "cve": "CVE-2026-30224",
-    "opaque_id": "vuln_0045",
-    "language": "go",
-    "primary_cwe": "CWE-384"
-  },
-  "code/services/crypto-core/src/middleware6.rs": {
-    "cve": "CVE-2026-25628",
-    "opaque_id": "vuln_0029",
+  "code/services/crypto-core/src/handler0.rs": {
+    "cve": "CVE-2026-25800",
+    "opaque_id": "vuln_0031",
     "language": "rust",
-    "primary_cwe": "CWE-73"
+    "primary_cwe": "CWE-770"
   },
-  "code/services/content-hub/src/Resolver5.php": {
-    "cve": "CVE-2025-68436",
-    "opaque_id": "vuln_0014",
-    "language": "php",
-    "primary_cwe": "CWE-200"
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Controller0.java": {
+    "cve": "CVE-2026-3190",
+    "opaque_id": "vuln_0047",
+    "language": "java",
+    "primary_cwe": "CWE-280"
   },
-  "code/services/ml-router/src/gateway7.py": {
-    "cve": "CVE-2026-54233",
-    "opaque_id": "vuln_0105",
-    "language": "python",
-    "primary_cwe": "CWE-409"
-  },
-  "code/services/edge-proxy/internal/manager16.go": {
+  "code/services/edge-proxy/internal/handler0.go": {
     "cve": "CVE-2026-32815",
-    "opaque_id": "vuln_0048",
+    "opaque_id": "vuln_0049",
     "language": "go",
     "primary_cwe": "CWE-287"
   },
-  "code/services/admin-portal/src/cache9.ts": {
-    "cve": "CVE-2026-27492",
-    "opaque_id": "vuln_0035",
-    "language": "typescript",
-    "primary_cwe": "CWE-488"
+  "code/services/packfile-lib/src/service1.rs": {
+    "cve": "GHSA-5wp8-q9mx-8jx8",
+    "opaque_id": "vuln_0147",
+    "language": "rust",
+    "primary_cwe": "CWE-77"
   },
-  "code/services/analytics-engine/src/proxy8.py": {
-    "cve": "CVE-2026-25577",
-    "opaque_id": "vuln_0028",
-    "language": "python",
-    "primary_cwe": "CWE-248"
-  },
-  "code/services/web-console/src/queue10.ts": {
-    "cve": "CVE-2026-41674",
-    "opaque_id": "vuln_0075",
-    "language": "typescript",
-    "primary_cwe": "CWE-91"
-  },
-  "code/services/billing-service/src/Manager6.php": {
-    "cve": "GHSA-mj63-m3rc-8ppr",
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Service1.java": {
+    "cve": "CVE-2026-9088",
     "opaque_id": "vuln_0143",
-    "language": "php",
-    "primary_cwe": "CWE-405"
-  },
-  "code/services/scheduler/internal/pipeline17.go": {
-    "cve": "CVE-2026-35205",
-    "opaque_id": "vuln_0061",
-    "language": "go",
-    "primary_cwe": "CWE-636"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Gateway9.java": {
-    "cve": "CVE-2026-5598",
-    "opaque_id": "vuln_0109",
     "language": "java",
-    "primary_cwe": "CWE-385"
+    "primary_cwe": "CWE-1220"
   },
-  "code/services/fleet-controller/internal/controller18.go": {
-    "cve": "CVE-2026-73506",
-    "opaque_id": "vuln_0128",
+  "code/services/scheduler/internal/service1.go": {
+    "cve": "CVE-2026-40945",
+    "opaque_id": "vuln_0074",
     "language": "go",
-    "primary_cwe": "CWE-150"
+    "primary_cwe": "CWE-532"
   },
-  "code/services/object-gateway/internal/adapter19.go": {
-    "cve": "CVE-2026-33544",
-    "opaque_id": "vuln_0053",
-    "language": "go",
-    "primary_cwe": "CWE-362"
+  "code/services/analytics-engine/src/handler0.py": {
+    "cve": "CVE-2026-4372",
+    "opaque_id": "vuln_0086",
+    "language": "python",
+    "primary_cwe": "CWE-1066"
   },
-  "code/services/api-gateway/src/gateway7.js": {
-    "cve": "CVE-2026-22037",
-    "opaque_id": "vuln_0020",
-    "language": "javascript",
-    "primary_cwe": "CWE-177"
+  "code/services/notification-service/app/handler0.rb": {
+    "cve": "CVE-2026-42085",
+    "opaque_id": "vuln_0082",
+    "language": "ruby",
+    "primary_cwe": "CWE-23"
   },
-  "code/services/ml-router/src/cache9.py": {
+  "code/services/admin-portal/src/service1.ts": {
+    "cve": "CVE-2026-41386",
+    "opaque_id": "vuln_0077",
+    "language": "typescript",
+    "primary_cwe": "CWE-269"
+  },
+  "code/services/crypto-core/src/client2.rs": {
+    "cve": "CVE-2026-41676",
+    "opaque_id": "vuln_0080",
+    "language": "rust",
+    "primary_cwe": "CWE-131"
+  },
+  "code/services/packfile-lib/src/store3.rs": {
+    "cve": "CVE-2026-41583",
+    "opaque_id": "vuln_0078",
+    "language": "rust",
+    "primary_cwe": "CWE-573"
+  },
+  "code/services/content-hub/src/Service1.php": {
+    "cve": "CVE-2026-34737",
+    "opaque_id": "vuln_0064",
+    "language": "php",
+    "primary_cwe": "CWE-862"
+  },
+  "code/services/ml-router/src/service1.py": {
     "cve": "CVE-2023-7333",
     "opaque_id": "vuln_0002",
     "language": "python",
     "primary_cwe": "CWE-74"
   },
-  "code/services/content-hub/src/Client7.php": {
-    "cve": "CVE-2026-33650",
-    "opaque_id": "vuln_0054",
-    "language": "php",
-    "primary_cwe": "CWE-863"
+  "code/services/api-gateway/src/client2.js": {
+    "cve": "CVE-2026-35039",
+    "opaque_id": "vuln_0065",
+    "language": "javascript",
+    "primary_cwe": "CWE-1289"
   },
-  "code/services/analytics-engine/src/queue10.py": {
-    "cve": "CVE-2026-54060",
-    "opaque_id": "vuln_0104",
-    "language": "python",
-    "primary_cwe": "CWE-789"
-  },
-  "code/services/billing-service/src/Filter8.php": {
+  "code/services/billing-service/src/Repository2.php": {
     "cve": "CVE-2026-41228",
-    "opaque_id": "vuln_0072",
+    "opaque_id": "vuln_0076",
     "language": "php",
     "primary_cwe": "CWE-98"
   },
-  "code/services/edge-proxy/internal/handler20.go": {
-    "cve": "CVE-2026-42576",
-    "opaque_id": "vuln_0078",
-    "language": "go",
-    "primary_cwe": "CWE-704"
-  },
-  "code/services/content-hub/src/Gateway9.php": {
-    "cve": "CVE-2026-25498",
-    "opaque_id": "vuln_0027",
-    "language": "php",
-    "primary_cwe": "CWE-470"
-  },
-  "code/services/billing-service/src/Mapper10.php": {
-    "cve": "GHSA-h4hf-v6w5-897x",
-    "opaque_id": "vuln_0141",
-    "language": "php",
-    "primary_cwe": "CWE-620"
-  },
-  "code/services/scheduler/internal/service21.go": {
-    "cve": "CVE-2026-33380",
-    "opaque_id": "vuln_0052",
-    "language": "go",
-    "primary_cwe": "CWE-552"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Mapper10.java": {
-    "cve": "CVE-2026-22747",
-    "opaque_id": "vuln_0021",
-    "language": "java",
-    "primary_cwe": "CWE-297"
-  },
-  "code/services/fleet-controller/internal/client22.go": {
-    "cve": "CVE-2026-52809",
-    "opaque_id": "vuln_0098",
-    "language": "go",
-    "primary_cwe": "CWE-324"
-  },
-  "code/services/object-gateway/internal/store23.go": {
-    "cve": "CVE-2026-40264",
-    "opaque_id": "vuln_0069",
-    "language": "go",
-    "primary_cwe": "CWE-1259"
-  },
-  "code/services/content-hub/src/Processor11.php": {
-    "cve": "CVE-2026-52774",
-    "opaque_id": "vuln_0097",
-    "language": "php",
-    "primary_cwe": "CWE-80"
-  },
-  "code/services/edge-proxy/internal/router24.go": {
-    "cve": "CVE-2026-53658",
-    "opaque_id": "vuln_0102",
-    "language": "go",
-    "primary_cwe": "CWE-90"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Processor11.java": {
-    "cve": "CVE-2025-11537",
-    "opaque_id": "vuln_0003",
-    "language": "java",
-    "primary_cwe": "CWE-117"
-  },
-  "code/services/ml-router/src/codec11.py": {
-    "cve": "CVE-2026-49852",
-    "opaque_id": "vuln_0092",
-    "language": "python",
-    "primary_cwe": "CWE-1391"
-  },
-  "code/services/scheduler/internal/worker25.go": {
-    "cve": "GHSA-xvg2-cgv6-6h7v",
-    "opaque_id": "vuln_0150",
-    "language": "go",
-    "primary_cwe": "CWE-693"
-  },
-  "code/services/analytics-engine/src/parser12.py": {
-    "cve": "CVE-2026-13769",
+  "code/services/analytics-engine/src/client2.py": {
+    "cve": "CVE-2026-1777",
     "opaque_id": "vuln_0018",
+    "language": "python",
+    "primary_cwe": "CWE-201"
+  },
+  "code/services/ml-router/src/store3.py": {
+    "cve": "CVE-2026-13769",
+    "opaque_id": "vuln_0017",
     "language": "python",
     "primary_cwe": "CWE-732"
   },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Validator12.java": {
-    "cve": "CVE-2026-3190",
-    "opaque_id": "vuln_0046",
-    "language": "java",
-    "primary_cwe": "CWE-280"
+  "code/services/payments-adapter/src/Service1.cs": {
+    "cve": "CVE-2026-53598",
+    "opaque_id": "vuln_0110",
+    "language": "csharp",
+    "primary_cwe": "CWE-200"
   },
-  "code/services/billing-service/src/Validator12.php": {
-    "cve": "GHSA-xp4f-g2cm-rhg7",
-    "opaque_id": "vuln_0149",
+  "code/services/content-hub/src/Handler3.php": {
+    "cve": "CVE-2026-52774",
+    "opaque_id": "vuln_0105",
     "language": "php",
-    "primary_cwe": "CWE-779"
+    "primary_cwe": "CWE-80"
   },
-  "code/services/fleet-controller/internal/middleware26.go": {
+  "code/services/billing-service/src/Provider4.php": {
+    "cve": "CVE-2026-25494",
+    "opaque_id": "vuln_0026",
+    "language": "php",
+    "primary_cwe": "CWE-918"
+  },
+  "code/services/analytics-engine/src/router4.py": {
+    "cve": "CVE-2026-28802",
+    "opaque_id": "vuln_0040",
+    "language": "python",
+    "primary_cwe": "CWE-347"
+  },
+  "code/services/fleet-controller/internal/client2.go": {
     "cve": "CVE-2025-14273",
     "opaque_id": "vuln_0005",
     "language": "go",
     "primary_cwe": "CWE-303"
   },
-  "code/services/admin-portal/src/codec11.ts": {
-    "cve": "CVE-2026-27001",
-    "opaque_id": "vuln_0034",
-    "language": "typescript",
-    "primary_cwe": "CWE-77"
-  },
-  "code/services/web-console/src/parser12.ts": {
-    "cve": "CVE-2026-73306",
-    "opaque_id": "vuln_0124",
-    "language": "typescript",
-    "primary_cwe": "CWE-204"
-  },
-  "code/services/admin-portal/src/engine13.ts": {
-    "cve": "CVE-2026-24909",
-    "opaque_id": "vuln_0025",
-    "language": "typescript",
-    "primary_cwe": "CWE-23"
-  },
-  "code/services/object-gateway/internal/gateway27.go": {
-    "cve": "CVE-2026-45062",
-    "opaque_id": "vuln_0083",
-    "language": "go",
-    "primary_cwe": "CWE-176"
-  },
-  "code/services/packfile-lib/src/gateway7.rs": {
-    "cve": "GHSA-h37v-hp6w-2pp8",
-    "opaque_id": "vuln_0140",
-    "language": "rust",
-    "primary_cwe": "CWE-193"
-  },
-  "code/services/edge-proxy/internal/proxy28.go": {
-    "cve": "CVE-2026-40945",
-    "opaque_id": "vuln_0070",
-    "language": "go",
-    "primary_cwe": "CWE-532"
-  },
-  "code/services/crypto-core/src/proxy8.rs": {
-    "cve": "CVE-2026-41676",
-    "opaque_id": "vuln_0076",
-    "language": "rust",
-    "primary_cwe": "CWE-131"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Dispatcher13.java": {
-    "cve": "CVE-2026-56740",
-    "opaque_id": "vuln_0110",
-    "language": "java",
-    "primary_cwe": "CWE-400"
-  },
-  "code/services/content-hub/src/Dispatcher13.php": {
-    "cve": "CVE-2026-48761",
-    "opaque_id": "vuln_0091",
-    "language": "php",
-    "primary_cwe": "CWE-1023"
-  },
-  "code/services/notification-service/app/handler0.rb": {
-    "cve": "CVE-2026-73492",
-    "opaque_id": "vuln_0127",
-    "language": "ruby",
-    "primary_cwe": "CWE-184"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Controller14.java": {
-    "cve": "CVE-2026-53442",
-    "opaque_id": "vuln_0100",
-    "language": "java",
-    "primary_cwe": "CWE-311"
-  },
-  "code/services/scheduler/internal/cache29.go": {
-    "cve": "CVE-2026-50565",
-    "opaque_id": "vuln_0096",
-    "language": "go",
-    "primary_cwe": "CWE-250"
-  },
-  "code/services/billing-service/src/Controller14.php": {
-    "cve": "CVE-2026-48488",
-    "opaque_id": "vuln_0090",
-    "language": "php",
-    "primary_cwe": "CWE-328"
-  },
-  "code/services/content-hub/src/Service15.php": {
-    "cve": "CVE-2026-29174",
-    "opaque_id": "vuln_0044",
-    "language": "php",
-    "primary_cwe": "CWE-89"
-  },
-  "code/services/billing-service/src/Repository16.php": {
-    "cve": "CVE-2026-27593",
-    "opaque_id": "vuln_0038",
-    "language": "php",
-    "primary_cwe": "CWE-640"
-  },
-  "code/services/fleet-controller/internal/queue30.go": {
-    "cve": "CVE-2026-9300",
+  "code/services/web-console/src/client2.ts": {
+    "cve": "CVE-2026-71439",
     "opaque_id": "vuln_0133",
-    "language": "go",
-    "primary_cwe": "CWE-119"
+    "language": "typescript",
+    "primary_cwe": "CWE-1322"
   },
-  "code/services/web-console/src/provider14.ts": {
+  "code/services/admin-portal/src/store3.ts": {
     "cve": "CVE-2026-27977",
     "opaque_id": "vuln_0039",
     "language": "typescript",
     "primary_cwe": "CWE-1385"
   },
-  "code/services/admin-portal/src/resolver15.ts": {
-    "cve": "CVE-2026-46580",
-    "opaque_id": "vuln_0086",
-    "language": "typescript",
-    "primary_cwe": "CWE-829"
-  },
-  "code/services/packfile-lib/src/cache9.rs": {
-    "cve": "CVE-2026-41583",
-    "opaque_id": "vuln_0074",
-    "language": "rust",
-    "primary_cwe": "CWE-573"
-  },
-  "code/services/ml-router/src/engine13.py": {
-    "cve": "CVE-2026-1777",
-    "opaque_id": "vuln_0019",
-    "language": "python",
-    "primary_cwe": "CWE-201"
-  },
-  "code/services/analytics-engine/src/provider14.py": {
-    "cve": "CVE-2026-59821",
-    "opaque_id": "vuln_0113",
-    "language": "python",
-    "primary_cwe": "CWE-94"
-  },
-  "code/services/crypto-core/src/queue10.rs": {
-    "cve": "CVE-2026-23519",
-    "opaque_id": "vuln_0023",
-    "language": "rust",
-    "primary_cwe": "CWE-203"
-  },
   "code/services/notification-service/app/service1.rb": {
-    "cve": "CVE-2026-67431",
-    "opaque_id": "vuln_0120",
-    "language": "ruby",
-    "primary_cwe": "CWE-284"
-  },
-  "code/services/web-console/src/manager16.ts": {
-    "cve": "GHSA-pfv5-rpcw-x34x",
-    "opaque_id": "vuln_0145",
-    "language": "typescript",
-    "primary_cwe": "CWE-78"
-  },
-  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Service15.java": {
-    "cve": "CVE-2026-48480",
-    "opaque_id": "vuln_0089",
-    "language": "java",
-    "primary_cwe": "CWE-325"
-  },
-  "code/services/ml-router/src/resolver15.py": {
-    "cve": "CVE-2026-7141",
-    "opaque_id": "vuln_0121",
-    "language": "python",
-    "primary_cwe": "CWE-908"
-  },
-  "code/services/object-gateway/internal/codec31.go": {
-    "cve": "CVE-2026-52812",
-    "opaque_id": "vuln_0099",
-    "language": "go",
-    "primary_cwe": "CWE-345"
-  },
-  "code/services/packfile-lib/src/codec11.rs": {
-    "cve": "CVE-2026-35362",
-    "opaque_id": "vuln_0064",
-    "language": "rust",
-    "primary_cwe": "CWE-367"
-  },
-  "code/services/analytics-engine/src/manager16.py": {
-    "cve": "CVE-2026-4372",
-    "opaque_id": "vuln_0080",
-    "language": "python",
-    "primary_cwe": "CWE-1066"
-  },
-  "code/services/notification-service/app/client2.rb": {
-    "cve": "CVE-2026-66066",
-    "opaque_id": "vuln_0118",
-    "language": "ruby",
-    "primary_cwe": "CWE-1188"
-  },
-  "code/services/crypto-core/src/parser12.rs": {
-    "cve": "CVE-2026-73489",
-    "opaque_id": "vuln_0126",
-    "language": "rust",
-    "primary_cwe": "CWE-129"
-  },
-  "code/services/content-hub/src/Handler17.php": {
-    "cve": "CVE-2026-67353",
+    "cve": "CVE-2026-55107",
     "opaque_id": "vuln_0119",
-    "language": "php",
-    "primary_cwe": "CWE-1325"
+    "language": "ruby",
+    "primary_cwe": "CWE-470"
   },
-  "code/services/ml-router/src/pipeline17.py": {
-    "cve": "CVE-2026-59220",
-    "opaque_id": "vuln_0111",
-    "language": "python",
-    "primary_cwe": "CWE-1333"
+  "code/services/payments-adapter/src/Repository2.cs": {
+    "cve": "CVE-2026-42191",
+    "opaque_id": "vuln_0083",
+    "language": "csharp",
+    "primary_cwe": "CWE-379"
   },
-  "code/services/packfile-lib/src/engine13.rs": {
-    "cve": "CVE-2026-34064",
-    "opaque_id": "vuln_0056",
+  "code/services/crypto-core/src/router4.rs": {
+    "cve": "CVE-2025-69255",
+    "opaque_id": "vuln_0015",
     "language": "rust",
-    "primary_cwe": "CWE-191"
+    "primary_cwe": "CWE-755"
   },
-  "code/services/admin-portal/src/pipeline17.ts": {
-    "cve": "CVE-2026-49993",
-    "opaque_id": "vuln_0093",
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Repository2.java": {
+    "cve": "CVE-2025-14813",
+    "opaque_id": "vuln_0006",
+    "language": "java",
+    "primary_cwe": "CWE-323"
+  },
+  "code/services/content-hub/src/Resolver5.php": {
+    "cve": "CVE-2026-29174",
+    "opaque_id": "vuln_0044",
+    "language": "php",
+    "primary_cwe": "CWE-89"
+  },
+  "code/services/object-gateway/internal/store3.go": {
+    "cve": "GHSA-gx4c-2hqx-cw2r",
+    "opaque_id": "vuln_0153",
+    "language": "go",
+    "primary_cwe": "CWE-319"
+  },
+  "code/services/web-console/src/router4.ts": {
+    "cve": "CVE-2026-61836",
+    "opaque_id": "vuln_0127",
     "language": "typescript",
-    "primary_cwe": "CWE-749"
+    "primary_cwe": "CWE-524"
   },
-  "code/services/billing-service/src/Provider18.php": {
-    "cve": "CVE-2026-34737",
-    "opaque_id": "vuln_0059",
-    "language": "php",
-    "primary_cwe": "CWE-862"
-  },
-  "code/services/api-gateway/src/proxy8.js": {
-    "cve": "CVE-2026-47210",
-    "opaque_id": "vuln_0087",
+  "code/services/api-gateway/src/store3.js": {
+    "cve": "CVE-2026-34573",
+    "opaque_id": "vuln_0063",
     "language": "javascript",
-    "primary_cwe": "CWE-913"
+    "primary_cwe": "CWE-407"
   },
-  "code/services/analytics-engine/src/controller18.py": {
-    "cve": "CVE-2020-36962",
-    "opaque_id": "vuln_0001",
-    "language": "python",
-    "primary_cwe": "CWE-1236"
+  "code/services/edge-proxy/internal/router4.go": {
+    "cve": "CVE-2025-68383",
+    "opaque_id": "vuln_0013",
+    "language": "go",
+    "primary_cwe": "CWE-120"
   },
-  "code/services/api-gateway/src/cache9.js": {
-    "cve": "GHSA-88qp-p4qg-rqm6",
-    "opaque_id": "vuln_0137",
-    "language": "javascript",
-    "primary_cwe": "CWE-843"
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Handler3.java": {
+    "cve": "CVE-2026-41699",
+    "opaque_id": "vuln_0081",
+    "language": "java",
+    "primary_cwe": "CWE-502"
   },
-  "code/services/content-hub/src/Resolver19.php": {
-    "cve": "CVE-2026-32313",
-    "opaque_id": "vuln_0047",
-    "language": "php",
-    "primary_cwe": "CWE-354"
+  "code/services/scheduler/internal/worker5.go": {
+    "cve": "CVE-2026-40188",
+    "opaque_id": "vuln_0070",
+    "language": "go",
+    "primary_cwe": "CWE-1314"
   },
-  "code/services/edge-proxy/internal/parser32.go": {
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Provider4.java": {
+    "cve": "CVE-2025-67638",
+    "opaque_id": "vuln_0012",
+    "language": "java",
+    "primary_cwe": "CWE-312"
+  },
+  "code/services/fleet-controller/internal/middleware6.go": {
     "cve": "CVE-2025-65105",
     "opaque_id": "vuln_0009",
     "language": "go",
     "primary_cwe": "CWE-61"
   },
-  "code/services/scheduler/internal/engine33.go": {
-    "cve": "CVE-2026-40188",
-    "opaque_id": "vuln_0068",
-    "language": "go",
-    "primary_cwe": "CWE-1314"
+  "code/services/admin-portal/src/worker5.ts": {
+    "cve": "CVE-2026-73306",
+    "opaque_id": "vuln_0135",
+    "language": "typescript",
+    "primary_cwe": "CWE-204"
   },
-  "code/services/billing-service/src/Manager20.php": {
+  "code/services/packfile-lib/src/worker5.rs": {
+    "cve": "CVE-2026-43868",
+    "opaque_id": "vuln_0087",
+    "language": "rust",
+    "primary_cwe": "CWE-1285"
+  },
+  "code/services/api-gateway/src/router4.js": {
+    "cve": "GHSA-88qp-p4qg-rqm6",
+    "opaque_id": "vuln_0149",
+    "language": "javascript",
+    "primary_cwe": "CWE-843"
+  },
+  "code/services/object-gateway/internal/gateway7.go": {
+    "cve": "CVE-2026-25890",
+    "opaque_id": "vuln_0032",
+    "language": "go",
+    "primary_cwe": "CWE-706"
+  },
+  "code/services/api-gateway/src/worker5.js": {
+    "cve": "CVE-2026-59817",
+    "opaque_id": "vuln_0123",
+    "language": "javascript",
+    "primary_cwe": "CWE-472"
+  },
+  "code/services/edge-proxy/internal/proxy8.go": {
+    "cve": "CVE-2026-33221",
+    "opaque_id": "vuln_0054",
+    "language": "go",
+    "primary_cwe": "CWE-343"
+  },
+  "code/services/billing-service/src/Manager6.php": {
+    "cve": "GHSA-mj63-m3rc-8ppr",
+    "opaque_id": "vuln_0158",
+    "language": "php",
+    "primary_cwe": "CWE-405"
+  },
+  "code/services/ml-router/src/worker5.py": {
+    "cve": "CVE-2026-59220",
+    "opaque_id": "vuln_0122",
+    "language": "python",
+    "primary_cwe": "CWE-1333"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Resolver5.java": {
+    "cve": "CVE-2025-11537",
+    "opaque_id": "vuln_0003",
+    "language": "java",
+    "primary_cwe": "CWE-117"
+  },
+  "code/services/crypto-core/src/middleware6.rs": {
+    "cve": "GHSA-h37v-hp6w-2pp8",
+    "opaque_id": "vuln_0154",
+    "language": "rust",
+    "primary_cwe": "CWE-193"
+  },
+  "code/services/notification-service/app/client2.rb": {
+    "cve": "CVE-2026-33209",
+    "opaque_id": "vuln_0053",
+    "language": "ruby",
+    "primary_cwe": "CWE-79"
+  },
+  "code/services/scheduler/internal/cache9.go": {
+    "cve": "CVE-2026-33544",
+    "opaque_id": "vuln_0058",
+    "language": "go",
+    "primary_cwe": "CWE-362"
+  },
+  "code/services/fleet-controller/internal/queue10.go": {
+    "cve": "CVE-2026-44523",
+    "opaque_id": "vuln_0089",
+    "language": "go",
+    "primary_cwe": "CWE-326"
+  },
+  "code/services/content-hub/src/Client7.php": {
     "cve": "GHSA-f25v-x6vr-962g",
-    "opaque_id": "vuln_0138",
+    "opaque_id": "vuln_0152",
     "language": "php",
     "primary_cwe": "CWE-1392"
   },
-  "code/services/ml-router/src/adapter19.py": {
-    "cve": "CVE-2025-68463",
-    "opaque_id": "vuln_0015",
-    "language": "python",
-    "primary_cwe": "CWE-611"
-  },
-  "code/services/sandbox-runtime/src/handler0.c": {
-    "cve": "CVE-2026-54619",
-    "opaque_id": "vuln_0106",
-    "language": "c",
-    "primary_cwe": "CWE-416"
-  },
-  "code/services/web-console/src/controller18.ts": {
-    "cve": "CVE-2026-64647",
-    "opaque_id": "vuln_0116",
-    "language": "typescript",
-    "primary_cwe": "CWE-116"
-  },
-  "code/services/analytics-engine/src/handler20.py": {
-    "cve": "CVE-2026-29038",
-    "opaque_id": "vuln_0041",
-    "language": "python",
-    "primary_cwe": "CWE-79"
-  },
-  "code/services/fleet-controller/internal/provider34.go": {
-    "cve": "CVE-2026-24005",
-    "opaque_id": "vuln_0024",
+  "code/services/object-gateway/internal/codec11.go": {
+    "cve": "GHSA-7qjx-gp9h-65qj",
+    "opaque_id": "vuln_0148",
     "language": "go",
-    "primary_cwe": "CWE-918"
+    "primary_cwe": "CWE-285"
   },
-  "code/services/ml-router/src/service21.py": {
+  "code/services/analytics-engine/src/middleware6.py": {
     "cve": "CVE-2026-34515",
-    "opaque_id": "vuln_0057",
+    "opaque_id": "vuln_0062",
     "language": "python",
     "primary_cwe": "CWE-36"
   },
-  "code/services/admin-portal/src/adapter19.ts": {
-    "cve": "CVE-2026-41386",
-    "opaque_id": "vuln_0073",
-    "language": "typescript",
-    "primary_cwe": "CWE-269"
+  "code/services/packfile-lib/src/gateway7.rs": {
+    "cve": "GHSA-c8jx-96c9-8xrp",
+    "opaque_id": "vuln_0151",
+    "language": "rust",
+    "primary_cwe": "CWE-863"
   },
-  "code/services/object-gateway/internal/resolver35.go": {
+  "code/services/notification-service/app/store3.rb": {
+    "cve": "CVE-2026-54497",
+    "opaque_id": "vuln_0115",
+    "language": "ruby",
+    "primary_cwe": "CWE-362"
+  },
+  "code/services/notification-service/app/router4.rb": {
+    "cve": "CVE-2026-66066",
+    "opaque_id": "vuln_0130",
+    "language": "ruby",
+    "primary_cwe": "CWE-1188"
+  },
+  "code/services/web-console/src/middleware6.ts": {
+    "cve": "GHSA-qmq6-f8pr-cx5x",
+    "opaque_id": "vuln_0162",
+    "language": "typescript",
+    "primary_cwe": "CWE-670"
+  },
+  "code/services/api-gateway/src/middleware6.js": {
+    "cve": "CVE-2026-3304",
+    "opaque_id": "vuln_0050",
+    "language": "javascript",
+    "primary_cwe": "CWE-459"
+  },
+  "code/services/edge-proxy/internal/parser12.go": {
+    "cve": "CVE-2026-9300",
+    "opaque_id": "vuln_0144",
+    "language": "go",
+    "primary_cwe": "CWE-119"
+  },
+  "code/services/scheduler/internal/engine13.go": {
     "cve": "CVE-2026-27575",
     "opaque_id": "vuln_0036",
     "language": "go",
     "primary_cwe": "CWE-521"
   },
-  "code/services/web-console/src/handler20.ts": {
-    "cve": "CVE-2026-54661",
+  "code/services/fleet-controller/internal/provider14.go": {
+    "cve": "CVE-2026-53658",
+    "opaque_id": "vuln_0111",
+    "language": "go",
+    "primary_cwe": "CWE-90"
+  },
+  "code/services/object-gateway/internal/resolver15.go": {
+    "cve": "CVE-2026-50565",
+    "opaque_id": "vuln_0104",
+    "language": "go",
+    "primary_cwe": "CWE-250"
+  },
+  "code/services/notification-service/app/worker5.rb": {
+    "cve": "CVE-2026-25757",
+    "opaque_id": "vuln_0030",
+    "language": "ruby",
+    "primary_cwe": "CWE-639"
+  },
+  "code/services/ml-router/src/gateway7.py": {
+    "cve": "CVE-2026-29038",
+    "opaque_id": "vuln_0041",
+    "language": "python",
+    "primary_cwe": "CWE-79"
+  },
+  "code/services/billing-service/src/Filter8.php": {
+    "cve": "CVE-2026-48761",
+    "opaque_id": "vuln_0097",
+    "language": "php",
+    "primary_cwe": "CWE-1023"
+  },
+  "code/services/notification-service/app/middleware6.rb": {
+    "cve": "CVE-2026-4324",
+    "opaque_id": "vuln_0085",
+    "language": "ruby",
+    "primary_cwe": "CWE-89"
+  },
+  "code/services/crypto-core/src/proxy8.rs": {
+    "cve": "CVE-2026-23519",
+    "opaque_id": "vuln_0022",
+    "language": "rust",
+    "primary_cwe": "CWE-203"
+  },
+  "code/services/notification-service/app/gateway7.rb": {
+    "cve": "CVE-2026-33286",
+    "opaque_id": "vuln_0055",
+    "language": "ruby",
+    "primary_cwe": "CWE-913"
+  },
+  "code/services/packfile-lib/src/cache9.rs": {
+    "cve": "CVE-2026-29178",
+    "opaque_id": "vuln_0045",
+    "language": "rust",
+    "primary_cwe": "CWE-918"
+  },
+  "code/services/analytics-engine/src/proxy8.py": {
+    "cve": "CVE-2026-74873",
+    "opaque_id": "vuln_0142",
+    "language": "python",
+    "primary_cwe": "CWE-256"
+  },
+  "code/services/edge-proxy/internal/manager16.go": {
+    "cve": "CVE-2026-42576",
+    "opaque_id": "vuln_0084",
+    "language": "go",
+    "primary_cwe": "CWE-704"
+  },
+  "code/services/notification-service/app/proxy8.rb": {
+    "cve": "CVE-2026-33946",
+    "opaque_id": "vuln_0060",
+    "language": "ruby",
+    "primary_cwe": "CWE-384"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Manager6.java": {
+    "cve": "CVE-2026-22747",
+    "opaque_id": "vuln_0020",
+    "language": "java",
+    "primary_cwe": "CWE-297"
+  },
+  "code/services/scheduler/internal/pipeline17.go": {
+    "cve": "GHSA-jfwg-rxf3-p7r9",
+    "opaque_id": "vuln_0157",
+    "language": "go",
+    "primary_cwe": "CWE-209"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Client7.java": {
+    "cve": "CVE-2026-5598",
+    "opaque_id": "vuln_0120",
+    "language": "java",
+    "primary_cwe": "CWE-385"
+  },
+  "code/services/fleet-controller/internal/controller18.go": {
+    "cve": "CVE-2026-52812",
     "opaque_id": "vuln_0107",
+    "language": "go",
+    "primary_cwe": "CWE-345"
+  },
+  "code/services/crypto-core/src/queue10.rs": {
+    "cve": "GHSA-3288-p39f-rqpv",
+    "opaque_id": "vuln_0146",
+    "language": "rust",
+    "primary_cwe": "CWE-758"
+  },
+  "code/services/ml-router/src/cache9.py": {
+    "cve": "CVE-2026-59821",
+    "opaque_id": "vuln_0124",
+    "language": "python",
+    "primary_cwe": "CWE-94"
+  },
+  "code/services/admin-portal/src/gateway7.ts": {
+    "cve": "CVE-2026-26278",
+    "opaque_id": "vuln_0033",
+    "language": "typescript",
+    "primary_cwe": "CWE-776"
+  },
+  "code/services/analytics-engine/src/queue10.py": {
+    "cve": "CVE-2026-25577",
+    "opaque_id": "vuln_0028",
+    "language": "python",
+    "primary_cwe": "CWE-248"
+  },
+  "code/services/packfile-lib/src/codec11.rs": {
+    "cve": "CVE-2025-13327",
+    "opaque_id": "vuln_0004",
+    "language": "rust",
+    "primary_cwe": "CWE-1286"
+  },
+  "code/services/notification-service/app/cache9.rb": {
+    "cve": "CVE-2026-63118",
+    "opaque_id": "vuln_0128",
+    "language": "ruby",
+    "primary_cwe": "CWE-346"
+  },
+  "code/services/web-console/src/proxy8.ts": {
+    "cve": "CVE-2026-29086",
+    "opaque_id": "vuln_0042",
+    "language": "typescript",
+    "primary_cwe": "CWE-1113"
+  },
+  "code/services/crypto-core/src/parser12.rs": {
+    "cve": "CVE-2026-73489",
+    "opaque_id": "vuln_0137",
+    "language": "rust",
+    "primary_cwe": "CWE-129"
+  },
+  "code/services/admin-portal/src/cache9.ts": {
+    "cve": "CVE-2026-54661",
+    "opaque_id": "vuln_0118",
     "language": "typescript",
     "primary_cwe": "CWE-1336"
   },
-  "code/services/edge-proxy/internal/manager36.go": {
-    "cve": "CVE-2026-37462",
-    "opaque_id": "vuln_0066",
-    "language": "go",
-    "primary_cwe": "CWE-190"
+  "code/services/packfile-lib/src/engine13.rs": {
+    "cve": "CVE-2026-34069",
+    "opaque_id": "vuln_0061",
+    "language": "rust",
+    "primary_cwe": "CWE-617"
   },
-  "code/services/content-hub/src/Client21.php": {
+  "code/services/web-console/src/queue10.ts": {
+    "cve": "CVE-2026-49993",
+    "opaque_id": "vuln_0099",
+    "language": "typescript",
+    "primary_cwe": "CWE-749"
+  },
+  "code/services/crypto-core/src/provider14.rs": {
+    "cve": "GHSA-vfvv-c25p-m7mm",
+    "opaque_id": "vuln_0163",
+    "language": "rust",
+    "primary_cwe": "CWE-415"
+  },
+  "code/services/payments-adapter/src/Handler3.cs": {
+    "cve": "CVE-2026-50194",
+    "opaque_id": "vuln_0100",
+    "language": "csharp",
+    "primary_cwe": "CWE-288"
+  },
+  "code/services/packfile-lib/src/resolver15.rs": {
+    "cve": "GHSA-95q8-x6r6-672m",
+    "opaque_id": "vuln_0150",
+    "language": "rust",
+    "primary_cwe": "CWE-862"
+  },
+  "code/services/object-gateway/internal/adapter19.go": {
+    "cve": "GHSA-p64j-f4x9-wq66",
+    "opaque_id": "vuln_0159",
+    "language": "go",
+    "primary_cwe": "CWE-1173"
+  },
+  "code/services/ml-router/src/codec11.py": {
+    "cve": "CVE-2026-49852",
+    "opaque_id": "vuln_0098",
+    "language": "python",
+    "primary_cwe": "CWE-1391"
+  },
+  "code/services/api-gateway/src/gateway7.js": {
+    "cve": "CVE-2026-71851",
+    "opaque_id": "vuln_0134",
+    "language": "javascript",
+    "primary_cwe": "CWE-331"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Filter8.java": {
+    "cve": "CVE-2025-54947",
+    "opaque_id": "vuln_0008",
+    "language": "java",
+    "primary_cwe": "CWE-321"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Gateway9.java": {
+    "cve": "CVE-2025-53960",
+    "opaque_id": "vuln_0007",
+    "language": "java",
+    "primary_cwe": "CWE-1240"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Mapper10.java": {
+    "cve": "CVE-2026-29129",
+    "opaque_id": "vuln_0043",
+    "language": "java",
+    "primary_cwe": "CWE-327"
+  },
+  "code/services/edge-proxy/internal/handler20.go": {
+    "cve": "CVE-2026-40264",
+    "opaque_id": "vuln_0071",
+    "language": "go",
+    "primary_cwe": "CWE-1259"
+  },
+  "code/services/admin-portal/src/codec11.ts": {
+    "cve": "CVE-2026-27492",
+    "opaque_id": "vuln_0035",
+    "language": "typescript",
+    "primary_cwe": "CWE-488"
+  },
+  "code/services/payments-adapter/src/Provider4.cs": {
+    "cve": "GHSA-h39g-6x3c-7fq9",
+    "opaque_id": "vuln_0155",
+    "language": "csharp",
+    "primary_cwe": "CWE-179"
+  },
+  "code/services/content-hub/src/Gateway9.php": {
+    "cve": "CVE-2026-32313",
+    "opaque_id": "vuln_0048",
+    "language": "php",
+    "primary_cwe": "CWE-354"
+  },
+  "code/services/scheduler/internal/service21.go": {
+    "cve": "CVE-2026-53475",
+    "opaque_id": "vuln_0109",
+    "language": "go",
+    "primary_cwe": "CWE-295"
+  },
+  "code/services/fleet-controller/internal/client22.go": {
+    "cve": "CVE-2026-27586",
+    "opaque_id": "vuln_0037",
+    "language": "go",
+    "primary_cwe": "CWE-755"
+  },
+  "code/services/analytics-engine/src/parser12.py": {
+    "cve": "CVE-2026-22779",
+    "opaque_id": "vuln_0021",
+    "language": "python",
+    "primary_cwe": "CWE-113"
+  },
+  "code/services/billing-service/src/Mapper10.php": {
+    "cve": "CVE-2026-48488",
+    "opaque_id": "vuln_0096",
+    "language": "php",
+    "primary_cwe": "CWE-328"
+  },
+  "code/services/object-gateway/internal/store23.go": {
+    "cve": "CVE-2026-33380",
+    "opaque_id": "vuln_0057",
+    "language": "go",
+    "primary_cwe": "CWE-552"
+  },
+  "code/services/content-hub/src/Processor11.php": {
+    "cve": "CVE-2026-27593",
+    "opaque_id": "vuln_0038",
+    "language": "php",
+    "primary_cwe": "CWE-640"
+  },
+  "code/services/web-console/src/parser12.ts": {
+    "cve": "CVE-2026-46580",
+    "opaque_id": "vuln_0094",
+    "language": "typescript",
+    "primary_cwe": "CWE-829"
+  },
+  "code/services/payments-adapter/src/Resolver5.cs": {
+    "cve": "CVE-2026-59865",
+    "opaque_id": "vuln_0126",
+    "language": "csharp",
+    "primary_cwe": "CWE-829"
+  },
+  "code/services/admin-portal/src/engine13.ts": {
+    "cve": "GHSA-pfv5-rpcw-x34x",
+    "opaque_id": "vuln_0160",
+    "language": "typescript",
+    "primary_cwe": "CWE-78"
+  },
+  "code/services/sandbox-runtime/src/handler0.c": {
+    "cve": "CVE-2026-54619",
+    "opaque_id": "vuln_0117",
+    "language": "c",
+    "primary_cwe": "CWE-416"
+  },
+  "code/services/web-console/src/provider14.ts": {
+    "cve": "CVE-2026-53668",
+    "opaque_id": "vuln_0112",
+    "language": "typescript",
+    "primary_cwe": "CWE-601"
+  },
+  "code/services/edge-proxy/internal/router24.go": {
+    "cve": "CVE-2026-73506",
+    "opaque_id": "vuln_0139",
+    "language": "go",
+    "primary_cwe": "CWE-150"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Processor11.java": {
+    "cve": "CVE-2026-53442",
+    "opaque_id": "vuln_0108",
+    "language": "java",
+    "primary_cwe": "CWE-311"
+  },
+  "code/services/scheduler/internal/worker25.go": {
+    "cve": "CVE-2026-41174",
+    "opaque_id": "vuln_0075",
+    "language": "go",
+    "primary_cwe": "CWE-653"
+  },
+  "code/services/fleet-controller/internal/middleware26.go": {
+    "cve": "CVE-2026-24005",
+    "opaque_id": "vuln_0023",
+    "language": "go",
+    "primary_cwe": "CWE-918"
+  },
+  "code/services/object-gateway/internal/gateway27.go": {
+    "cve": "CVE-2026-52809",
+    "opaque_id": "vuln_0106",
+    "language": "go",
+    "primary_cwe": "CWE-324"
+  },
+  "code/services/api-gateway/src/proxy8.js": {
+    "cve": "CVE-2026-13676",
+    "opaque_id": "vuln_0016",
+    "language": "javascript",
+    "primary_cwe": "CWE-436"
+  },
+  "code/services/ml-router/src/engine13.py": {
+    "cve": "CVE-2026-2652",
+    "opaque_id": "vuln_0034",
+    "language": "python",
+    "primary_cwe": "CWE-305"
+  },
+  "code/services/crypto-core/src/manager16.rs": {
+    "cve": "CVE-2026-25628",
+    "opaque_id": "vuln_0029",
+    "language": "rust",
+    "primary_cwe": "CWE-73"
+  },
+  "code/services/packfile-lib/src/pipeline17.rs": {
+    "cve": "CVE-2026-54541",
+    "opaque_id": "vuln_0116",
+    "language": "rust",
+    "primary_cwe": "CWE-248"
+  },
+  "code/services/analytics-engine/src/provider14.py": {
+    "cve": "CVE-2026-54233",
+    "opaque_id": "vuln_0114",
+    "language": "python",
+    "primary_cwe": "CWE-409"
+  },
+  "code/services/notification-service/app/queue10.rb": {
+    "cve": "CVE-2026-73492",
+    "opaque_id": "vuln_0138",
+    "language": "ruby",
+    "primary_cwe": "CWE-184"
+  },
+  "code/services/ml-router/src/resolver15.py": {
+    "cve": "CVE-2020-36962",
+    "opaque_id": "vuln_0001",
+    "language": "python",
+    "primary_cwe": "CWE-1236"
+  },
+  "code/services/payments-adapter/src/Manager6.cs": {
+    "cve": "CVE-2026-45288",
+    "opaque_id": "vuln_0091",
+    "language": "csharp",
+    "primary_cwe": "CWE-74"
+  },
+  "code/services/notification-service/app/codec11.rb": {
+    "cve": "CVE-2026-40869",
+    "opaque_id": "vuln_0073",
+    "language": "ruby",
+    "primary_cwe": "CWE-266"
+  },
+  "code/services/api-gateway/src/cache9.js": {
+    "cve": "CVE-2026-22037",
+    "opaque_id": "vuln_0019",
+    "language": "javascript",
+    "primary_cwe": "CWE-177"
+  },
+  "code/services/notification-service/app/parser12.rb": {
+    "cve": "CVE-2026-40295",
+    "opaque_id": "vuln_0072",
+    "language": "ruby",
+    "primary_cwe": "CWE-601"
+  },
+  "code/services/admin-portal/src/resolver15.ts": {
+    "cve": "CVE-2026-24909",
+    "opaque_id": "vuln_0025",
+    "language": "typescript",
+    "primary_cwe": "CWE-23"
+  },
+  "code/services/payments-adapter/src/Client7.cs": {
+    "cve": "CVE-2026-59859",
+    "opaque_id": "vuln_0125",
+    "language": "csharp",
+    "primary_cwe": "CWE-94"
+  },
+  "code/services/crypto-core/src/controller18.rs": {
+    "cve": "CVE-2026-35339",
+    "opaque_id": "vuln_0067",
+    "language": "rust",
+    "primary_cwe": "CWE-252"
+  },
+  "code/services/notification-service/app/engine13.rb": {
+    "cve": "CVE-2026-45363",
+    "opaque_id": "vuln_0092",
+    "language": "ruby",
+    "primary_cwe": "CWE-1391"
+  },
+  "code/services/billing-service/src/Validator12.php": {
+    "cve": "CVE-2026-25498",
+    "opaque_id": "vuln_0027",
+    "language": "php",
+    "primary_cwe": "CWE-470"
+  },
+  "code/services/content-hub/src/Dispatcher13.php": {
+    "cve": "CVE-2025-68436",
+    "opaque_id": "vuln_0014",
+    "language": "php",
+    "primary_cwe": "CWE-200"
+  },
+  "code/services/billing-service/src/Controller14.php": {
+    "cve": "CVE-2026-35544",
+    "opaque_id": "vuln_0068",
+    "language": "php",
+    "primary_cwe": "CWE-669"
+  },
+  "code/services/edge-proxy/internal/proxy28.go": {
+    "cve": "CVE-2025-66630",
+    "opaque_id": "vuln_0010",
+    "language": "go",
+    "primary_cwe": "CWE-338"
+  },
+  "code/services/web-console/src/manager16.ts": {
+    "cve": "GHSA-pqh8-p93p-2rx7",
+    "opaque_id": "vuln_0161",
+    "language": "typescript",
+    "primary_cwe": "CWE-943"
+  },
+  "code/services/analytics-engine/src/manager16.py": {
+    "cve": "CVE-2026-7141",
+    "opaque_id": "vuln_0132",
+    "language": "python",
+    "primary_cwe": "CWE-908"
+  },
+  "code/services/payments-adapter/src/Filter8.cs": {
+    "cve": "CVE-2026-50268",
+    "opaque_id": "vuln_0102",
+    "language": "csharp",
+    "primary_cwe": "CWE-256"
+  },
+  "code/services/content-hub/src/Service15.php": {
     "cve": "CVE-2026-33347",
-    "opaque_id": "vuln_0051",
+    "opaque_id": "vuln_0056",
     "language": "php",
     "primary_cwe": "CWE-185"
   },
-  "code/services/admin-portal/src/service21.ts": {
-    "cve": "CVE-2026-61836",
-    "opaque_id": "vuln_0114",
-    "language": "typescript",
-    "primary_cwe": "CWE-524"
-  },
-  "code/services/web-console/src/client22.ts": {
-    "cve": "GHSA-qmq6-f8pr-cx5x",
-    "opaque_id": "vuln_0147",
-    "language": "typescript",
-    "primary_cwe": "CWE-670"
-  },
-  "code/services/crypto-core/src/provider14.rs": {
-    "cve": "CVE-2026-35338",
-    "opaque_id": "vuln_0062",
+  "code/services/packfile-lib/src/adapter19.rs": {
+    "cve": "CVE-2025-67487",
+    "opaque_id": "vuln_0011",
     "language": "rust",
-    "primary_cwe": "CWE-22"
+    "primary_cwe": "CWE-61"
   },
-  "code/services/payments-adapter/src/Controller0.cs": {
+  "code/services/payments-adapter/src/Gateway9.cs": {
+    "cve": "CVE-2026-43937",
+    "opaque_id": "vuln_0088",
+    "language": "csharp",
+    "primary_cwe": "CWE-841"
+  },
+  "code/services/admin-portal/src/pipeline17.ts": {
+    "cve": "CVE-2026-41674",
+    "opaque_id": "vuln_0079",
+    "language": "typescript",
+    "primary_cwe": "CWE-91"
+  },
+  "code/services/scheduler/internal/cache29.go": {
+    "cve": "CVE-2026-30224",
+    "opaque_id": "vuln_0046",
+    "language": "go",
+    "primary_cwe": "CWE-384"
+  },
+  "code/services/fleet-controller/internal/queue30.go": {
+    "cve": "CVE-2026-9739",
+    "opaque_id": "vuln_0145",
+    "language": "go",
+    "primary_cwe": "CWE-942"
+  },
+  "code/services/object-gateway/internal/codec31.go": {
+    "cve": "GHSA-xvg2-cgv6-6h7v",
+    "opaque_id": "vuln_0164",
+    "language": "go",
+    "primary_cwe": "CWE-693"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Validator12.java": {
+    "cve": "CVE-2026-56740",
+    "opaque_id": "vuln_0121",
+    "language": "java",
+    "primary_cwe": "CWE-400"
+  },
+  "code/services/notification-service/app/provider14.rb": {
+    "cve": "CVE-2026-67431",
+    "opaque_id": "vuln_0131",
+    "language": "ruby",
+    "primary_cwe": "CWE-284"
+  },
+  "code/services/billing-service/src/Repository16.php": {
+    "cve": "CVE-2026-45064",
+    "opaque_id": "vuln_0090",
+    "language": "php",
+    "primary_cwe": "CWE-1007"
+  },
+  "code/services/notification-service/app/resolver15.rb": {
+    "cve": "CVE-2026-33169",
+    "opaque_id": "vuln_0051",
+    "language": "ruby",
+    "primary_cwe": "CWE-1333"
+  },
+  "code/services/payments-adapter/src/Mapper10.cs": {
     "cve": "CVE-2026-74795",
-    "opaque_id": "vuln_0130",
+    "opaque_id": "vuln_0141",
     "language": "csharp",
     "primary_cwe": "CWE-674"
+  },
+  "code/services/crypto-core/src/handler20.rs": {
+    "cve": "CVE-2026-24785",
+    "opaque_id": "vuln_0024",
+    "language": "rust",
+    "primary_cwe": "CWE-327"
+  },
+  "code/services/workflow-orchestrator/src/main/java/com/platform/workfloworchestrator/Dispatcher13.java": {
+    "cve": "CVE-2026-50559",
+    "opaque_id": "vuln_0103",
+    "language": "java",
+    "primary_cwe": "CWE-178"
+  },
+  "code/services/web-console/src/controller18.ts": {
+    "cve": "CVE-2026-46480",
+    "opaque_id": "vuln_0093",
+    "language": "typescript",
+    "primary_cwe": "CWE-915"
+  },
+  "code/services/admin-portal/src/adapter19.ts": {
+    "cve": "CVE-2026-73420",
+    "opaque_id": "vuln_0136",
+    "language": "typescript",
+    "primary_cwe": "CWE-180"
+  },
+  "code/services/packfile-lib/src/service21.rs": {
+    "cve": "CVE-2026-40034",
+    "opaque_id": "vuln_0069",
+    "language": "rust",
+    "primary_cwe": "CWE-183"
+  },
+  "code/services/edge-proxy/internal/parser32.go": {
+    "cve": "CVE-2026-35205",
+    "opaque_id": "vuln_0066",
+    "language": "go",
+    "primary_cwe": "CWE-636"
+  },
+  "code/services/content-hub/src/Handler17.php": {
+    "cve": "CVE-2026-33650",
+    "opaque_id": "vuln_0059",
+    "language": "php",
+    "primary_cwe": "CWE-863"
+  },
+  "code/services/ml-router/src/pipeline17.py": {
+    "cve": "CVE-2026-54060",
+    "opaque_id": "vuln_0113",
+    "language": "python",
+    "primary_cwe": "CWE-789"
+  },
+  "code/services/notification-service/app/manager16.rb": {
+    "cve": "CVE-2026-33173",
+    "opaque_id": "vuln_0052",
+    "language": "ruby",
+    "primary_cwe": "CWE-925"
   }
 }

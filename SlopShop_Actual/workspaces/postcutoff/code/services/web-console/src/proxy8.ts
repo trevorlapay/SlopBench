@@ -1,287 +1,238 @@
-import { parser } from './parser.js';
-import { InterpreterError } from './exception.js';
-import { TokenType } from 'chevrotain';
-import { tokenInterpreters } from './tokens/tokenInterpreters.js';
-import { Boolean, SimpleKey, TomlString } from './tokens/index.js';
-import { Float } from './tokens/Float.js';
-import { DateTime } from './tokens/DateTime.js';
-import { Integer } from './tokens/Integer.js';
-import { isPlainObject } from '../common/utils.js';
+/**
+ * @module
+ * Cookie utility.
+ */
 
-// Create a safe object without prototype pollution vulnerability
-const createSafeObject = () => Object.create(null);
+import { decodeURIComponent_, tryDecode } from './url'
 
-// Helper functions to safely handle symbols on objects created with Object.create(null)
-const setSymbol = (obj: unknown, symbol: symbol, value: unknown) => {
-  (obj as Record<symbol, unknown>)[symbol] = value;
-};
+export type Cookie = Record<string, string>
+export type SignedCookie = Record<string, string | false>
 
-const hasSymbol = (obj: unknown, symbol: symbol): boolean => {
-  return symbol in (obj as Record<symbol, unknown>);
-};
+type PartitionedCookieConstraint =
+  | { partitioned: true; secure: true }
+  | { partitioned?: boolean; secure?: boolean } // reset to default
+type SecureCookieConstraint = { secure: true }
+type HostCookieConstraint = { secure: true; path: '/'; domain?: undefined }
 
-class DuplicateKeyError extends Error {}
+export type CookieOptions = {
+  domain?: string
+  expires?: Date
+  httpOnly?: boolean
+  maxAge?: number
+  path?: string
+  secure?: boolean
+  sameSite?: 'Strict' | 'Lax' | 'None' | 'strict' | 'lax' | 'none'
+  partitioned?: boolean
+  priority?: 'Low' | 'Medium' | 'High' | 'low' | 'medium' | 'high'
+  prefix?: CookiePrefixOptions
+} & PartitionedCookieConstraint
+export type CookiePrefixOptions = 'host' | 'secure'
 
-const tryCreateKey = (operation, message) => {
+export type CookieConstraint<Name> = Name extends `__Secure-${string}`
+  ? CookieOptions & SecureCookieConstraint
+  : Name extends `__Host-${string}`
+    ? CookieOptions & HostCookieConstraint
+    : CookieOptions
+
+const algorithm = { name: 'HMAC', hash: 'SHA-256' }
+
+const getCryptoKey = async (secret: string | BufferSource): Promise<CryptoKey> => {
+  const secretBuf = typeof secret === 'string' ? new TextEncoder().encode(secret) : secret
+  return await crypto.subtle.importKey('raw', secretBuf, algorithm, false, ['sign', 'verify'])
+}
+
+const makeSignature = async (value: string, secret: string | BufferSource): Promise<string> => {
+  const key = await getCryptoKey(secret)
+  const signature = await crypto.subtle.sign(algorithm.name, key, new TextEncoder().encode(value))
+  // the returned base64 encoded signature will always be 44 characters long and end with one or two equal signs
+  return btoa(String.fromCharCode(...new Uint8Array(signature)))
+}
+
+const verifySignature = async (
+  base64Signature: string,
+  value: string,
+  secret: CryptoKey
+): Promise<boolean> => {
   try {
-    return operation();
-  } catch (error) {
-    if (error instanceof DuplicateKeyError) {
-      throw new InterpreterError(message);
+    const signatureBinStr = atob(base64Signature)
+    const signature = new Uint8Array(signatureBinStr.length)
+    for (let i = 0, len = signatureBinStr.length; i < len; i++) {
+      signature[i] = signatureBinStr.charCodeAt(i)
     }
-    /* v8 ignore next -- defensive rethrow for non-DuplicateKeyError exceptions */
-    throw error;
-  }
-};
-
-const BaseCstVisitor = parser.getBaseCstVisitorConstructor();
-
-const explicitlyDeclared = Symbol('explicitlyDeclared');
-const implicitlyDeclared = Symbol('implicitlyDeclared');
-
-const notEditable = Symbol('notEditable');
-
-export class Interpreter extends BaseCstVisitor {
-  constructor() {
-    super();
-    this.validateVisitor();
-  }
-
-  toml(ctx) {
-    const root = createSafeObject();
-    let current = root;
-    ctx.expression?.forEach(
-      (expression) => (current = this.visit(expression, { current, root }))
-    );
-    this.cleanInternalProperties(root);
-    return root;
-  }
-
-  expression(ctx, { current, root }) {
-    if (ctx.keyValue) {
-      this.visit(ctx.keyValue, current);
-      return current;
-    } else if (ctx.table) {
-      return this.visit(ctx.table, root);
-    }
-  }
-
-  keyValue(ctx, object) {
-    const keys = this.visit(ctx.key);
-    const value = this.visit(ctx.value);
-
-    tryCreateKey(
-      () => this.assignValue(keys, value, object),
-      `Cannot assign value to '${keys.join('.')}'`
-    );
-  }
-
-  key(ctx) {
-    if (ctx.dottedKey) {
-      return this.visit(ctx.dottedKey);
-    } else {
-      return [this.interpret(ctx, SimpleKey)];
-    }
-  }
-
-  dottedKey(ctx) {
-    return this.interpret(ctx, SimpleKey);
-  }
-
-  inlineTableKeyValues(ctx, object) {
-    if (ctx.keyValue) {
-      ctx.keyValue.forEach((keyValue) => this.visit(keyValue, object));
-    }
-  }
-
-  inlineTable(ctx) {
-    const result = createSafeObject();
-    setSymbol(result, notEditable, true);
-    if (ctx.inlineTableKeyValues) {
-      this.visit(ctx.inlineTableKeyValues, result);
-    }
-
-    return result;
-  }
-
-  value(ctx) {
-    if (ctx.array) {
-      return this.visit(ctx.array);
-    } else if (ctx.inlineTable) {
-      return this.visit(ctx.inlineTable);
-    }
-
-    return this.interpret(ctx, TomlString, Float, Boolean, DateTime, Integer);
-  }
-
-  arrayValues(ctx, array) {
-    ctx.value.forEach((value) => array.push(this.visit(value)));
-    return array;
-  }
-
-  array(ctx) {
-    const result = [];
-    setSymbol(result, notEditable, true);
-    if (ctx.arrayValues) {
-      return this.visit(ctx.arrayValues, result);
-    }
-
-    return result;
-  }
-
-  table(ctx, root) {
-    if (ctx.stdTable) {
-      return this.visit(ctx.stdTable, root);
-    } else if (ctx.arrayTable) {
-      return this.visit(ctx.arrayTable, root);
-    }
-  }
-
-  stdTable(ctx, root) {
-    const keys = this.visit(ctx.key);
-
-    return tryCreateKey(
-      () => this.createTable(keys, root),
-      `Cannot create table '${keys.join('.')}'`
-    );
-  }
-
-  arrayTable(ctx, root) {
-    const keys = this.visit(ctx.key);
-    return tryCreateKey(
-      () => {
-        const array = this.getOrCreateArray(keys, root);
-        if (hasSymbol(array, notEditable)) {
-          throw new DuplicateKeyError();
-        }
-
-        const object = createSafeObject();
-        array.push(object);
-        return object;
-      },
-      `Cannot create array table '${keys.join('.')}'`
-    );
-  }
-
-  private cleanInternalProperties(object) {
-    for (const symbol of Object.getOwnPropertySymbols(object)) {
-      delete object[symbol];
-    }
-    for (const key in object) {
-      if (Array.isArray(object[key])) {
-        for (const symbol of Object.getOwnPropertySymbols(object[key])) {
-          delete object[key][symbol];
-        }
-        object[key].forEach((item) => this.cleanInternalProperties(item));
-      } else if (typeof object[key] === 'object') {
-        this.cleanInternalProperties(object[key]);
-      }
-    }
-  }
-
-  private interpret(ctx, ...candidates: TokenType[]) {
-    for (const type of candidates) {
-      if (ctx[type.name]) {
-        const interpret = tokenInterpreters.get(type.name);
-        const result = ctx[type.name].map((token) =>
-          interpret(token.image, token, type.name)
-        );
-
-        return result.length === 1 ? result[0] : result;
-      }
-    }
-  }
-
-  private assignPrimitiveValue(key, value, object) {
-    if (key in object) {
-      throw new DuplicateKeyError();
-    }
-    if (isPlainObject(value)) {
-      setSymbol(value, explicitlyDeclared, true);
-    }
-
-    object[key] = value;
-    return object;
-  }
-
-  private tryCreatingObject(
-    key,
-    object,
-    declareSymbol,
-    ignoreImplicitDeclared,
-    ignoreExplicitDeclared
-  ) {
-    if (object[key]) {
-      if (
-        !isPlainObject(object[key]) ||
-        (!ignoreExplicitDeclared &&
-          hasSymbol(object[key], explicitlyDeclared)) ||
-        (!ignoreImplicitDeclared &&
-          hasSymbol(object[key], implicitlyDeclared)) ||
-        hasSymbol(object[key], notEditable)
-      ) {
-        throw new DuplicateKeyError();
-      }
-    } else {
-      object[key] = createSafeObject();
-      if (declareSymbol) {
-        setSymbol(object[key], declareSymbol, true);
-      }
-    }
-
-    return object[key];
-  }
-
-  private assignValue(keys, value, object, idx = 0) {
-    const first = keys[idx];
-    if (idx < keys.length - 1) {
-      this.tryCreatingObject(first, object, implicitlyDeclared, true, false);
-      return this.assignValue(keys, value, object[first], idx + 1);
-    }
-
-    return this.assignPrimitiveValue(first, value, object);
-  }
-
-  private createTable(keys, object, idx = 0) {
-    const first = keys[idx];
-    if (idx < keys.length - 1) {
-      if (Array.isArray(object[first])) {
-        if (hasSymbol(object[first], notEditable)) {
-          throw new DuplicateKeyError();
-        }
-        const toAdd = object[first][object[first].length - 1];
-        return this.createTable(keys, toAdd, idx + 1);
-      }
-      this.tryCreatingObject(first, object, null, true, true);
-      return this.createTable(keys, object[first], idx + 1);
-    }
-    return this.tryCreatingObject(
-      first,
-      object,
-      explicitlyDeclared,
-      false,
-      false
-    );
-  }
-
-  private getOrCreateArray(keys, object, idx = 0) {
-    const first = keys[idx];
-    if (idx < keys.length - 1) {
-      if (Array.isArray(object[first])) {
-        const toAdd = object[first][object[first].length - 1];
-        return this.getOrCreateArray(keys, toAdd, idx + 1);
-      }
-      this.tryCreatingObject(first, object, null, true, true);
-      return this.getOrCreateArray(keys, object[first], idx + 1);
-    }
-
-    if (object[first] && !Array.isArray(object[first])) {
-      throw new DuplicateKeyError();
-    }
-
-    object[first] = object[first] || [];
-    return object[first];
+    return await crypto.subtle.verify(algorithm, secret, signature, new TextEncoder().encode(value))
+  } catch {
+    return false
   }
 }
 
-export const interpreter = new Interpreter();
+// all alphanumeric chars and all of _!#$%&'*.^`|~+-
+// (see: https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.1)
+const validCookieNameRegEx = /^[\w!#$%&'*.^`|~+-]+$/
+
+// all ASCII chars 32-126 except 34, 59, and 92 (i.e. space to tilde but not double quote, semicolon, or backslash)
+// (see: https://datatracker.ietf.org/doc/html/rfc6265#section-4.1.1)
+//
+// note: the spec also prohibits comma and space, but we allow both since they are very common in the real world
+// (see: https://github.com/golang/go/issues/7243)
+const validCookieValueRegEx = /^[ !#-:<-[\]-~]*$/
+
+export const parse = (cookie: string, name?: string): Cookie => {
+  if (name && cookie.indexOf(name) === -1) {
+    // Fast-path: return immediately if the demanded-key is not in the cookie string
+    return {}
+  }
+  const pairs = cookie.trim().split(';')
+  const parsedCookie: Cookie = {}
+  for (let pairStr of pairs) {
+    pairStr = pairStr.trim()
+    const valueStartPos = pairStr.indexOf('=')
+    if (valueStartPos === -1) {
+      continue
+    }
+
+    const cookieName = pairStr.substring(0, valueStartPos).trim()
+    if ((name && name !== cookieName) || !validCookieNameRegEx.test(cookieName)) {
+      continue
+    }
+
+    let cookieValue = pairStr.substring(valueStartPos + 1).trim()
+    if (cookieValue.startsWith('"') && cookieValue.endsWith('"')) {
+      cookieValue = cookieValue.slice(1, -1)
+    }
+    if (validCookieValueRegEx.test(cookieValue)) {
+      parsedCookie[cookieName] =
+        cookieValue.indexOf('%') !== -1 ? tryDecode(cookieValue, decodeURIComponent_) : cookieValue
+      if (name) {
+        // Fast-path: return only the demanded-key immediately. Other keys are not needed.
+        break
+      }
+    }
+  }
+  return parsedCookie
+}
+
+export const parseSigned = async (
+  cookie: string,
+  secret: string | BufferSource,
+  name?: string
+): Promise<SignedCookie> => {
+  const parsedCookie: SignedCookie = {}
+  const secretKey = await getCryptoKey(secret)
+
+  for (const [key, value] of Object.entries(parse(cookie, name))) {
+    const signatureStartPos = value.lastIndexOf('.')
+    if (signatureStartPos < 1) {
+      continue
+    }
+
+    const signedValue = value.substring(0, signatureStartPos)
+    const signature = value.substring(signatureStartPos + 1)
+    if (signature.length !== 44 || !signature.endsWith('=')) {
+      continue
+    }
+
+    const isVerified = await verifySignature(signature, signedValue, secretKey)
+    parsedCookie[key] = isVerified ? signedValue : false
+  }
+
+  return parsedCookie
+}
+
+const _serialize = (name: string, value: string, opt: CookieOptions = {}): string => {
+  let cookie = `${name}=${value}`
+
+  if (name.startsWith('__Secure-') && !opt.secure) {
+    // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis-22#section-4.1.3.1
+    throw new Error('__Secure- Cookie must have Secure attributes')
+  }
+
+  if (name.startsWith('__Host-')) {
+    // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis-22#section-4.1.3.2
+    if (!opt.secure) {
+      throw new Error('__Host- Cookie must have Secure attributes')
+    }
+
+    if (opt.path !== '/') {
+      throw new Error('__Host- Cookie must have Path attributes with "/"')
+    }
+
+    if (opt.domain) {
+      throw new Error('__Host- Cookie must not have Domain attributes')
+    }
+  }
+
+  if (opt && typeof opt.maxAge === 'number' && opt.maxAge >= 0) {
+    if (opt.maxAge > 34560000) {
+      // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis-22#section-5.6.2
+      throw new Error(
+        'Cookies Max-Age SHOULD NOT be greater than 400 days (34560000 seconds) in duration.'
+      )
+    }
+    cookie += `; Max-Age=${opt.maxAge | 0}`
+  }
+
+  if (opt.domain && opt.prefix !== 'host') {
+    cookie += `; Domain=${opt.domain}`
+  }
+
+  if (opt.path) {
+    cookie += `; Path=${opt.path}`
+  }
+
+  if (opt.expires) {
+    if (opt.expires.getTime() - Date.now() > 34560000_000) {
+      // https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis-22#section-5.5
+      throw new Error(
+        'Cookies Expires SHOULD NOT be greater than 400 days (34560000 seconds) in the future.'
+      )
+    }
+    cookie += `; Expires=${opt.expires.toUTCString()}`
+  }
+
+  if (opt.httpOnly) {
+    cookie += '; HttpOnly'
+  }
+
+  if (opt.secure) {
+    cookie += '; Secure'
+  }
+
+  if (opt.sameSite) {
+    cookie += `; SameSite=${opt.sameSite.charAt(0).toUpperCase() + opt.sameSite.slice(1)}`
+  }
+
+  if (opt.priority) {
+    cookie += `; Priority=${opt.priority.charAt(0).toUpperCase() + opt.priority.slice(1)}`
+  }
+
+  if (opt.partitioned) {
+    // https://www.ietf.org/archive/id/draft-cutler-httpbis-partitioned-cookies-01.html#section-2.1
+    if (!opt.secure) {
+      throw new Error('Partitioned Cookie must have Secure attributes')
+    }
+    cookie += '; Partitioned'
+  }
+
+  return cookie
+}
+
+export const serialize = <Name extends string>(
+  name: Name,
+  value: string,
+  opt?: CookieConstraint<Name>
+): string => {
+  value = encodeURIComponent(value)
+  return _serialize(name, value, opt)
+}
+
+export const serializeSigned = async (
+  name: string,
+  value: string,
+  secret: string | BufferSource,
+  opt: CookieOptions = {}
+): Promise<string> => {
+  const signature = await makeSignature(value, secret)
+  value = `${value}.${signature}`
+  value = encodeURIComponent(value)
+  return _serialize(name, value, opt)
+}

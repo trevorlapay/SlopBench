@@ -1,133 +1,106 @@
-// Package authproxy implements a connector which relies on external
-// authentication (e.g. mod_auth in Apache2) and returns an identity with the
-// HTTP header X-Remote-User as verified email.
-package authproxy
+// Vikunja is a to-do list application to facilitate your life.
+// Copyright 2018-present Vikunja and contributors. All rights reserved.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+package v1
 
 import (
-	"fmt"
-	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 
-	"github.com/dexidp/dex/connector"
+	"code.vikunja.io/api/pkg/db"
+
+	"code.vikunja.io/api/pkg/models"
+	"code.vikunja.io/api/pkg/user"
+	"github.com/labstack/echo/v5"
 )
 
-// Config holds the configuration parameters for a connector which returns an
-// identity with the HTTP header X-Remote-User as verified email,
-// X-Remote-Group and configured staticGroups as user's group.
-// Headers retrieved to fetch user's email and group can be configured
-// with userHeader and groupHeader.
-type Config struct {
-	UserIDHeader         string   `json:"userIDHeader"`
-	UserHeader           string   `json:"userHeader"`
-	UserNameHeader       string   `json:"userNameHeader"`
-	EmailHeader          string   `json:"emailHeader"`
-	GroupHeader          string   `json:"groupHeader"`
-	GroupHeaderSeparator string   `json:"groupHeaderSeparator"`
-	Groups               []string `json:"staticGroups"`
-}
-
-// Open returns an authentication strategy which requires no user interaction.
-func (c *Config) Open(id string, logger *slog.Logger) (connector.Connector, error) {
-	userIDHeader := c.UserIDHeader
-	if userIDHeader == "" {
-		userIDHeader = "X-Remote-User-Id"
-	}
-	userHeader := c.UserHeader
-	if userHeader == "" {
-		userHeader = "X-Remote-User"
-	}
-	userNameHeader := c.UserNameHeader
-	if userNameHeader == "" {
-		userNameHeader = "X-Remote-User-Name"
-	}
-	emailHeader := c.EmailHeader
-	if emailHeader == "" {
-		emailHeader = "X-Remote-User-Email"
-	}
-	groupHeader := c.GroupHeader
-	if groupHeader == "" {
-		groupHeader = "X-Remote-Group"
-	}
-	groupHeaderSeparator := c.GroupHeaderSeparator
-	if groupHeaderSeparator == "" {
-		groupHeaderSeparator = ","
+// UserResetPassword is the handler to change a users password
+// @Summary Resets a password
+// @Description Resets a user email with a previously reset token.
+// @tags user
+// @Accept json
+// @Produce json
+// @Param credentials body user.PasswordReset true "The token with the new password."
+// @Success 200 {object} models.Message
+// @Failure 400 {object} web.HTTPError "Bad token provided."
+// @Failure 500 {object} models.Message "Internal error"
+// @Router /user/password/reset [post]
+func UserResetPassword(c *echo.Context) error {
+	// Check for Request Content
+	var pwReset user.PasswordReset
+	if err := c.Bind(&pwReset); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "No password provided.").Wrap(err)
 	}
 
-	return &callback{
-		userIDHeader:         userIDHeader,
-		userHeader:           userHeader,
-		userNameHeader:       userNameHeader,
-		emailHeader:          emailHeader,
-		groupHeader:          groupHeader,
-		groupHeaderSeparator: groupHeaderSeparator,
-		groups:               c.Groups,
-		logger:               logger.With(slog.Group("connector", "type", "authproxy", "id", id)),
-		pathSuffix:           "/" + id,
-	}, nil
-}
+	s := db.NewSession()
+	defer s.Close()
 
-// Callback is a connector which returns an identity with the HTTP header
-// X-Remote-User as verified email.
-type callback struct {
-	userIDHeader         string
-	userNameHeader       string
-	userHeader           string
-	emailHeader          string
-	groupHeader          string
-	groupHeaderSeparator string
-	groups               []string
-	logger               *slog.Logger
-	pathSuffix           string
-}
-
-// LoginURL returns the URL to redirect the user to login with.
-func (m *callback) LoginURL(s connector.Scopes, callbackURL, state string) (string, error) {
-	u, err := url.Parse(callbackURL)
+	userID, err := user.ResetPassword(s, &pwReset)
 	if err != nil {
-		return "", fmt.Errorf("failed to parse callbackURL %q: %v", callbackURL, err)
+		_ = s.Rollback()
+		return err
 	}
-	u.Path += m.pathSuffix
-	v := u.Query()
-	v.Set("state", state)
-	u.RawQuery = v.Encode()
-	return u.String(), nil
+
+	if err := models.DeleteAllUserSessions(s, userID); err != nil {
+		_ = s.Rollback()
+		return err
+	}
+
+	if err := s.Commit(); err != nil {
+		_ = s.Rollback()
+		return err
+	}
+
+	return c.JSON(http.StatusOK, models.Message{Message: "The password was updated successfully."})
 }
 
-// HandleCallback parses the request and returns the user's identity
-func (m *callback) HandleCallback(s connector.Scopes, r *http.Request) (connector.Identity, error) {
-	remoteUser := r.Header.Get(m.userHeader)
-	if remoteUser == "" {
-		return connector.Identity{}, fmt.Errorf("required HTTP header %s is not set", m.userHeader)
+// UserRequestResetPasswordToken is the handler to change a users password
+// @Summary Request password reset token
+// @Description Requests a token to reset a users password. The token is sent via email.
+// @tags user
+// @Accept json
+// @Produce json
+// @Param credentials body user.PasswordTokenRequest true "The username of the user to request a token for."
+// @Success 200 {object} models.Message
+// @Failure 404 {object} web.HTTPError "The user does not exist."
+// @Failure 500 {object} models.Message "Internal error"
+// @Router /user/password/token [post]
+func UserRequestResetPasswordToken(c *echo.Context) error {
+	// Check for Request Content
+	var pwTokenReset user.PasswordTokenRequest
+	if err := c.Bind(&pwTokenReset); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "No username provided.").Wrap(err)
 	}
-	remoteUserName := r.Header.Get(m.userNameHeader)
-	if remoteUserName == "" {
-		remoteUserName = remoteUser
+
+	if err := c.Validate(pwTokenReset); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error()).Wrap(err)
 	}
-	remoteUserID := r.Header.Get(m.userIDHeader)
-	if remoteUserID == "" {
-		remoteUserID = remoteUser
+
+	s := db.NewSession()
+	defer s.Close()
+
+	err := user.RequestUserPasswordResetTokenByEmail(s, &pwTokenReset)
+	if err != nil {
+		_ = s.Rollback()
+		return err
 	}
-	remoteUserEmail := r.Header.Get(m.emailHeader)
-	if remoteUserEmail == "" {
-		remoteUserEmail = remoteUser
+
+	if err := s.Commit(); err != nil {
+		_ = s.Rollback()
+		return err
 	}
-	groups := m.groups
-	headerGroup := r.Header.Get(m.groupHeader)
-	if headerGroup != "" {
-		splitheaderGroup := strings.Split(headerGroup, m.groupHeaderSeparator)
-		for i, v := range splitheaderGroup {
-			splitheaderGroup[i] = strings.TrimSpace(v)
-		}
-		groups = append(splitheaderGroup, groups...)
-	}
-	return connector.Identity{
-		UserID:            remoteUserID,
-		Username:          remoteUser,
-		PreferredUsername: remoteUserName,
-		Email:             remoteUserEmail,
-		EmailVerified:     true,
-		Groups:            groups,
-	}, nil
+
+	return c.JSON(http.StatusOK, models.Message{Message: "Token was sent."})
 }

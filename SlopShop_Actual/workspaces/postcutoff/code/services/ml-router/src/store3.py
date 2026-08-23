@@ -1,1526 +1,1151 @@
-# Copyright (c) 2006, Mathieu Fenniak
-# Copyright (c) 2007, Ashish Kulkarni <kulkarni.ashish@gmail.com>
+# Copyright 2008-2014 by Michiel de Hoon.  All rights reserved.
+# Revisions copyright 2008-2015 by Peter Cock. All rights reserved.
 #
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are
-# met:
-#
-# * Redistributions of source code must retain the above copyright notice,
-# this list of conditions and the following disclaimer.
-# * Redistributions in binary form must reproduce the above copyright notice,
-# this list of conditions and the following disclaimer in the documentation
-# and/or other materials provided with the distribution.
-# * The name of the author may not be used to endorse or promote products
-# derived from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.
+# This file is part of the Biopython distribution and governed by your
+# choice of the "Biopython License Agreement" or the "BSD 3-Clause License".
+# Please see the LICENSE file that should have been included as part of this
+# package.
+
+"""Parser for XML results returned by NCBI's Entrez Utilities.
+
+This parser is used by the read() function in Bio.Entrez, and is not
+intended be used directly.
+
+The question is how to represent an XML file as Python objects. Some
+XML files returned by NCBI look like lists, others look like dictionaries,
+and others look like a mix of lists and dictionaries.
+
+My approach is to classify each possible element in the XML as a plain
+string, an integer, a list, a dictionary, or a structure. The latter is a
+dictionary where the same key can occur multiple times; in Python, it is
+represented as a dictionary where that key occurs once, pointing to a list
+of values found in the XML file.
+
+The parser then goes through the XML and creates the appropriate Python
+object for each element. The different levels encountered in the XML are
+preserved on the Python side. So a subelement of a subelement of an element
+is a value in a dictionary that is stored in a list which is a value in
+some other dictionary (or a value in a list which itself belongs to a list
+which is a value in a dictionary, and so on). Attributes encountered in
+the XML are stored as a dictionary in a member .attributes of each element,
+and the tag name is saved in a member .tag.
+
+To decide which kind of Python object corresponds to each element in the
+XML, the parser analyzes the DTD referred at the top of (almost) every
+XML file returned by the Entrez Utilities. This is preferred over a hand-
+written solution, since the number of DTDs is rather large and their
+contents may change over time. About half the code in this parser deals
+with parsing the DTD, and the other half with the XML itself.
+"""
 
 import os
-import re
-import sys
-from collections.abc import Iterable
-from io import BytesIO, UnsupportedOperation
-from pathlib import Path
-from types import TracebackType
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    Optional,
-    Union,
-    cast,
-)
+import warnings
+import xml.etree.ElementTree as ET
+from collections import Counter
+from io import BytesIO
+from urllib.parse import urlparse
+from urllib.request import urlopen
+from xml.parsers import expat
+from xml.sax.saxutils import escape
 
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
+from Bio import StreamModeError
 
-from ._doc_common import PdfDocCommon, convert_to_int
-from ._encryption import Encryption, PasswordType
-from ._utils import (
-    WHITESPACES_AS_BYTES,
-    StrByteType,
-    StreamType,
-    logger_warning,
-    read_non_whitespace,
-    read_previous_line,
-    read_until_whitespace,
-    skip_over_comment,
-    skip_over_whitespace,
-)
-from .constants import TrailerKeys as TK
-from .errors import (
-    EmptyFileError,
-    FileNotDecryptedError,
-    LimitReachedError,
-    PdfReadError,
-    PdfStreamError,
-    WrongPasswordError,
-)
-from .generic import (
-    ArrayObject,
-    ContentStream,
-    DecodedStreamObject,
-    Destination,
-    DictionaryObject,
-    EncodedStreamObject,
-    IndirectObject,
-    NameObject,
-    NullObject,
-    NumberObject,
-    PdfObject,
-    StreamObject,
-    TextStringObject,
-    TreeObject,
-    is_null_or_none,
-    read_object,
-)
-from .xmp import XmpInformation
-
-if TYPE_CHECKING:
-    from ._page import PageObject
+# The following four classes are used to add a member .attributes to integers,
+# strings, lists, and dictionaries, respectively.
 
 
-class PdfReader(PdfDocCommon):
+class NoneElement:
+    """NCBI Entrez XML element mapped to None."""
+
+    def __init__(self, tag, attributes, key):
+        """Create a NoneElement."""
+        self.tag = tag
+        self.key = key
+        self.attributes = attributes
+
+    def __repr__(self):
+        """Return a string representation of the object."""
+        try:
+            attributes = self.attributes
+        except AttributeError:
+            return "NoneElement"
+        return "NoneElement(attributes=%r)" % attributes
+
+    def __eq__(self, other):
+        if isinstance(other, NoneElement):
+            return True
+        return False
+
+
+class IntegerElement(int):
+    """NCBI Entrez XML element mapped to an integer."""
+
+    def __new__(cls, value, *args, **kwargs):
+        """Create an IntegerElement."""
+        return int.__new__(cls, value)
+
+    def __init__(self, value, tag, attributes, key):
+        """Initialize an IntegerElement."""
+        self.tag = tag
+        self.attributes = attributes
+        self.key = key
+
+    def __repr__(self):
+        """Return a string representation of the object."""
+        text = int.__repr__(self)
+        try:
+            attributes = self.attributes
+        except AttributeError:
+            return text
+        return f"IntegerElement({text}, attributes={attributes!r})"
+
+
+class StringElement(str):
+    """NCBI Entrez XML element mapped to a string."""
+
+    def __new__(cls, value, *args, **kwargs):
+        """Create a StringElement."""
+        return str.__new__(cls, value)
+
+    def __init__(self, value, tag, attributes, key):
+        """Initialize a StringElement."""
+        self.tag = tag
+        self.attributes = attributes
+        self.key = key
+
+    def __repr__(self):
+        """Return a string representation of the object."""
+        text = str.__repr__(self)
+        attributes = self.attributes
+        if not attributes:
+            return text
+        return f"StringElement({text}, attributes={attributes!r})"
+
+
+class ListElement(list):
+    """NCBI Entrez XML element mapped to a list."""
+
+    def __init__(self, tag, attributes, allowed_tags, key=None):
+        """Create a ListElement."""
+        self.tag = tag
+        if key is None:
+            self.key = tag
+        else:
+            self.key = key
+        self.attributes = attributes
+        self.allowed_tags = allowed_tags
+
+    def __repr__(self):
+        """Return a string representation of the object."""
+        text = list.__repr__(self)
+        attributes = self.attributes
+        if not attributes:
+            return text
+        return f"ListElement({text}, attributes={attributes!r})"
+
+    def store(self, value):
+        """Append an element to the list, checking tags."""
+        key = value.key
+        if self.allowed_tags is not None and key not in self.allowed_tags:
+            raise ValueError("Unexpected item '%s' in list" % key)
+        del value.key
+        self.append(value)
+
+
+class DictionaryElement(dict):
+    """NCBI Entrez XML element mapped to a dictionaray."""
+
+    def __init__(self, tag, attrs, allowed_tags, repeated_tags=None, key=None):
+        """Create a DictionaryElement."""
+        self.tag = tag
+        if key is None:
+            self.key = tag
+        else:
+            self.key = key
+        self.attributes = attrs
+        self.allowed_tags = allowed_tags
+        self.repeated_tags = repeated_tags
+        if repeated_tags:
+            for key in repeated_tags:
+                self[key] = []
+
+    def __repr__(self):
+        """Return a string representation of the object."""
+        text = dict.__repr__(self)
+        attributes = self.attributes
+        if not attributes:
+            return text
+        return f"DictElement({text}, attributes={attributes!r})"
+
+    def store(self, value):
+        """Add an entry to the dictionary, checking tags."""
+        key = value.key
+        tag = value.tag
+        if self.allowed_tags is not None and tag not in self.allowed_tags:
+            raise ValueError("Unexpected item '%s' in dictionary" % key)
+        del value.key
+        if self.repeated_tags and key in self.repeated_tags:
+            self[key].append(value)
+        else:
+            self[key] = value
+
+
+class OrderedListElement(list):
+    """NCBI Entrez XML element mapped to a list of lists.
+
+    OrderedListElement is used to describe a list of repeating elements such as
+    A, B, C, A, B, C, A, B, C ... where each set of A, B, C forms a group. This
+    is then stored as [[A, B, C], [A, B, C], [A, B, C], ...]
     """
-    Initialize a PdfReader object.
 
-    This operation can take some time, as the PDF stream's cross-reference
-    tables are read into memory.
+    def __init__(self, tag, attributes, allowed_tags, first_tag, key=None):
+        """Create an OrderedListElement."""
+        self.tag = tag
+        if key is None:
+            self.key = tag
+        else:
+            self.key = key
+        self.attributes = attributes
+        self.allowed_tags = allowed_tags
+        self.first_tag = first_tag
 
-    Args:
-        stream: A File object or an object that supports the standard read
-            and seek methods similar to a File object. Could also be a
-            string representing a path to a PDF file.
-        strict: Determines whether user should be warned of all
-            problems and also causes some correctable problems to be fatal.
-            Defaults to ``False``.
-        password: Decrypt PDF file at initialization. If the
-            password is None, the file will not be decrypted.
-            Defaults to ``None``.
-        root_object_recovery_limit: The maximum number of objects to query
-            for recovering the Root object in non-strict mode. To disable
-            this security measure, pass ``None``.
+    def __repr__(self):
+        """Return a string representation of the object."""
+        text = list.__repr__(self)
+        attributes = self.attributes
+        if not attributes:
+            return text
+        return f"OrderedListElement({text}, attributes={attributes!r})"
 
-    """
+    def store(self, value):
+        """Append an element to the list, checking tags."""
+        key = value.key
+        if self.allowed_tags is not None and key not in self.allowed_tags:
+            raise ValueError("Unexpected item '%s' in list" % key)
+        if key == self.first_tag:
+            self.append([])
+        self[-1].append(value)
 
-    def __init__(
-        self,
-        stream: Union[StrByteType, Path],
-        strict: bool = False,
-        password: Union[None, str, bytes] = None,
-        *,
-        root_object_recovery_limit: Optional[int] = 10_000,
-    ) -> None:
-        self.strict = strict
-        self.flattened_pages: Optional[list[PageObject]] = None
 
-        #: Storage of parsed PDF objects.
-        self.resolved_objects: dict[tuple[Any, Any], Optional[PdfObject]] = {}
+class ErrorElement(str):
+    """NCBI Entrez XML element containing an error message."""
 
-        self._startxref: int = 0
-        self.xref_index = 0
-        self.xref: dict[int, dict[Any, Any]] = {}
-        self.xref_free_entry: dict[int, dict[Any, Any]] = {}
-        self.xref_objStm: dict[int, tuple[Any, Any]] = {}
-        self.trailer = DictionaryObject()
+    def __new__(cls, value, *args, **kwargs):
+        """Create an ErrorElement."""
+        return str.__new__(cls, value)
 
-        # Security parameters.
-        self._root_object_recovery_limit = (
-            root_object_recovery_limit if isinstance(root_object_recovery_limit, int) else sys.maxsize
+    def __init__(self, value, tag):
+        """Initialize an ErrorElement."""
+        self.tag = tag
+        self.key = tag
+
+    def __repr__(self):
+        """Return the error message as a string."""
+        text = str.__repr__(self)
+        return f"ErrorElement({text})"
+
+
+class NotXMLError(ValueError):
+    """Failed to parse file as XML."""
+
+    def __init__(self, message):
+        """Initialize the class."""
+        self.msg = message
+
+    def __str__(self):
+        """Return a string summary of the exception."""
+        return (
+            "Failed to parse the XML data (%s). Please make sure that the input data "
+            "are in XML format." % self.msg
         )
 
-        # Map page indirect_reference number to page number
-        self._page_id2num: Optional[dict[Any, Any]] = None
 
-        self._validated_root: Optional[DictionaryObject] = None
+class CorruptedXMLError(ValueError):
+    """Corrupted XML."""
 
-        self._initialize_stream(stream)
-        self._known_objects: set[tuple[int, int]] = set()
+    def __init__(self, message):
+        """Initialize the class."""
+        self.msg = message
 
-        self._override_encryption = False
-        self._encryption: Optional[Encryption] = None
-        if self.is_encrypted:
-            self._handle_encryption(password)
-        elif password is not None:
-            raise PdfReadError("Not an encrypted file")
+    def __str__(self):
+        """Return a string summary of the exception."""
+        return (
+            "Failed to parse the XML data (%s). Please make sure that the input data "
+            "are not corrupted." % self.msg
+        )
 
-        self._named_destinations_cache: Optional[dict[str, Destination]] = None
 
-    def _initialize_stream(self, stream: Union[StrByteType, Path]) -> None:
-        if hasattr(stream, "mode") and "b" not in stream.mode:
-            logger_warning(
-                "PdfReader stream/file object is not in binary mode. "
-                "It may not be read correctly.",
-                source=__name__,
-            )
-        self._stream_opened = False
-        if isinstance(stream, (str, Path)):
-            with open(stream, "rb") as fh:
-                stream = BytesIO(fh.read())
-            self._stream_opened = True
-        self.read(stream)
-        self.stream = stream
+class ValidationError(ValueError):
+    """XML tag found which was not defined in the DTD.
 
-    def _handle_encryption(self, password: Optional[Union[str, bytes]]) -> None:
-        self._override_encryption = True
-        # Some documents may not have a /ID, use two empty
-        # byte strings instead. Solves
-        # https://github.com/py-pdf/pypdf/issues/608
-        id_entry = self.trailer.get(TK.ID)
-        id1_entry = id_entry[0].get_object().original_bytes if id_entry else b""
-        encrypt_entry = cast(DictionaryObject, self.trailer[TK.ENCRYPT].get_object())
-        self._encryption = Encryption.read(encrypt_entry, id1_entry)
+    Validating parsers raise this error if the parser finds a tag in the XML
+    that is not defined in the DTD. Non-validating parsers do not raise this
+    error. The Bio.Entrez.read and Bio.Entrez.parse functions use validating
+    parsers by default (see those functions for more information).
+    """
 
-        # try empty password if no password provided
-        pwd = password if password is not None else b""
-        if (
-            self._encryption.verify(pwd, strict=self.strict) == PasswordType.NOT_DECRYPTED
-            and password is not None
-        ):
-            # raise if password provided
-            raise WrongPasswordError("Wrong password")
-        self._override_encryption = False
+    def __init__(self, name):
+        """Initialize the class."""
+        self.name = name
 
-    def __enter__(self) -> Self:
-        return self
+    def __str__(self):
+        """Return a string summary of the exception."""
+        return (
+            "Failed to find tag '%s' in the DTD. To skip all tags that "
+            "are not represented in the DTD, please call Bio.Entrez.read "
+            "or Bio.Entrez.parse with validate=False." % self.name
+        )
 
-    def __exit__(
-        self,
-        exc_type: Optional[type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
-    ) -> None:
-        self.close()
 
-    def close(self) -> None:
-        """Close the stream if opened in __init__ and clear memory."""
-        if self._stream_opened:
-            self.stream.close()
-        self.flattened_pages = []
-        self.resolved_objects = {}
-        self.trailer = DictionaryObject()
-        self.xref = {}
-        self.xref_free_entry = {}
-        self.xref_objStm = {}
+class DataHandlerMeta(type):
+    """A metaclass is needed until Python supports @classproperty."""
 
-    @property
-    def root_object(self) -> DictionaryObject:
-        """Provide access to "/Root". Standardized with PdfWriter."""
-        if self._validated_root:
-            return self._validated_root
-        root = self.trailer.get(TK.ROOT)
-        if is_null_or_none(root):
-            logger_warning('Cannot find "/Root" key in trailer', source=__name__)
-        elif (
-            cast(DictionaryObject, cast(PdfObject, root).get_object()).get("/Type")
-            == "/Catalog"
-        ):
-            self._validated_root = cast(
-                DictionaryObject, cast(PdfObject, root).get_object()
-            )
-        else:
-            logger_warning("Invalid Root object in trailer", source=__name__)
-        if self._validated_root is None:
-            logger_warning('Searching object with "/Catalog" key', source=__name__)
-            number_of_objects = cast(int, self.trailer.get("/Size", 0))
-            for i in range(number_of_objects):
-                if i >= self._root_object_recovery_limit:
-                    raise LimitReachedError("Maximum Root object recovery limit reached.")
-                try:
-                    obj = self.get_object(i + 1)
-                except Exception:  # to be sure to capture all errors
-                    obj = None
-                if isinstance(obj, DictionaryObject) and obj.get("/Type") == "/Catalog":
-                    self._validated_root = obj
-                    logger_warning(
-                        "Root found at %(obj_reference)r",
-                        source=__name__,
-                        obj_reference=obj.indirect_reference,
-                    )
-                    break
-        if self._validated_root is None:
-            if not is_null_or_none(root) and "/Pages" in cast(DictionaryObject, cast(PdfObject, root).get_object()):
-                logger_warning(
-                    "Possible root found at %(root_ref)r, but missing /Catalog key",
-                    source=__name__,
-                    root_ref=cast(PdfObject, root).indirect_reference,
-                )
-                self._validated_root = cast(
-                    DictionaryObject, cast(PdfObject, root).get_object()
-                )
-            else:
-                raise PdfReadError("Cannot find Root object in pdf")
-        return self._validated_root
+    def __init__(cls, *args, **kwargs):
+        """Initialize the class."""
+        from Bio import Entrez
 
-    @property
-    def _info(self) -> Optional[DictionaryObject]:
-        """
-        Provide access to "/Info". Standardized with PdfWriter.
-
-        Returns:
-            /Info Dictionary; None if the entry does not exist
-
-        """
-        info = self.trailer.get(TK.INFO, None)
-        if is_null_or_none(info):
-            return None
-        assert info is not None, "mypy"
-        info = info.get_object()
-        if not isinstance(info, DictionaryObject):
-            raise PdfReadError(
-                "Trailer not found or does not point to a document information dictionary"
-            )
-        return info
-
-    @property
-    def _ID(self) -> Optional[ArrayObject]:
-        """
-        Provide access to "/ID". Standardized with PdfWriter.
-
-        Returns:
-            /ID array; None if the entry does not exist
-
-        """
-        id = self.trailer.get(TK.ID, None)
-        if is_null_or_none(id):
-            return None
-        assert id is not None, "mypy"
-        return cast(ArrayObject, id.get_object())
-
-    @property
-    def pdf_header(self) -> str:
-        """
-        The first 8 bytes of the file.
-
-        This is typically something like ``'%PDF-1.6'`` and can be used to
-        detect if the file is actually a PDF file and which version it is.
-        """
-        # TODO: Make this return a bytes object for consistency
-        #       but that needs a deprecation
-        loc = self.stream.tell()
-        self.stream.seek(0, 0)
-        pdf_file_version = self.stream.read(8).decode("utf-8", "backslashreplace")
-        self.stream.seek(loc, 0)  # return to where it was
-        return pdf_file_version
-
-    @property
-    def xmp_metadata(self) -> Optional[XmpInformation]:
-        """XMP (Extensible Metadata Platform) data."""
         try:
-            self._override_encryption = True
-            return cast(XmpInformation, self.root_object.xmp_metadata)
+            cls.directory = Entrez.local_cache  # use default directory for local cache
+        except PermissionError:
+            cls._directory = Entrez.local_cache  # no local cache
+        del Entrez
+
+    @property
+    def directory(cls):
+        """Directory for caching XSD and DTD files."""
+        return cls._directory
+
+    @directory.setter
+    def directory(cls, value):
+        """Set a custom directory for the local DTD/XSD directories."""
+        if value is None:
+            import platform
+
+            if platform.system() == "Windows":
+                value = os.path.join(os.getenv("APPDATA"), "biopython")
+            else:  # Unix/Linux/Mac
+                home = os.path.expanduser("~")
+                value = os.path.join(home, ".config", "biopython")
+        # Create DTD local directory
+        cls.local_dtd_dir = os.path.join(value, "Bio", "Entrez", "DTDs")
+        os.makedirs(cls.local_dtd_dir, exist_ok=True)
+        # Create XSD local directory
+        cls.local_xsd_dir = os.path.join(value, "Bio", "Entrez", "XSDs")
+        os.makedirs(cls.local_xsd_dir, exist_ok=True)
+        # Save the directory name after creating the DTD and XSD local
+        # directories to ensure there was no PermissionError.
+        cls._directory = value
+
+
+class DataHandler(metaclass=DataHandlerMeta):
+    """Data handler for parsing NCBI XML from Entrez."""
+
+    from Bio import Entrez
+
+    global_dtd_dir = os.path.join(Entrez.__path__[0], "DTDs")
+    global_xsd_dir = os.path.join(Entrez.__path__[0], "XSDs")
+    local_dtd_dir = None
+    local_xsd_dir = None
+
+    del Entrez
+
+    def __init__(self, validate, escape, ignore_errors):
+        """Create a DataHandler object."""
+        self.dtd_urls = []
+        self.element = None
+        self.level = 0
+        self.secure = False
+        self.data = []
+        self.attributes = None
+        self.allowed_tags = None
+        self.constructors = {}
+        self.strings = {}
+        self.items = set()
+        self.errors = set()
+        self.validating = validate
+        self.ignore_errors = ignore_errors
+        self.parser = expat.ParserCreate(namespace_separator=" ")
+        self.parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_ALWAYS)
+        self.parser.XmlDeclHandler = self.xmlDeclHandler
+        self.schema_namespace = None
+        self.namespace_level = Counter()
+        self.namespace_prefix = {}
+        if escape:
+            self.characterDataHandler = self.characterDataHandlerEscape
+        else:
+            self.characterDataHandler = self.characterDataHandlerRaw
+
+    def read(self, source):
+        """Set up the parser and let it read the XML results."""
+        # Expat's parser.ParseFile function only accepts binary data;
+        # see also the comment below for Entrez.parse.
+        try:
+            stream = open(source, "rb")
+        except TypeError:  # not a path, assume we received a stream
+            if source.read(0) != b"":
+                raise StreamModeError(
+                    "the XML file must be opened in binary mode."
+                ) from None
+            stream = source
+        if stream.read(0) != b"":
+            raise TypeError("file should be opened in binary mode")
+        try:
+            self.parser.ParseFile(stream)
+        except expat.ExpatError as e:
+            if self.parser.StartElementHandler:
+                # We saw the initial <!xml declaration, so we can be sure that
+                # we are parsing XML data. Most likely, the XML file is
+                # corrupted.
+                raise CorruptedXMLError(e) from None
+            else:
+                # We have not seen the initial <!xml declaration, so probably
+                # the input data is not in XML format.
+                raise NotXMLError(e) from None
         finally:
-            self._override_encryption = False
-
-    def _get_page_number_by_indirect(
-        self, indirect_reference: Union[None, int, NullObject, IndirectObject]
-    ) -> Optional[int]:
-        """
-        Retrieve the page number from an indirect reference.
-
-        Args:
-            indirect_reference: The indirect reference to locate.
-
-        Returns:
-            Page number or None.
-
-        """
-        if self._page_id2num is None:
-            self._page_id2num = {
-                x.indirect_reference.idnum: i for i, x in enumerate(self.pages)  # type: ignore
-            }
-
-        if is_null_or_none(indirect_reference):
-            return None
-        assert isinstance(indirect_reference, (int, IndirectObject)), "mypy"
-        if isinstance(indirect_reference, int):
-            idnum = indirect_reference
+            if stream is not source:
+                stream.close()
+        try:
+            record = self.record
+        except AttributeError:
+            if self.parser.StartElementHandler:
+                # We saw the initial <!xml declaration, and expat didn't notice
+                # any errors, so self.record should be defined. If not, this is
+                # a bug.
+                raise RuntimeError(
+                    "Failed to parse the XML file correctly, possibly due to a bug "
+                    "in Bio.Entrez. Please contact the Biopython developers via "
+                    "the mailing list or GitHub for assistance."
+                ) from None
+            else:
+                # We did not see the initial <!xml declaration, so probably
+                # the input data is not in XML format.
+                raise NotXMLError("XML declaration not found") from None
         else:
-            idnum = indirect_reference.idnum
-        assert self._page_id2num is not None, "hint for mypy"
-        return self._page_id2num.get(idnum, None)
+            del record.key
+            return record
 
-    def _get_object_from_stream(
-        self, indirect_reference: IndirectObject
-    ) -> Union[int, PdfObject, str]:
-        # indirect reference to object in object stream
-        # read the entire object stream into memory
-        stmnum, _idx = self.xref_objStm[indirect_reference.idnum]
-        obj_stm: EncodedStreamObject = IndirectObject(stmnum, 0, self).get_object()  # type: ignore
-        # This is an xref to a stream, so its type better be a stream
-        assert cast(str, obj_stm["/Type"]) == "/ObjStm"
-        # Parse ALL objects in this stream in one pass and cache them.
-        # This avoids O(N²) behavior when many objects from the same stream
-        # are resolved individually (each call would re-parse the header).
-        stream_data = BytesIO(obj_stm.get_data())
-        n = int(obj_stm["/N"])  # type: ignore[call-overload]
-        first_offset = int(obj_stm["/First"])  # type: ignore[call-overload]
+    def parse(self, source):
+        """Set up the parser and let it read the XML results."""
+        # The source must be a filename, or a file-like object opened in binary
+        # mode. Data read from the file or file-like object as bytes. Expat will
+        # pick up the encoding from the XML declaration (or assume UTF-8 if it
+        # is missing), and use this encoding to convert the binary data to a
+        # string before giving it to characterDataHandler.
+        # While parser.ParseFile only accepts binary data, parser.Parse accepts
+        # both binary data and strings. However, a file in text mode may have
+        # been opened with an encoding different from the encoding specified in
+        # the XML declaration at the top of the file. If so, the data in the
+        # file will have been decoded with an incorrect encoding. To avoid
+        # this, and to be consistent with parser.ParseFile (which is used in
+        # the Entrez.read function above), we require the source data to be in
+        # binary mode here as well.
+        try:
+            stream = open(source, "rb")
+        except TypeError:  # not a path, assume we received a stream
+            if source.read(0) != b"":
+                raise StreamModeError(
+                    "the XML file must be opened in binary mode."
+                ) from None
+            stream = source
+        if stream.read(0) != b"":
+            raise TypeError("file should be opened in binary mode")
+        BLOCK = 1024
+        try:
+            while True:
+                # Read in another block of data from the file.
+                data = stream.read(BLOCK)
+                self.parser.Parse(data, False)
+                try:
+                    records = self.record
+                except AttributeError:
+                    if self.parser.StartElementHandler:
+                        # We saw the initial <!xml declaration, and expat
+                        # didn't notice any errors, so self.record should be
+                        # defined. If not, this is a bug.
 
-        # ObjStm header format: "objnum offset objnum offset ..."
-        # smallest possible entry: "0 0" = 3 bytes (1 digit + 1 space + 1 digit)
-        # using // 4 would reject a valid 3-byte single entry (3 // 4 = 0)
-        max_n = stream_data.getbuffer().nbytes // 3
-        stream_data.seek(0)
-        if n > max_n:
-            if self.strict:
-                raise LimitReachedError(f"Value /N {n} for object {stmnum} exceeds maximum allowed value {max_n}.")
-            logger_warning(
-                "Value /N %(n)d for object %(stmnum)d exceeds maximum allowed value %(max_n)d. Limiting to %(max_n)d.",
-                source=__name__,
-                n=n,
-                stmnum=stmnum,
-                max_n=max_n,
-            )
-            n = max_n
+                        raise RuntimeError(
+                            "Failed to parse the XML file correctly, possibly due to a "
+                            "bug in Bio.Entrez. Please contact the Biopython "
+                            "developers via the mailing list or GitHub for assistance."
+                        ) from None
+                    else:
+                        # We did not see the initial <!xml declaration, so
+                        # probably the input data is not in XML format.
+                        raise NotXMLError("XML declaration not found") from None
 
-        # Phase 1: Read the index (objnum, offset) pairs from the header.
-        obj_index: list[tuple[int, int]] = []
-        for _i in range(n):
-            read_non_whitespace(stream_data)
-            stream_data.seek(-1, 1)
-            objnum = NumberObject.read_from_stream(stream_data)
-            read_non_whitespace(stream_data)
-            stream_data.seek(-1, 1)
-            offset = NumberObject.read_from_stream(stream_data)
-            read_non_whitespace(stream_data)
-            stream_data.seek(-1, 1)
-            obj_index.append((int(objnum), int(offset)))
+                if not isinstance(records, list):
+                    raise ValueError(
+                        "The XML file does not represent a list. Please use "
+                        "Entrez.read instead of Entrez.parse."
+                    )
 
-        # Phase 2: Parse each object and cache it.
-        target_obj: Union[int, PdfObject, str] = NullObject()
-        found = False
-        for i, (obj_num, obj_offset) in enumerate(obj_index):
-            # Skip objects already in the cache.
-            cached = self.cache_get_indirect_object(0, obj_num)
-            if cached is not None:
-                if obj_num == indirect_reference.idnum:
-                    target_obj = cached
-                    found = True
-                continue
+                if not data:
+                    break
 
-            stream_data.seek(first_offset + obj_offset, 0)
+                while len(records) >= 2:
+                    # Then the first record is finished, while the second record
+                    # is still a work in progress.
+                    record = records.pop(0)
+                    yield record
 
-            # To cope with case where the 'pointer' is on a white space
-            read_non_whitespace(stream_data)
-            stream_data.seek(-1, 1)
+        except expat.ExpatError as e:
+            if self.parser.StartElementHandler:
+                # We saw the initial <!xml declaration, so we can be sure
+                # that we are parsing XML data. Most likely, the XML file
+                # is corrupted.
+                raise CorruptedXMLError(e) from None
+            else:
+                # We have not seen the initial <!xml declaration, so
+                # probably the input data is not in XML format.
+                raise NotXMLError(e) from None
+        finally:
+            if stream is not source:
+                stream.close()
 
-            try:
-                obj = read_object(stream_data, self)
-            except PdfStreamError as exc:
-                # Stream object cannot be read. Normally, a critical error, but
-                # Adobe Reader doesn't complain, so continue (in strict mode?)
-                logger_warning(
-                    "Invalid stream (index %(index)d) within object %(obj_num)d 0: %(exc)s",
-                    source=__name__,
-                    index=i,
-                    obj_num=obj_num,
-                    exc=exc,
-                )
-                if self.strict:  # pragma: no cover
-                    raise PdfReadError(
-                        f"Cannot read object stream: {exc}"
-                    )  # pragma: no cover
-                obj = NullObject()  # pragma: no cover
+        # We have reached the end of the XML file
+        self.parser = None
+        if self.element is not None:
+            # No more XML data, but there is still some unfinished business
+            raise CorruptedXMLError("Premature end of data")
 
-            # Only cache if this stream is the authoritative source for the object.
-            # Incremental updates may override objects originally in the stream;
-            # caching those stale versions would shadow the newer xref entry.
-            authoritative_stm, _idx = self.xref_objStm.get(obj_num, (None, None))
-            if authoritative_stm == stmnum:
-                self.cache_indirect_object(0, obj_num, obj)  # type: ignore[arg-type]
+        # Send out the remaining records
+        yield from records
 
-            if obj_num == indirect_reference.idnum:
-                target_obj = obj
-                found = True
+    def xmlDeclHandler(self, version, encoding, standalone):
+        """Set XML handlers when an XML declaration is found."""
+        self.parser.CharacterDataHandler = self.characterDataHandler
+        self.parser.ExternalEntityRefHandler = self.externalEntityRefHandler
+        self.parser.StartNamespaceDeclHandler = self.startNamespaceDeclHandler
+        self.parser.EndNamespaceDeclHandler = self.endNamespaceDeclHandler
+        self.parser.StartElementHandler = self.handleMissingDocumentDefinition
 
-        if not found and self.strict:  # pragma: no cover
-            raise PdfReadError(
-                "This is a fatal error in strict mode."
-            )  # pragma: no cover
-        return target_obj
-
-    def get_object(
-        self, indirect_reference: Union[int, IndirectObject]
-    ) -> Optional[PdfObject]:
-        if isinstance(indirect_reference, int):
-            indirect_reference = IndirectObject(indirect_reference, 0, self)
-        retval = self.cache_get_indirect_object(
-            indirect_reference.generation, indirect_reference.idnum
+    def handleMissingDocumentDefinition(self, tag, attrs):
+        """Raise an Exception if neither a DTD nor an XML Schema is found."""
+        raise ValueError(
+            "As the XML data contained neither a Document Type Definition (DTD) nor an XML Schema, Bio.Entrez is unable to parse these data. We recommend using a generic XML parser from the Python standard library instead, for example ElementTree."
         )
-        if retval is not None:
-            return retval
-        if (
-            indirect_reference.generation == 0
-            and indirect_reference.idnum in self.xref_objStm
-        ):
-            retval = self._get_object_from_stream(indirect_reference)  # type: ignore
-        elif (
-            indirect_reference.generation in self.xref
-            and indirect_reference.idnum in self.xref[indirect_reference.generation]
-        ):
-            if self.xref_free_entry.get(indirect_reference.generation, {}).get(
-                indirect_reference.idnum, False
-            ):
-                return NullObject()
-            start = self.xref[indirect_reference.generation][indirect_reference.idnum]
-            self.stream.seek(start, 0)
-            try:
-                idnum, generation = self.read_object_header(self.stream)
-                if (
-                    idnum != indirect_reference.idnum
-                    or generation != indirect_reference.generation
-                ):
-                    raise PdfReadError("Not matching, we parse the file for it")
-            except Exception:
-                if hasattr(self.stream, "getbuffer"):
-                    buf = bytes(self.stream.getbuffer())
-                else:
-                    p = self.stream.tell()
-                    self.stream.seek(0, 0)
-                    buf = self.stream.read(-1)
-                    self.stream.seek(p, 0)
-                m = re.search(
-                    rf"\s{indirect_reference.idnum}\s+{indirect_reference.generation}\s+obj".encode(),
-                    buf,
-                )
-                if m is not None:
-                    logger_warning(
-                        "Object ID %(idnum)d,%(generation)d ref repaired",
-                        source=__name__,
-                        idnum=indirect_reference.idnum,
-                        generation=indirect_reference.generation,
-                    )
-                    self.xref[indirect_reference.generation][
-                        indirect_reference.idnum
-                    ] = (m.start(0) + 1)
-                    self.stream.seek(m.start(0) + 1)
-                    idnum, generation = self.read_object_header(self.stream)
-                else:
-                    idnum = -1
-                    generation = -1  # exception will be raised below
-            if idnum != indirect_reference.idnum and self.xref_index:
-                # xref table probably had bad indexes due to not being zero-indexed
-                if self.strict:
-                    raise PdfReadError(
-                        f"Expected object ID ({indirect_reference.idnum} {indirect_reference.generation}) "
-                        f"does not match actual ({idnum} {generation}); "
-                        "xref table not zero-indexed."
-                    )
-                # xref table is corrected in non-strict mode
-            elif idnum != indirect_reference.idnum and self.strict:
-                # some other problem
-                raise PdfReadError(
-                    f"Expected object ID ({indirect_reference.idnum} {indirect_reference.generation}) "
-                    f"does not match actual ({idnum} {generation})."
-                )
-            if self.strict:
-                assert generation == indirect_reference.generation
 
-            current_object = (indirect_reference.idnum, indirect_reference.generation)
-            if current_object in self._known_objects:
-                raise LimitReachedError(f"Detected loop with self reference for {indirect_reference!r}.")
-            self._known_objects.add(current_object)
-            retval = read_object(self.stream, self)  # type: ignore
-            self._known_objects.remove(current_object)
-
-            # override encryption is used for the /Encrypt dictionary
-            if not self._override_encryption and self._encryption is not None:
-                # if we don't have the encryption key:
-                if not self._encryption.is_decrypted():
-                    raise FileNotDecryptedError("File has not been decrypted")
-                # otherwise, decrypt here...
-                retval = cast(PdfObject, retval)
-                retval = self._encryption.decrypt_object(
-                    retval, indirect_reference.idnum, indirect_reference.generation,
-                    strict=self.strict,
-                )
+    def startNamespaceDeclHandler(self, prefix, uri):
+        """Handle start of an XML namespace declaration."""
+        if prefix == "xsi":
+            # This is an xml schema
+            self.schema_namespace = uri
+            self.parser.StartElementHandler = self.schemaHandler
         else:
-            if hasattr(self.stream, "getbuffer"):
-                buf = bytes(self.stream.getbuffer())
+            # Note that the DTD for MathML specifies a default attribute
+            # that declares the namespace for each MathML element. This means
+            # that MathML element in the XML has an invisible MathML namespace
+            # declaration that triggers a call to startNamespaceDeclHandler
+            # and endNamespaceDeclHandler. Therefore we need to count how often
+            # startNamespaceDeclHandler and endNamespaceDeclHandler were called
+            # to find out their first and last invocation for each namespace.
+            if prefix == "mml":
+                assert uri == "http://www.w3.org/1998/Math/MathML"
+            elif prefix == "xlink":
+                assert uri == "http://www.w3.org/1999/xlink"
+            elif prefix == "ali":
+                assert uri.rstrip("/") == "http://www.niso.org/schemas/ali/1.0"
             else:
-                p = self.stream.tell()
-                self.stream.seek(0, 0)
-                buf = self.stream.read(-1)
-                self.stream.seek(p, 0)
-            m = re.search(
-                rf"\s{indirect_reference.idnum}\s+{indirect_reference.generation}\s+obj".encode(),
-                buf,
-            )
-            if m is not None:
-                logger_warning(
-                    "Object %(idnum)d %(generation)d found",
-                    source=__name__,
-                    idnum=indirect_reference.idnum,
-                    generation=indirect_reference.generation,
-                )
-                if indirect_reference.generation not in self.xref:
-                    self.xref[indirect_reference.generation] = {}
-                self.xref[indirect_reference.generation][indirect_reference.idnum] = (
-                    m.start(0) + 1
-                )
-                self.stream.seek(m.end(0) + 1)
-                skip_over_whitespace(self.stream)
-                self.stream.seek(-1, 1)
-                retval = read_object(self.stream, self)  # type: ignore
+                raise ValueError(f"Unknown prefix '{prefix}' with uri '{uri}'")
+            self.namespace_level[prefix] += 1
+            self.namespace_prefix[uri] = prefix
 
-                # override encryption is used for the /Encrypt dictionary
-                if not self._override_encryption and self._encryption is not None:
-                    # if we don't have the encryption key:
-                    if not self._encryption.is_decrypted():
-                        raise FileNotDecryptedError("File has not been decrypted")
-                    # otherwise, decrypt here...
-                    retval = cast(PdfObject, retval)
-                    retval = self._encryption.decrypt_object(
-                        retval, indirect_reference.idnum, indirect_reference.generation,
-                        strict=self.strict,
-                    )
-            else:
-                logger_warning(
-                    "Object %(idnum)d %(generation)d not defined.",
-                    source=__name__,
-                    idnum=indirect_reference.idnum,
-                    generation=indirect_reference.generation,
-                )
-                if self.strict:
-                    raise PdfReadError("Could not find object.")
-        # For ObjStm objects, _get_object_from_stream already cached
-        # the result during batch parsing; skip the redundant cache write
-        # to avoid "Overwriting cache" warnings. For non-ObjStm objects
-        # (including encrypted ones that need decrypted values cached),
-        # always write.
-        if not (
-            indirect_reference.generation == 0
-            and indirect_reference.idnum in self.xref_objStm
-        ):
-            self.cache_indirect_object(
-                indirect_reference.generation, indirect_reference.idnum, retval
-            )
-        return retval
-
-    def read_object_header(self, stream: StreamType) -> tuple[int, int]:
-        # Should never be necessary to read out whitespace, since the
-        # cross-reference table should put us in the right spot to read the
-        # object header. In reality some files have stupid cross-reference
-        # tables that are off by whitespace bytes.
-        skip_over_comment(stream)
-        extra = skip_over_whitespace(stream)
-        stream.seek(-1, 1)
-        idnum = read_until_whitespace(stream)
-        extra |= skip_over_whitespace(stream)
-        stream.seek(-1, 1)
-        generation = read_until_whitespace(stream)
-        extra |= skip_over_whitespace(stream)
-        stream.seek(-1, 1)
-
-        # although it's not used, it might still be necessary to read
-        _obj = stream.read(3)
-
-        read_non_whitespace(stream)
-        stream.seek(-1, 1)
-        if extra and self.strict:
-            logger_warning(
-                "Superfluous whitespace found in object header %(idnum)r %(generation)r",
-                source=__name__,
-                idnum=idnum,
-                generation=generation,
-            )
-        return int(idnum), int(generation)
-
-    def cache_get_indirect_object(
-        self, generation: int, idnum: int
-    ) -> Optional[PdfObject]:
-        try:
-            return self.resolved_objects.get((generation, idnum))
-        except RecursionError:
-            raise PdfReadError("Maximum recursion depth reached.")
-
-    def cache_indirect_object(
-        self, generation: int, idnum: int, obj: Optional[PdfObject]
-    ) -> Optional[PdfObject]:
-        if (generation, idnum) in self.resolved_objects:
-            msg = "Overwriting cache for %(generation)d %(idnum)d"
-            values = {"generation": generation, "idnum": idnum}
-            if self.strict:
-                raise PdfReadError(msg % values)
-            logger_warning(msg, source=__name__, **values)
-        self.resolved_objects[(generation, idnum)] = obj
-        if obj is not None:
-            obj.indirect_reference = IndirectObject(idnum, generation, self)
-        return obj
-
-    def _replace_object(self, indirect_reference: IndirectObject, obj: PdfObject) -> PdfObject:
-        # function reserved for future development
-        if indirect_reference.pdf != self:
-            raise ValueError("Cannot update PdfReader with external object")
-        if (indirect_reference.generation, indirect_reference.idnum) not in self.resolved_objects:
-            raise ValueError("Cannot find referenced object")
-        self.resolved_objects[(indirect_reference.generation, indirect_reference.idnum)] = obj
-        obj.indirect_reference = indirect_reference
-        return obj
-
-    def read(self, stream: StreamType) -> None:
-        """
-        Read and process the PDF stream, extracting necessary data.
-
-        Args:
-            stream: The PDF file stream.
-
-        """
-        self._basic_validation(stream)
-        self._find_eof_marker(stream)
-        startxref = self._find_startxref_pos(stream)
-        self._startxref = startxref
-
-        # check and eventually correct the startxref only if not strict
-        xref_issue_nr = self._get_xref_issues(stream, startxref)
-        if xref_issue_nr != 0:
-            if self.strict and xref_issue_nr:
-                raise PdfReadError("Broken xref table")
-            logger_warning(
-                "incorrect startxref pointer(%(xref_issue_nr)d)",
-                source=__name__,
-                xref_issue_nr=xref_issue_nr,
-            )
-
-        # read all cross-reference tables and their trailers
-        self._read_xref_tables_and_trailers(stream, startxref, xref_issue_nr)
-
-        # if not zero-indexed, verify that the table is correct; change it if necessary
-        if self.xref_index and not self.strict:
-            loc = stream.tell()
-            for gen, xref_entry in self.xref.items():
-                if gen == 65535:
-                    continue
-                xref_k = sorted(
-                    xref_entry.keys()
-                )  # ensure ascending to prevent damage
-                for id in xref_k:
-                    stream.seek(xref_entry[id], 0)
-                    try:
-                        pid, _pgen = self.read_object_header(stream)
-                    except ValueError:
-                        self._rebuild_xref_table(stream)
+    def endNamespaceDeclHandler(self, prefix):
+        """Handle end of an XML namespace declaration."""
+        if prefix != "xsi":
+            self.namespace_level[prefix] -= 1
+            if self.namespace_level[prefix] == 0:
+                for key, value in self.namespace_prefix.items():
+                    if value == prefix:
                         break
-                    if pid == id - self.xref_index:
-                        # fixing index item per item is required for revised PDF.
-                        self.xref[gen][pid] = self.xref[gen][id]
-                        del self.xref[gen][id]
-                    # if not, then either it's just plain wrong, or the
-                    # non-zero-index is actually correct
-            stream.seek(loc, 0)  # return to where it was
+                else:
+                    raise RuntimeError("Failed to find namespace prefix")
+                del self.namespace_prefix[key]
 
-        # remove wrong objects (not pointing to correct structures) - cf #2326
-        if not self.strict:
-            loc = stream.tell()
-            for gen, xref_entry in self.xref.items():
-                if gen == 65535:
-                    continue
-                ids = list(xref_entry.keys())
-                for id in ids:
-                    stream.seek(xref_entry[id], 0)
-                    try:
-                        self.read_object_header(stream)
-                    except ValueError:
-                        logger_warning(
-                            "Ignoring wrong pointing object %(id)d %(gen)d (offset %(offset)d)",
-                            source=__name__,
-                            id=id,
-                            gen=gen,
-                            offset=xref_entry[id],
-                        )
-                        del xref_entry[id]  # we can delete the id, we are parsing ids
-            stream.seek(loc, 0)  # return to where it was
-
-    def _basic_validation(self, stream: StreamType) -> None:
-        """Ensure the stream is valid and not empty."""
-        stream.seek(0, os.SEEK_SET)
-        try:
-            header_byte = stream.read(5)
-        except UnicodeDecodeError:
-            raise UnsupportedOperation("cannot read header")
-        if header_byte == b"":
-            raise EmptyFileError("Cannot read an empty file")
-        if header_byte != b"%PDF-":
-            if self.strict:
-                raise PdfReadError(
-                    f"PDF starts with '{header_byte.decode('utf8')}', "
-                    "but '%PDF-' expected"
-                )
-            logger_warning("invalid pdf header: %(header_byte)r", source=__name__, header_byte=header_byte)
-        stream.seek(0, os.SEEK_END)
-
-    def _find_eof_marker(self, stream: StreamType) -> None:
-        """
-        Jump to the %%EOF marker.
-
-        According to the specs, the %%EOF marker should be at the very end of
-        the file. Hence for standard-compliant PDF documents this function will
-        read only the last part (DEFAULT_BUFFER_SIZE).
-        """
-        HEADER_SIZE = 8  # to parse whole file, Header is e.g. '%PDF-1.6'
-        line = b""
-        first = True
-        while not line.startswith(b"%%EOF"):
-            if line != b"" and first:
-                if any(
-                    line.strip().endswith(tr) for tr in (b"%%EO", b"%%E", b"%%", b"%")
-                ):
-                    # Consider the file as truncated while
-                    # having enough confidence to carry on.
-                    logger_warning("EOF marker seems truncated", source=__name__)
-                    break
-                first = False
-            if b"startxref" in line:
-                logger_warning(
-                    "CAUTION: startxref found while searching for %%EOF. "
-                    "The file might be truncated and some data might not be read.",
-                    source=__name__,
-                )
-            if stream.tell() < HEADER_SIZE:
-                if self.strict:
-                    raise PdfReadError("EOF marker not found")
-                logger_warning("EOF marker not found", source=__name__)
-            line = read_previous_line(stream)
-
-    def _find_startxref_pos(self, stream: StreamType) -> int:
-        """
-        Find startxref entry - the location of the xref table.
-
-        Args:
-            stream:
-
-        Returns:
-            The bytes offset
-
-        """
-        line = read_previous_line(stream)
-        try:
-            startxref = int(line)
-        except ValueError:
-            # 'startxref' may be on the same line as the location
-            if not line.startswith(b"startxref"):
-                raise PdfReadError("startxref not found")
-            startxref = int(line[9:].strip())
-            logger_warning("startxref on same line as offset", source=__name__)
+    def schemaHandler(self, name, attrs):
+        """Process the XML schema (before processing the element)."""
+        key = "%s noNamespaceSchemaLocation" % self.schema_namespace
+        schema = attrs[key]
+        self.verify_security(schema)
+        handle = self.open_xsd_file(os.path.basename(schema))
+        # if there is no local xsd file grab the url and parse the file
+        if not handle:
+            handle = urlopen(schema)
+            text = handle.read()
+            self.save_xsd_file(os.path.basename(schema), text)
+            handle.close()
+            self.parse_xsd(ET.fromstring(text))
         else:
-            line = read_previous_line(stream)
-            if not line.startswith(b"startxref"):
-                raise PdfReadError("startxref not found")
-        return startxref
+            self.parse_xsd(ET.fromstring(handle.read()))
+            handle.close()
+        # continue handling the element
+        self.startElementHandler(name, attrs)
+        # reset the element handler
+        self.parser.StartElementHandler = self.startElementHandler
 
-    def _read_standard_xref_table(self, stream: StreamType) -> None:
-        # standard cross-reference table
-        ref = stream.read(3)
-        if ref != b"ref":
-            raise PdfReadError("xref table read error")
-        read_non_whitespace(stream)
-        stream.seek(-1, 1)
-        first_time = True  # check if the first time looking at the xref table
-        while True:
-            num = cast(int, read_object(stream, self))
-            if first_time and num != 0:
-                self.xref_index = num
-                if self.strict:
-                    logger_warning(
-                        "Xref table not zero-indexed. ID numbers for objects will be corrected.",
-                        source=__name__,
-                    )
-                    # if table not zero indexed, could be due to error from when PDF was created
-                    # which will lead to mismatched indices later on, only warned and corrected if self.strict==True
-            first_time = False
-            read_non_whitespace(stream)
-            stream.seek(-1, 1)
-            size = cast(int, read_object(stream, self))
-            if not isinstance(size, int):
-                logger_warning(
-                    "Invalid/Truncated xref table. Rebuilding it.",
-                    source=__name__,
+    def startElementHandler(self, tag, attrs):
+        """Handle start of an XML element."""
+        prefix = None
+        if self.namespace_prefix:
+            try:
+                uri, name = tag.split()
+            except ValueError:
+                pass
+            else:
+                prefix = self.namespace_prefix[uri]
+                tag = f"{prefix}:{name}"
+        if tag in self.items:
+            assert tag == "Item"
+            name = attrs["Name"]
+            itemtype = attrs["Type"]
+            del attrs["Type"]
+            if itemtype == "Structure":
+                del attrs["Name"]
+                element = DictionaryElement(
+                    name, attrs, allowed_tags=None, repeated_tags=None
                 )
-                self._rebuild_xref_table(stream)
-                stream.read()
+                parent = self.element
+                element.parent = parent
+                # For consistency with lists below, store the element here
+                if parent is None:
+                    self.record = element
+                else:
+                    parent.store(element)
+                self.element = element
+                self.parser.EndElementHandler = self.endElementHandler
+                self.parser.CharacterDataHandler = self.skipCharacterDataHandler
+            elif name in ("ArticleIds", "History"):
+                del attrs["Name"]
+                allowed_tags = None  # allowed tags are unknown
+                repeated_tags = frozenset(["pubmed", "medline"])
+                element = DictionaryElement(
+                    tag,
+                    attrs,
+                    allowed_tags=allowed_tags,
+                    repeated_tags=repeated_tags,
+                    key=name,
+                )
+                parent = self.element
+                element.parent = parent
+                # For consistency with lists below, store the element here
+                if parent is None:
+                    self.record = element
+                else:
+                    parent.store(element)
+                self.element = element
+                self.parser.EndElementHandler = self.endElementHandler
+                self.parser.CharacterDataHandler = self.skipCharacterDataHandler
+            elif itemtype == "List":
+                del attrs["Name"]
+                allowed_tags = None  # allowed tags are unknown
+                element = ListElement(tag, attrs, allowed_tags, name)
+                parent = self.element
+                element.parent = parent
+                if self.element is None:
+                    # Set self.record here to let Entrez.parse iterate over it
+                    self.record = element
+                else:
+                    parent.store(element)
+                self.element = element
+                self.parser.EndElementHandler = self.endElementHandler
+                self.parser.CharacterDataHandler = self.skipCharacterDataHandler
+            elif itemtype == "Integer":
+                self.parser.EndElementHandler = self.endIntegerElementHandler
+                self.parser.CharacterDataHandler = self.characterDataHandler
+                self.attributes = attrs
+            elif itemtype in ("String", "Unknown", "Date", "Enumerator"):
+                assert self.attributes is None
+                self.attributes = attrs
+                self.parser.StartElementHandler = self.startRawElementHandler
+                self.parser.EndElementHandler = self.endStringElementHandler
+                self.parser.CharacterDataHandler = self.characterDataHandler
+            else:
+                raise ValueError("Unknown item type %s" % name)
+        elif tag in self.errors:
+            self.parser.EndElementHandler = self.endErrorElementHandler
+            self.parser.CharacterDataHandler = self.characterDataHandler
+        elif tag in self.strings:
+            self.parser.StartElementHandler = self.startRawElementHandler
+            self.parser.EndElementHandler = self.endStringElementHandler
+            self.parser.CharacterDataHandler = self.characterDataHandler
+            assert self.allowed_tags is None
+            self.allowed_tags = self.strings[tag]
+            assert self.attributes is None
+            self.attributes = attrs
+        elif tag in self.constructors:
+            cls, allowed_tags = self.constructors[tag]
+            element = cls(tag, attrs, *allowed_tags)
+            parent = self.element
+            element.parent = parent
+            if parent is None:
+                # Set self.record here to let Entrez.parse iterate over it
+                self.record = element
+            else:
+                parent.store(element)
+            self.element = element
+            self.parser.EndElementHandler = self.endElementHandler
+            self.parser.CharacterDataHandler = self.skipCharacterDataHandler
+        else:
+            # Element not found in DTD
+            if tag == "processing-meta":
+                terms = []
+                dtd_version = "1.3"
+                if attrs["tagset-family"] == "jats":
+                    terms.append("JATS")
+                if attrs["base-tagset"] == "archiving":
+                    term = "archivearticle" + dtd_version.replace(".", "-")
+                    terms.append(term)
+                if attrs.get("mathml-version") == "3.0":
+                    terms.append("mathml3")
+                basename = "-".join(terms)
+                url = f"https://{attrs['tagset-family']}.nlm.nih.gov/{attrs['base-tagset']}/{dtd_version}/{basename}.dtd"
+                self.xmlDeclHandler(None, None, None)
+                self.externalEntityRefHandler(None, None, url, None)
+                # remainder will be ignored and will not be stored in the record
+            elif self.validating:
+                raise ValidationError(tag)
+            # this will not be stored in the record
+            self.parser.StartElementHandler = self.startSkipElementHandler
+            self.parser.EndElementHandler = self.endSkipElementHandler
+            self.parser.CharacterDataHandler = self.skipCharacterDataHandler
+            self.level = 1
+
+    def startRawElementHandler(self, name, attrs):
+        """Handle start of an XML raw element."""
+        # check if the name is in a namespace
+        prefix = None
+        if self.namespace_prefix:
+            try:
+                uri, name = name.split()
+            except ValueError:
+                pass
+            else:
+                prefix = self.namespace_prefix[uri]
+                if self.namespace_level[prefix] == 1:
+                    attrs = {"xmlns": uri}
+        if prefix:
+            key = f"{prefix}:{name}"
+        else:
+            key = name
+        # self.allowed_tags is ignored for now. Anyway we know what to do
+        # with this tag.
+        tag = "<%s" % name
+        for key, value in attrs.items():
+            tag += f' {key}="{value}"'
+        tag += ">"
+        self.data.append(tag)
+        self.parser.EndElementHandler = self.endRawElementHandler
+        self.level += 1
+
+    def startSkipElementHandler(self, name, attrs):
+        """Handle start of an XML skip element."""
+        self.level += 1
+
+    def endStringElementHandler(self, tag):
+        """Handle end of an XML string element."""
+        element = self.element
+        if element is not None:
+            self.parser.StartElementHandler = self.startElementHandler
+            self.parser.EndElementHandler = self.endElementHandler
+            self.parser.CharacterDataHandler = self.skipCharacterDataHandler
+        data = "".join(self.data)
+        self.data = []
+        attributes = self.attributes
+        self.attributes = None
+        if self.namespace_prefix:
+            try:
+                uri, name = tag.split()
+            except ValueError:
+                pass
+            else:
+                prefix = self.namespace_prefix[uri]
+                tag = f"{prefix}:{name}"
+        if tag in self.items:
+            assert tag == "Item"
+            key = attributes["Name"]
+            del attributes["Name"]
+        else:
+            key = tag
+        value = StringElement(data, tag, attributes, key)
+        if element is None:
+            self.record = element
+        else:
+            element.store(value)
+        self.allowed_tags = None
+
+    def endRawElementHandler(self, name):
+        """Handle end of an XML raw element."""
+        self.level -= 1
+        if self.level == 0:
+            self.parser.EndElementHandler = self.endStringElementHandler
+        if self.namespace_prefix:
+            try:
+                uri, name = name.split()
+            except ValueError:
+                pass
+        tag = "</%s>" % name
+        self.data.append(tag)
+
+    def endSkipElementHandler(self, name):
+        """Handle end of an XML skip element."""
+        self.level -= 1
+        if self.level == 0:
+            self.parser.StartElementHandler = self.startElementHandler
+            self.parser.EndElementHandler = self.endElementHandler
+
+    def endErrorElementHandler(self, tag):
+        """Handle end of an XML error element."""
+        element = self.element
+        if element is not None:
+            self.parser.StartElementHandler = self.startElementHandler
+            self.parser.EndElementHandler = self.endElementHandler
+            self.parser.CharacterDataHandler = self.skipCharacterDataHandler
+        data = "".join(self.data)
+        if data == "":
+            return
+        if self.ignore_errors is False:
+            raise RuntimeError(data)
+        self.data = []
+        value = ErrorElement(data, tag)
+        if element is None:
+            self.record = element
+        else:
+            element.store(value)
+
+    def endElementHandler(self, name):
+        """Handle end of an XML element."""
+        element = self.element
+        self.element = element.parent
+        del element.parent
+
+    def endIntegerElementHandler(self, tag):
+        """Handle end of an XML integer element."""
+        attributes = self.attributes
+        self.attributes = None
+        assert tag == "Item"
+        key = attributes["Name"]
+        del attributes["Name"]
+        if self.data:
+            value = int("".join(self.data))
+            self.data = []
+            value = IntegerElement(value, tag, attributes, key)
+        else:
+            value = NoneElement(tag, attributes, key)
+        element = self.element
+        if element is None:
+            self.record = value
+        else:
+            self.parser.EndElementHandler = self.endElementHandler
+            self.parser.CharacterDataHandler = self.skipCharacterDataHandler
+            if value is None:
                 return
-            read_non_whitespace(stream)
-            stream.seek(-1, 1)
-            cnt = 0
-            while cnt < size:
-                line = stream.read(20)
-                if not line:
-                    raise PdfReadError("Unexpected empty line in Xref table.")
+            element.store(value)
 
-                # It's very clear in section 3.4.3 of the PDF spec
-                # that all cross-reference table lines are a fixed
-                # 20 bytes (as of PDF 1.7). However, some files have
-                # 21-byte entries (or more) due to the use of \r\n
-                # (CRLF) EOL's. Detect that case, and adjust the line
-                # until it does not begin with a \r (CR) or \n (LF).
-                while line[0] in b"\x0D\x0A":
-                    stream.seek(-20 + 1, 1)
-                    line = stream.read(20)
+    def characterDataHandlerRaw(self, content):
+        """Handle character data as-is (raw)."""
+        self.data.append(content)
 
-                # On the other hand, some malformed PDF files
-                # use a single character EOL without a preceding
-                # space. Detect that case, and seek the stream
-                # back one character (0-9 means we've bled into
-                # the next xref entry, t means we've bled into the
-                # text "trailer"):
-                if line[-1] in b"0123456789t":
-                    stream.seek(-1, 1)
+    def characterDataHandlerEscape(self, content):
+        """Handle character data by encoding it."""
+        content = escape(content)
+        self.data.append(content)
 
-                try:
-                    offset_b, generation_b = line[:16].split(b" ")
-                    entry_type_b = line[17:18]
+    def skipCharacterDataHandler(self, content):
+        """Handle character data by skipping it."""
 
-                    offset, generation = int(offset_b), int(generation_b)
-                except Exception:
-                    if hasattr(stream, "getbuffer"):
-                        buf = bytes(stream.getbuffer())
-                    else:
-                        p = stream.tell()
-                        stream.seek(0, 0)
-                        buf = stream.read(-1)
-                        stream.seek(p)
-
-                    f = re.search(rf"{num}\s+(\d+)\s+obj".encode(), buf)
-                    if f is None:
-                        logger_warning(
-                            "entry %(num)d in Xref table invalid; object not found",
-                            source=__name__,
-                            num=num,
-                        )
-                        generation = 65535
-                        offset = -1
-                        entry_type_b = b"f"
-                    else:
-                        logger_warning(
-                            "entry %(num)d in Xref table invalid but object found",
-                            source=__name__,
-                            num=num,
-                        )
-                        generation = int(f.group(1))
-                        offset = f.start()
-
-                if generation not in self.xref:
-                    self.xref[generation] = {}
-                    self.xref_free_entry[generation] = {}
-                if num in self.xref[generation]:
-                    # It really seems like we should allow the last
-                    # xref table in the file to override previous
-                    # ones. Since we read the file backwards, assume
-                    # any existing key is already set correctly.
-                    pass
-                else:
-                    if entry_type_b == b"n":
-                        self.xref[generation][num] = offset
-                    try:
-                        self.xref_free_entry[generation][num] = entry_type_b == b"f"
-                    except Exception:
-                        pass
-                    try:
-                        self.xref_free_entry[65535][num] = entry_type_b == b"f"
-                    except Exception:
-                        pass
-                cnt += 1
-                num += 1
-            read_non_whitespace(stream)
-            stream.seek(-1, 1)
-            # Skip any PDF comments between xref entries and the trailer
-            # keyword. Some PDF producers (e.g. Vectorizer.AI) insert
-            # comments here which are legal per the PDF spec (§7.2.3).
-            while stream.read(1) == b"%":
-                stream.seek(-1, 1)
-                skip_over_comment(stream)
-                read_non_whitespace(stream)
-                stream.seek(-1, 1)
-            stream.seek(-1, 1)
-            trailer_tag = stream.read(7)
-            if trailer_tag != b"trailer":
-                # more xrefs!
-                stream.seek(-7, 1)
+    def parse_xsd(self, root):
+        """Parse an XSD file."""
+        prefix = "{http://www.w3.org/2001/XMLSchema}"
+        for element in root:
+            isSimpleContent = False
+            attribute_keys = []
+            keys = []
+            multiple = []
+            assert element.tag == prefix + "element"
+            name = element.attrib["name"]
+            assert len(element) == 1
+            complexType = element[0]
+            assert complexType.tag == prefix + "complexType"
+            for component in complexType:
+                tag = component.tag
+                if tag == prefix + "attribute":
+                    # we could distinguish by type; keeping string for now
+                    attribute_keys.append(component.attrib["name"])
+                elif tag == prefix + "sequence":
+                    maxOccurs = component.attrib.get("maxOccurs", "1")
+                    for key in component:
+                        assert key.tag == prefix + "element"
+                        ref = key.attrib["ref"]
+                        keys.append(ref)
+                        if maxOccurs != "1" or key.attrib.get("maxOccurs", "1") != "1":
+                            multiple.append(ref)
+                elif tag == prefix + "simpleContent":
+                    assert len(component) == 1
+                    extension = component[0]
+                    assert extension.tag == prefix + "extension"
+                    assert extension.attrib["base"] == "xs:string"
+                    for attribute in extension:
+                        assert attribute.tag == prefix + "attribute"
+                        # we could distinguish by type; keeping string for now
+                        attribute_keys.append(attribute.attrib["name"])
+                    isSimpleContent = True
+            allowed_tags = frozenset(keys)
+            if len(keys) == 1 and keys == multiple:
+                assert not isSimpleContent
+                args = (allowed_tags,)
+                self.constructors[name] = (ListElement, args)
+            elif len(keys) >= 1:
+                assert not isSimpleContent
+                repeated_tags = frozenset(multiple)
+                args = (allowed_tags, repeated_tags)
+                self.constructors[name] = (DictionaryElement, args)
             else:
-                break
+                self.strings[name] = allowed_tags
 
-    def _read_xref_tables_and_trailers(
-        self, stream: StreamType, startxref: Optional[int], xref_issue_nr: int
-    ) -> None:
-        """Read the cross-reference tables and trailers in the PDF stream."""
-        self.xref = {}
-        self.xref_free_entry = {}
-        self.xref_objStm = {}
-        self.trailer = DictionaryObject()
-        visited_xref_offsets: set[int] = set()
-        while startxref is not None:
-            # Detect circular /Prev references in the xref chain
-            if startxref in visited_xref_offsets:
-                logger_warning(
-                    "Circular xref chain detected at offset %(startxref)d, stopping",
-                    source=__name__,
-                    startxref=startxref,
-                )
-                break
-            visited_xref_offsets.add(startxref)
-            # load the xref table
-            stream.seek(startxref, 0)
-            x = stream.read(1)
-            if x in b"\r\n":
-                x = stream.read(1)
-            if x == b"x":
-                startxref = self._read_xref(stream)
-            elif xref_issue_nr:
-                try:
-                    self._rebuild_xref_table(stream)
-                    break
-                except Exception:
-                    xref_issue_nr = 0
-            elif x.isdigit():
-                try:
-                    xrefstream = self._read_pdf15_xref_stream(stream)
-                except Exception as e:
-                    if TK.ROOT in self.trailer:
-                        logger_warning(
-                            "Previous trailer cannot be read: %(args)s",
-                            source=__name__,
-                            args=e.args,
-                        )
-                        break
-                    raise PdfReadError(f"Trailer cannot be read: {e!s}")
-                self._process_xref_stream(xrefstream)
-                if "/Prev" in xrefstream:
-                    startxref = cast(int, xrefstream["/Prev"])
-                else:
-                    break
+    def elementDecl(self, name, model):
+        """Call a call-back function for each element declaration in a DTD.
+
+        This is used for each element declaration in a DTD like::
+
+            <!ELEMENT       name          (...)>
+
+        The purpose of this function is to determine whether this element
+        should be regarded as a string, integer, list, dictionary, structure,
+        or error.
+        """
+        if name.upper() == "ERROR":
+            self.errors.add(name)
+            return
+        if name == "Item" and model == (
+            expat.model.XML_CTYPE_MIXED,
+            expat.model.XML_CQUANT_REP,
+            None,
+            ((expat.model.XML_CTYPE_NAME, expat.model.XML_CQUANT_NONE, "Item", ()),),
+        ):
+            # Special case. As far as I can tell, this only occurs in the
+            # eSummary DTD.
+            self.items.add(name)
+            return
+        # First, remove ignorable parentheses around declarations
+        while (
+            model[0] in (expat.model.XML_CTYPE_SEQ, expat.model.XML_CTYPE_CHOICE)
+            and model[1] in (expat.model.XML_CQUANT_NONE, expat.model.XML_CQUANT_OPT)
+            and len(model[3]) == 1
+        ):
+            model = model[3][0]
+        # PCDATA declarations correspond to strings
+        if model[0] in (expat.model.XML_CTYPE_MIXED, expat.model.XML_CTYPE_EMPTY):
+            if model[1] == expat.model.XML_CQUANT_REP:
+                children = model[3]
+                allowed_tags = frozenset(child[2] for child in children)
             else:
-                startxref = self._read_xref_other_error(stream, startxref)
+                allowed_tags = frozenset()
+            self.strings[name] = allowed_tags
+            return
+        # Children can be anything; use a dictionary-type element
+        if model == (expat.model.XML_CTYPE_ANY, expat.model.XML_CQUANT_NONE, None, ()):
+            allowed_tags = None
+            repeated_tags = None
+            args = (allowed_tags, repeated_tags)
+            self.constructors[name] = (DictionaryElement, args)
+            return
+        # List-type elements
+        if model[0] in (
+            expat.model.XML_CTYPE_CHOICE,
+            expat.model.XML_CTYPE_SEQ,
+        ) and model[1] in (expat.model.XML_CQUANT_PLUS, expat.model.XML_CQUANT_REP):
+            children = model[3]
+            allowed_tags = frozenset(child[2] for child in children)
+            if model[0] == expat.model.XML_CTYPE_SEQ:
+                if len(children) > 1:
+                    assert model[1] == expat.model.XML_CQUANT_PLUS
+                    first_child = children[0]
+                    assert first_child[1] == expat.model.XML_CQUANT_NONE
+                    first_tag = first_child[2]
+                    args = allowed_tags, first_tag
+                    self.constructors[name] = (OrderedListElement, args)
+                    return
+                assert len(children) == 1
+            self.constructors[name] = (ListElement, (allowed_tags,))
+            return
+        # This is the tricky case. Check which keys can occur multiple
+        # times. If only one key is possible, and it can occur multiple
+        # times, then this is a list. If more than one key is possible,
+        # but none of them can occur multiple times, then this is a
+        # dictionary. Otherwise, this is a structure.
+        # In 'single' and 'multiple', we keep track which keys can occur
+        # only once, and which can occur multiple times.
+        single = []
+        multiple = []
+        errors = []
+        # The 'count' function is called recursively to make sure all the
+        # children in this model are counted.
 
-    def _process_xref_stream(self, xrefstream: DictionaryObject) -> None:
-        """Process and handle the xref stream."""
-        trailer_keys = TK.ROOT, TK.ENCRYPT, TK.INFO, TK.ID, TK.SIZE
-        for key in trailer_keys:
-            if key in xrefstream and key not in self.trailer:
-                self.trailer[NameObject(key)] = xrefstream.raw_get(key)
-        if "/XRefStm" in xrefstream:
-            p = self.stream.tell()
-            self.stream.seek(cast(int, xrefstream["/XRefStm"]) + 1, 0)
-            self._read_pdf15_xref_stream(self.stream)
-            self.stream.seek(p, 0)
+        def count(model):
+            quantifier, key, children = model[1:]
+            if key is None:
+                if quantifier in (
+                    expat.model.XML_CQUANT_PLUS,
+                    expat.model.XML_CQUANT_REP,
+                ):
+                    for child in children:
+                        multiple.append(child[2])
+                else:
+                    for child in children:
+                        count(child)
+            elif key.upper() == "ERROR":
+                errors.append(key)
+            else:
+                if quantifier in (
+                    expat.model.XML_CQUANT_NONE,
+                    expat.model.XML_CQUANT_OPT,
+                ):
+                    single.append(key)
+                elif quantifier in (
+                    expat.model.XML_CQUANT_PLUS,
+                    expat.model.XML_CQUANT_REP,
+                ):
+                    multiple.append(key)
 
-    def _read_xref(self, stream: StreamType) -> Optional[int]:
-        self._read_standard_xref_table(stream)
-        if stream.read(1) == b"":
-            return None
-        stream.seek(-1, 1)
-        read_non_whitespace(stream)
-        stream.seek(-1, 1)
-        new_trailer = cast(dict[str, Any], read_object(stream, self))
-        for key, value in new_trailer.items():
-            if key not in self.trailer:
-                self.trailer[key] = value
-        if "/XRefStm" in new_trailer:
-            p = stream.tell()
-            stream.seek(cast(int, new_trailer["/XRefStm"]) + 1, 0)
+        count(model)
+        if len(single) == 0 and len(multiple) == 1:
+            allowed_tags = frozenset(multiple + errors)
+            self.constructors[name] = (ListElement, (allowed_tags,))
+        else:
+            allowed_tags = frozenset(single + multiple + errors)
+            repeated_tags = frozenset(multiple)
+            args = (allowed_tags, repeated_tags)
+            self.constructors[name] = (DictionaryElement, args)
+
+    def open_dtd_file(self, filename):
+        """Open specified DTD file."""
+        if DataHandler.local_dtd_dir is not None:
+            path = os.path.join(DataHandler.local_dtd_dir, filename)
             try:
-                self._read_pdf15_xref_stream(stream)
-            except Exception:
-                logger_warning(
-                    "XRef object at %(xref_stm)d can not be read, some object may be missing",
-                    source=__name__,
-                    xref_stm=int(new_trailer["/XRefStm"]),
-                )
-            stream.seek(p, 0)
-        if "/Prev" in new_trailer:
-            return cast(int, new_trailer["/Prev"])
+                handle = open(path, "rb")
+            except FileNotFoundError:
+                pass
+            else:
+                return handle
+        path = os.path.join(DataHandler.global_dtd_dir, filename)
+        try:
+            handle = open(path, "rb")
+        except FileNotFoundError:
+            pass
+        else:
+            return handle
         return None
 
-    def _read_xref_other_error(
-        self, stream: StreamType, startxref: int
-    ) -> Optional[int]:
-        # some PDFs have /Prev=0 in the trailer, instead of no /Prev
-        if startxref == 0:
-            if self.strict:
-                raise PdfReadError(
-                    "/Prev=0 in the trailer (try opening with strict=False)"
-                )
-            logger_warning(
-                "/Prev=0 in the trailer - assuming there is no previous xref table",
-                source=__name__,
-            )
-            return None
-        # bad xref character at startxref. Let's see if we can find
-        # the xref table nearby, as we've observed this error with an
-        # off-by-one before.
-        stream.seek(-11, 1)
-        tmp = stream.read(20)
-        xref_loc = tmp.find(b"xref")
-        if xref_loc != -1:
-            startxref -= 10 - xref_loc
-            return startxref
-        # No explicit xref table, try finding a cross-reference stream.
-        stream.seek(startxref, 0)
-        for look in range(25):  # value extended to cope with more linearized files
-            if stream.read(1).isdigit():
-                # This is not a standard PDF, consider adding a warning
-                startxref += look
-                return startxref
-        # no xref table found at specified location
-        if "/Root" in self.trailer and not self.strict:
-            # if Root has been already found, just raise warning
-            logger_warning("Invalid parent xref., rebuild xref", source=__name__)
+    def open_xsd_file(self, filename):
+        """Open specified XSD file."""
+        if DataHandler.local_xsd_dir is not None:
+            path = os.path.join(DataHandler.local_xsd_dir, filename)
             try:
-                self._rebuild_xref_table(stream)
-                return None
-            except Exception:
-                raise PdfReadError("Cannot rebuild xref")
-        raise PdfReadError("Could not find xref table at specified location")
+                handle = open(path, "rb")
+            except FileNotFoundError:
+                pass
+            else:
+                return handle
+        path = os.path.join(DataHandler.global_xsd_dir, filename)
+        try:
+            handle = open(path, "rb")
+        except FileNotFoundError:
+            pass
+        else:
+            return handle
+        return None
 
-    def _sanitize_pdf15_xref_stream_index_pairs(
-            self, index_pairs: list[int], entry_sizes: list[int], xref_stream: ContentStream
-    ) -> list[int]:
-        # `entry_sizes` holds the byte widths for the entries. Summing determines the total number of bytes per entry.
-        # We expect up to 3 values, clamping to at least 1 avoids ZeroDivisionError in next step.
-        # `min_entry_bytes` will be the smallest plausible size of one xref entry.
-        min_entry_bytes = max(sum(int(entry_sizes[i]) for i in range(min(len(entry_sizes), 3))), 1)
-        # maximum number of entries that could physically fit
-        max_entries = len(xref_stream.get_data()) // min_entry_bytes + 1
+    def save_dtd_file(self, filename, text):
+        """Save DTD file to cache."""
+        if DataHandler.local_dtd_dir is None:
+            return
+        path = os.path.join(DataHandler.local_dtd_dir, filename)
+        try:
+            handle = open(path, "wb")
+        except OSError:
+            warnings.warn(f"Failed to save {filename} at {path}")
+        else:
+            handle.write(text)
+            handle.close()
 
-        result = []
-        total = 0
+    def save_xsd_file(self, filename, text):
+        """Save XSD file to cache."""
+        if DataHandler.local_xsd_dir is None:
+            return
+        path = os.path.join(DataHandler.local_xsd_dir, filename)
+        try:
+            handle = open(path, "wb")
+        except OSError:
+            warnings.warn(f"Failed to save {filename} at {path}")
+        else:
+            handle.write(text)
+            handle.close()
 
-        for index, pair_value in enumerate(index_pairs):
-            pair_value_int = int(pair_value)
+    def verify_security(self, url):
+        """Check if the url is from a trustable sournce."""
+        if not self.secure:
+            parts = urlparse(url)
+            scheme = parts.scheme
+            hostname = parts.hostname
+            hostnames = (
+                "www.ncbi.nlm.nih.gov",
+                "dtd.nlm.nih.gov",
+                "eutils.ncbi.nlm.nih.gov",
+            )
+            if scheme != "https" or hostname not in hostnames:
+                raise ValueError(f"expected secure URL to NCBI, found {url}")
+            # Trust URLs linked from NCBI
+            self.secure = True
 
-            # `index_pairs` has the format `[start0, count0, start1, count1, ...]`
-            # Only modify the counts here, but keep the start values.
-            if index % 2 == 1:
-                if total + pair_value_int > max_entries:
-                    if self.strict:
-                        raise LimitReachedError(
-                            f"Total XRef entries {total + pair_value_int} exceed maximum allowed value {max_entries}."
-                        )
-                    new_v = max(0, max_entries - total)
-                    logger_warning(
-                        "Clamping XRef count from %(old_count)d to %(new_count)d to fit stream size.",
-                        source=__name__,
-                        old_count=pair_value_int,
-                        new_count=new_v,
-                    )
-                    pair_value_int = new_v
+    def externalEntityRefHandler(self, context, base, systemId, publicId):
+        """Handle external entity reference in order to cache DTD locally.
 
-                total += pair_value_int
-
-            result.append(pair_value_int)
-
-        return result
-
-    def _read_pdf15_xref_stream(
-        self, stream: StreamType
-    ) -> Union[ContentStream, EncodedStreamObject, DecodedStreamObject]:
-        """Read the cross-reference stream for PDF 1.5+."""
-        stream.seek(-1, 1)
-        stream_idnum, stream_generation = self.read_object_header(stream)
-        xref_stream = cast(ContentStream, read_object(stream, self))
-        if cast(str, xref_stream["/Type"]) != "/XRef":
-            raise PdfReadError(f"Unexpected type {xref_stream['/Type']!r}")
-        self.cache_indirect_object(stream_generation, stream_idnum, xref_stream)
-
-        # Index pairs specify the subsections in the dictionary.
-        # If none, create one subsection that spans everything.
-        if "/Size" not in xref_stream:
-            # According to table 17 of the PDF 2.0 specification, this key is required.
-            raise PdfReadError(f"Size missing from XRef stream {xref_stream!r}!")
-        index_pairs = xref_stream.get("/Index", [0, xref_stream["/Size"]])
-
-        entry_sizes = cast(list[int], xref_stream.get("/W"))
-        assert len(entry_sizes) >= 3
-        if self.strict and len(entry_sizes) > 3:
-            raise PdfReadError(f"Too many entry sizes: {entry_sizes}")
-        index_pairs = self._sanitize_pdf15_xref_stream_index_pairs(
-            index_pairs=index_pairs, entry_sizes=entry_sizes, xref_stream=xref_stream
-        )
-
-        stream_data = BytesIO(xref_stream.get_data())
-
-        def get_entry(i: int) -> Union[int, tuple[int, ...]]:
-            # Reads the correct number of bytes for each entry. See the
-            # discussion of the W parameter in PDF spec table 17.
-            if entry_sizes[i] > 0:
-                d = stream_data.read(entry_sizes[i])
-                return convert_to_int(d, entry_sizes[i])
-
-            # PDF Spec Table 17: A value of zero for an element in the
-            # W array indicates...the default value shall be used
-            if i == 0:
-                return 1  # First value defaults to 1
-            return 0
-
-        def used_before(num: int, generation: Union[int, tuple[int, ...]]) -> bool:
-            # We move backwards through the xrefs, don't replace any.
-            return num in self.xref.get(generation, []) or num in self.xref_objStm  # type: ignore
-
-        # Iterate through each subsection
-        self._read_xref_subsections(index_pairs, get_entry, used_before)
-        return xref_stream
-
-    @staticmethod
-    def _get_xref_issues(stream: StreamType, startxref: int) -> int:
+        The purpose of this function is to load the DTD locally, instead
+        of downloading it from the URL specified in the XML. Using the local
+        DTD results in much faster parsing. If the DTD is not found locally,
+        we try to download it. If new DTDs become available from NCBI,
+        putting them in Bio/Entrez/DTDs will allow the parser to see them.
         """
-        Return an int which indicates an issue. 0 means there is no issue.
+        urlinfo = urlparse(systemId)
+        if urlinfo.scheme in ["http", "https", "ftp"]:
+            # Then this is an absolute path to the DTD.
+            url = systemId
+        elif urlinfo.scheme == "":
+            # Then this is a relative path to the DTD.
+            # Look at the parent URL to find the full path.
+            try:
+                source = self.dtd_urls[-1]
+            except IndexError:
+                # Assume the default URL for DTDs if the top parent
+                # does not contain an absolute path
+                source = "https://www.ncbi.nlm.nih.gov/dtd/"
+            else:
+                source = os.path.dirname(source)
+            # urls always have a forward slash, don't use os.path.join
+            url = source.rstrip("/") + "/" + systemId
+        else:
+            raise ValueError("Unexpected URL scheme %r" % urlinfo.scheme)
+        self.dtd_urls.append(url)
+        self.verify_security(url)
+        # First, try to load the local version of the DTD file
+        location, filename = os.path.split(systemId)
+        handle = self.open_dtd_file(filename)
+        if not handle:
+            # DTD is not available as a local file. Try accessing it through
+            # the internet instead.
+            try:
+                handle = urlopen(url)
+            except OSError:
+                raise RuntimeError(f"Failed to access {filename} at {url}") from None
+            text = handle.read()
+            handle.close()
+            self.save_dtd_file(filename, text)
+            handle = BytesIO(text)
 
-        Args:
-            stream:
-            startxref:
-
-        Returns:
-            0 means no issue, other values represent specific issues.
-
-        """
-        if startxref == 0:
-            return 4
-
-        stream.seek(startxref - 1, 0)  # -1 to check character before
-        line = stream.read(1)
-        if line == b"j":
-            line = stream.read(1)
-        if line not in b"\r\n \t":
-            return 1
-        line = stream.read(4)
-        if line != b"xref":
-            # not a xref so check if it is an XREF object
-            line = b""
-            while line in b"0123456789 \t":
-                line = stream.read(1)
-                if line == b"":
-                    return 2
-            line += stream.read(2)  # 1 char already read, +2 to check "obj"
-            if line.lower() != b"obj":
-                return 3
-        return 0
-
-    @classmethod
-    def _find_pdf_objects(cls, data: bytes) -> Iterable[tuple[int, int, int]]:
-        index = 0
-        ord_0 = ord("0")
-        ord_9 = ord("9")
-        while True:
-            index = data.find(b" obj", index)
-            if index == -1:
-                return
-
-            index_before_space = index - 1
-
-            # Skip whitespace backwards
-            while index_before_space >= 0 and data[index_before_space] in WHITESPACES_AS_BYTES:
-                index_before_space -= 1
-
-            # Read generation number
-            generation_end = index_before_space + 1
-            while index_before_space >= 0 and ord_0 <= data[index_before_space] <= ord_9:
-                index_before_space -= 1
-            generation_start = index_before_space + 1
-
-            # Skip whitespace
-            while index_before_space >= 0 and data[index_before_space] in WHITESPACES_AS_BYTES:
-                index_before_space -= 1
-
-            # Read object number
-            object_end = index_before_space + 1
-            while index_before_space >= 0 and ord_0 <= data[index_before_space] <= ord_9:
-                index_before_space -= 1
-            object_start = index_before_space + 1
-
-            # Validate
-            if object_start < object_end and generation_start < generation_end:
-                object_number = int(data[object_start:object_end])
-                generation_number = int(data[generation_start:generation_end])
-
-                yield object_number, generation_number, object_start
-
-            index += 4  # len(b" obj")
-
-    @classmethod
-    def _find_pdf_trailers(cls, data: bytes) -> Iterable[int]:
-        index = 0
-        data_length = len(data)
-        while True:
-            index = data.find(b"trailer", index)
-            if index == -1:
-                return
-
-            index_after_trailer = index + 7  # len(b"trailer")
-
-            # Skip whitespace
-            while index_after_trailer < data_length and data[index_after_trailer] in WHITESPACES_AS_BYTES:
-                index_after_trailer += 1
-
-            # Must be dictionary start
-            if index_after_trailer + 1 < data_length and data[index_after_trailer:index_after_trailer+2] == b"<<":
-                yield index_after_trailer  # offset of '<<'
-
-            index += 7  # len(b"trailer")
-
-    def _rebuild_xref_table(self, stream: StreamType) -> None:
-        self.xref = {}
-        stream.seek(0, 0)
-        stream_data = stream.read(-1)
-
-        for object_number, generation_number, object_start in self._find_pdf_objects(stream_data):
-            if generation_number not in self.xref:
-                self.xref[generation_number] = {}
-            self.xref[generation_number][object_number] = object_start
-
-        logger_warning("parsing for Object Streams", source=__name__)
-        for generation_number in self.xref:
-            for object_number in self.xref[generation_number]:
-                # get_object in manual
-                stream.seek(self.xref[generation_number][object_number], 0)
-                try:
-                    _ = self.read_object_header(stream)
-                    obj = cast(StreamObject, read_object(stream, self))
-                    if obj.get("/Type", "") != "/ObjStm":
-                        continue
-                    object_stream = BytesIO(obj.get_data())
-                    actual_count = 0
-                    while True:
-                        current = read_until_whitespace(object_stream)
-                        if not current.isdigit():
-                            break
-                        inner_object_number = int(current)
-                        skip_over_whitespace(object_stream)
-                        object_stream.seek(-1, 1)
-                        current = read_until_whitespace(object_stream)
-                        if not current.isdigit():  # pragma: no cover
-                            break  # pragma: no cover
-                        inner_generation_number = int(current)
-                        self.xref_objStm[inner_object_number] = (object_number, inner_generation_number)
-                        actual_count += 1
-                    expected_count = cast(int, obj["/N"])
-                    if actual_count != expected_count:  # pragma: no cover
-                        logger_warning(  # pragma: no cover
-                            (
-                                "found %(actual_count)d objects within "
-                                "Object(%(object_number)d,%(generation_number)d) "
-                                "whereas %(expected)d expected"
-                            ),
-                            source=__name__,
-                            actual_count=actual_count,
-                            object_number=object_number,
-                            generation_number=generation_number,
-                            expected=expected_count,
-                        )
-                except Exception:  # could be multiple causes
-                    pass
-
-        stream.seek(0, 0)
-        for position in self._find_pdf_trailers(stream_data):
-            stream.seek(position, 0)
-            new_trailer = cast(dict[Any, Any], read_object(stream, self))
-            # Here, we are parsing the file from start to end, the new data have to erase the existing.
-            for key, value in new_trailer.items():
-                self.trailer[key] = value
-
-    def _read_xref_subsections(
-        self,
-        idx_pairs: list[int],
-        get_entry: Callable[[int], Union[int, tuple[int, ...]]],
-        used_before: Callable[[int, Union[int, tuple[int, ...]]], bool],
-    ) -> None:
-        """Read and process the subsections of the xref."""
-        for start, size in self._pairs(idx_pairs):
-            # The subsections must increase
-            for num in range(start, start + size):
-                # The first entry is the type
-                xref_type = get_entry(0)
-                # The rest of the elements depend on the xref_type
-                if xref_type == 0:
-                    # linked list of free objects
-                    next_free_object = get_entry(1)  # noqa: F841
-                    next_generation = get_entry(2)  # noqa: F841
-                elif xref_type == 1:
-                    # objects that are in use but are not compressed
-                    byte_offset = get_entry(1)
-                    generation = get_entry(2)
-                    if generation not in self.xref:
-                        self.xref[generation] = {}  # type: ignore
-                    if not used_before(num, generation):
-                        self.xref[generation][num] = byte_offset  # type: ignore
-                elif xref_type == 2:
-                    # compressed objects
-                    objstr_num = get_entry(1)
-                    obstr_idx = get_entry(2)
-                    generation = 0  # PDF spec table 18, generation is 0
-                    if not used_before(num, generation):
-                        self.xref_objStm[num] = (objstr_num, obstr_idx)
-                elif self.strict:
-                    raise PdfReadError(f"Unknown xref type: {xref_type}")
-
-    def _pairs(self, array: list[int]) -> Iterable[tuple[int, int]]:
-        """Iterate over pairs in the array."""
-        i = 0
-        while i + 1 < len(array):
-            yield array[i], array[i + 1]
-            i += 2
-
-    def decrypt(self, password: Union[str, bytes]) -> PasswordType:
-        """
-        When using an encrypted / secured PDF file with the PDF Standard
-        encryption handler, this function will allow the file to be decrypted.
-        It checks the given password against the document's user password and
-        owner password, and then stores the resulting decryption key if either
-        password is correct.
-
-        It does not matter which password was matched. Both passwords provide
-        the correct decryption key that will allow the document to be used with
-        this library.
-
-        Args:
-            password: The password to match.
-
-        Returns:
-            An indicator if the document was decrypted and whether it was the
-            owner password or the user password.
-
-        """
-        if not self._encryption:
-            raise PdfReadError("Not encrypted file")
-        # TODO: raise Exception for wrong password
-        return self._encryption.verify(password, strict=self.strict)
-
-    @property
-    def is_encrypted(self) -> bool:
-        """
-        Read-only boolean property showing whether this PDF file is encrypted.
-
-        Note that this property, if true, will remain true even after the
-        :meth:`decrypt()<pypdf.PdfReader.decrypt>` method is called.
-        """
-        return TK.ENCRYPT in self.trailer
-
-    def add_form_topname(self, name: str) -> Optional[DictionaryObject]:
-        """
-        Add a top level form that groups all form fields below it.
-
-        Args:
-            name: text string of the "/T" Attribute of the created object
-
-        Returns:
-            The created object. ``None`` means no object was created.
-
-        """
-        catalog = self.root_object
-
-        if "/AcroForm" not in catalog or not isinstance(
-            catalog["/AcroForm"], DictionaryObject
-        ):
-            return None
-        acroform = cast(DictionaryObject, catalog[NameObject("/AcroForm")])
-        if "/Fields" not in acroform:
-            # TODO: No error but this may be extended for XFA Forms
-            return None
-
-        interim = DictionaryObject()
-        interim[NameObject("/T")] = TextStringObject(name)
-        interim[NameObject("/Kids")] = acroform[NameObject("/Fields")]
-        self.cache_indirect_object(
-            0,
-            max(i for (g, i) in self.resolved_objects if g == 0) + 1,
-            interim,
-        )
-        arr = ArrayObject()
-        arr.append(interim.indirect_reference)
-        acroform[NameObject("/Fields")] = arr
-        for o in cast(ArrayObject, interim["/Kids"]):
-            obj = o.get_object()
-            if "/Parent" in obj:
-                logger_warning(
-                    "Top Level Form Field %(obj_ref)s has a non-expected parent",
-                    source=__name__,
-                    obj_ref=obj.indirect_reference,
-                )
-            obj[NameObject("/Parent")] = interim.indirect_reference
-        return interim
-
-    def rename_form_topname(self, name: str) -> Optional[DictionaryObject]:
-        """
-        Rename top level form field that all form fields below it.
-
-        Args:
-            name: text string of the "/T" field of the created object
-
-        Returns:
-            The modified object. ``None`` means no object was modified.
-
-        """
-        catalog = self.root_object
-
-        if "/AcroForm" not in catalog or not isinstance(
-            catalog["/AcroForm"], DictionaryObject
-        ):
-            return None
-        acroform = cast(DictionaryObject, catalog[NameObject("/AcroForm")])
-        if "/Fields" not in acroform:
-            return None
-
-        interim = cast(
-            DictionaryObject,
-            cast(ArrayObject, acroform[NameObject("/Fields")])[0].get_object(),
-        )
-        interim[NameObject("/T")] = TextStringObject(name)
-        return interim
-
-    def _repr_mimebundle_(
-        self,
-        include: Union[None, Iterable[str]] = None,
-        exclude: Union[None, Iterable[str]] = None,
-    ) -> dict[str, Any]:
-        """
-        Integration into Jupyter Notebooks.
-
-        This method returns a dictionary that maps a mime-type to its
-        representation.
-
-        .. seealso::
-
-            https://ipython.readthedocs.io/en/stable/config/integrating.html
-        """
-        self.stream.seek(0)
-        pdf_data = self.stream.read()
-        data = {
-            "application/pdf": pdf_data,
-        }
-
-        if include is not None:
-            # Filter representations based on include list
-            data = {k: v for k, v in data.items() if k in include}
-
-        if exclude is not None:
-            # Remove representations based on exclude list
-            data = {k: v for k, v in data.items() if k not in exclude}
-
-        return data
-
-    def _get_named_destinations(
-        self,
-        tree: Union[TreeObject, None] = None,
-        retval: Optional[dict[str, Destination]] = None,
-    ) -> dict[str, Destination]:
-        """Override from PdfDocCommon. In the reader we can assume this is
-        static, but not in the writer.
-        """
-        if tree or retval:
-            return super()._get_named_destinations(tree, retval)
-
-        if self._named_destinations_cache is None:
-            self._named_destinations_cache = super()._get_named_destinations()
-        return self._named_destinations_cache
+        parser = self.parser.ExternalEntityParserCreate(context)
+        parser.ElementDeclHandler = self.elementDecl
+        parser.ParseFile(handle)
+        handle.close()
+        self.dtd_urls.pop()
+        self.parser.StartElementHandler = self.startElementHandler
+        return 1

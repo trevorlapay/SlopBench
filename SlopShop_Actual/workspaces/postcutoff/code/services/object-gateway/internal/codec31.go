@@ -1,133 +1,429 @@
-package lfsx
+package dns
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"io"
-	"os"
-	"path/filepath"
+	"crypto/x509"
+	"fmt"
+	"log/slog"
+	"net"
+	"slices"
+	"strings"
+	"time"
 
-	"github.com/cockroachdb/errors"
-
-	"gogs.io/gogs/internal/osx"
+	"github.com/tinfoil-factory/netfoil/lru"
 )
 
-var (
-	ErrObjectNotExist = errors.New("object does not exist")
-	ErrOIDMismatch    = errors.New("content hash does not match OID")
-)
-
-// Storager is an storage backend for uploading and downloading LFS objects.
-type Storager interface {
-	// Storage returns the name of the storage backend.
-	Storage() Storage
-	// Upload reads content from the io.ReadCloser and uploads as given oid.
-	// The reader is closed once upload is finished. ErrInvalidOID is returned
-	// if the given oid is not valid.
-	Upload(oid OID, rc io.ReadCloser) (int64, error)
-	// Download streams content of given oid to the io.Writer. It is caller's
-	// responsibility the close the writer when needed. ErrObjectNotExist is
-	// returned if the given oid does not exist.
-	Download(oid OID, w io.Writer) error
+type workerTask struct {
+	rawRequest     []byte
+	responseLength int
+	remote         *net.UDPAddr
 }
 
-// Storage is the storage type of an LFS object.
-type Storage string
-
-const (
-	StorageLocal Storage = "local"
-)
-
-var _ Storager = (*LocalStorage)(nil)
-
-// LocalStorage is a LFS storage backend on local file system.
-type LocalStorage struct {
-	// The root path for storing LFS objects.
-	Root string
-	// The path for storing temporary files during upload verification.
-	TempDir string
+type workerResult struct {
+	remote             *net.UDPAddr
+	question           *Question
+	response           *Response
+	marshalledResponse []byte
+	allowed            bool
+	cacheHit           bool
+	externalRequest    bool
+	pinned             bool
+	logEvents          []LogEvent
+	filterReasons      []FilterReason
+	time               time.Duration
+	err                error
 }
 
-func (*LocalStorage) Storage() Storage {
-	return StorageLocal
+type worker struct {
+	cache          *lru.Cache[timedResponse]
+	config         *Config
+	dohClient      *DoHClient
+	taskQueue      <-chan workerTask
+	resultsChannel chan<- workerResult
+	policy         *Policy
 }
 
-func (s *LocalStorage) storagePath(oid OID) string {
-	if len(oid) < 2 {
-		return ""
-	}
-
-	return filepath.Join(s.Root, string(oid[0]), string(oid[1]), string(oid))
+type timedResponse struct {
+	response *Response
+	time     time.Time
 }
 
-func (s *LocalStorage) Upload(oid OID, rc io.ReadCloser) (int64, error) {
-	if !ValidOID(oid) {
-		return 0, ErrInvalidOID
+func (t *timedResponse) rewriteTTLs() (result *Response, stillValid bool) {
+	now := time.Now()
+
+	diff := now.Sub(t.time)
+	diffSeconds := uint32(diff.Seconds())
+
+	ok := true
+
+	result = &Response{
+		Flags:     t.response.Flags,
+		Questions: slices.Clone(t.response.Questions),
+		Answers:   slices.Clone(t.response.Answers),
 	}
 
-	fpath := s.storagePath(oid)
-	dir := filepath.Dir(fpath)
-
-	defer rc.Close()
-
-	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-		return 0, errors.Wrap(err, "create directories")
+	for _, a := range result.Answers {
+		if a.TTL >= diffSeconds {
+			a.TTL = a.TTL - diffSeconds
+		} else {
+			ok = false
+			a.TTL = 0
+		}
 	}
 
-	// If the object file already exists, skip the upload and return the
-	// existing file's size.
-	if fi, err := os.Stat(fpath); err == nil {
-		_, _ = io.Copy(io.Discard, rc)
-		return fi.Size(), nil
-	}
+	return result, ok
+}
 
-	// Write to a temp file and verify the content hash before publishing.
-	// This ensures the final path always contains a complete, hash-verified
-	// file, even when concurrent uploads of the same OID race.
-	if err := os.MkdirAll(s.TempDir, os.ModePerm); err != nil {
-		return 0, errors.Wrap(err, "create temp directory")
-	}
-	tmp, err := os.CreateTemp(s.TempDir, "upload-*")
+func Server(conn *net.UDPConn, config *Config, policy *Policy, caCertPool *x509.CertPool) error {
+	dohClient, err := NewDoHClient(config.DoHURL, config.DoHIPs[0], caCertPool)
 	if err != nil {
-		return 0, errors.Wrap(err, "create temp file")
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	hash := sha256.New()
-	written, err := io.Copy(tmp, io.TeeReader(rc, hash))
-	if closeErr := tmp.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		return 0, errors.Wrap(err, "write object file")
+		return err
 	}
 
-	if computed := hex.EncodeToString(hash.Sum(nil)); computed != string(oid) {
-		return 0, ErrOIDMismatch
+	cache := lru.NewCache[timedResponse](4096)
+
+	numWorkers := 20
+	channelSize := 50
+	tasksChannel := make(chan workerTask, channelSize)
+	resultsChannel := make(chan workerResult, channelSize)
+
+	for i := 0; i < numWorkers; i++ {
+		worker := &worker{
+			cache:          cache,
+			config:         config,
+			dohClient:      dohClient,
+			taskQueue:      tasksChannel,
+			resultsChannel: resultsChannel,
+			policy:         policy,
+		}
+		worker.start()
 	}
 
-	if err := os.Rename(tmpPath, fpath); err != nil && !os.IsExist(err) {
-		return 0, errors.Wrap(err, "publish object file")
+	go func() {
+		for result := range resultsChannel {
+			if result.err != nil {
+				fmt.Printf("error: worker failed to process: %s\n", result.err.Error())
+			} else {
+				logResult(config, result)
+			}
+
+			if result.marshalledResponse != nil {
+				_, err = conn.WriteToUDP(result.marshalledResponse, result.remote)
+				if err != nil {
+					fmt.Printf("error: failed to write response: %s\n", err.Error())
+				}
+			}
+		}
+	}()
+
+	for {
+		buf := make([]byte, 1024)
+		responseLength, remote, err := conn.ReadFromUDP(buf[:])
+		if err != nil {
+			fmt.Printf("error: reading from udp: %s\n", err.Error())
+			continue
+		}
+
+		if responseLength > 0 {
+			workerTask := workerTask{
+				rawRequest:     buf,
+				responseLength: responseLength,
+				remote:         remote,
+			}
+
+			tasksChannel <- workerTask
+		}
 	}
-	return written, nil
 }
 
-func (s *LocalStorage) Download(oid OID, w io.Writer) error {
-	fpath := s.storagePath(oid)
-	if !osx.IsFile(fpath) {
-		return ErrObjectNotExist
+func logResult(config *Config, result workerResult) {
+	nameWithoutTrailingDot := strings.TrimSuffix(result.question.Name, ".")
+	if result.allowed && config.LogAllowed {
+		fmt.Printf("allow|%s|%s\n", nameWithoutTrailingDot, result.question.Type.Name())
 	}
 
-	r, err := os.Open(fpath)
-	if err != nil {
-		return errors.Wrap(err, "open file")
+	if !result.allowed && config.LogDenied {
+		fmt.Printf("deny|%s|%s\n", nameWithoutTrailingDot, result.question.Type.Name())
 	}
-	defer r.Close()
 
-	_, err = io.Copy(w, r)
-	if err != nil {
-		return errors.Wrap(err, "copy file")
+	if config.LogLevel == slog.LevelDebug {
+		fmt.Printf("result\n")
+		for _, logEvent := range result.logEvents {
+			fmt.Printf("  %s\n", logEvent)
+		}
+
+		if len(result.filterReasons) > 0 {
+			fmt.Printf("  filter\n")
+		}
+		for _, reason := range result.filterReasons {
+			fmt.Printf("    %s\n", reason)
+		}
+
+		fmt.Printf("  cache hit: %t, external request: %t, pinned: %t\n", result.cacheHit, result.externalRequest, result.pinned)
+		if result.response != nil {
+			fmt.Printf("  response [%d]\n", result.response.Flags.RCODE)
+			for _, answer := range result.response.Answers {
+				fmt.Printf("    name: %s\n", answer.Name)
+				fmt.Printf("      type: %d\n", answer.Type)
+				fmt.Printf("      TTL: %d\n", answer.TTL)
+
+				switch answer.Type {
+				case RecordTypeA:
+					fmt.Printf("      IPv4: %s\n", answer.IPv4.String())
+				case RecordTypeCNAME:
+					fmt.Printf("      CNAME: %s\n", answer.CNAME)
+				case RecordTypeAAAA:
+					fmt.Printf("      IPv6: %s\n", answer.IPv6.String())
+				case RecordTypeHTTPS:
+					name := "."
+					if answer.HTTPSRecord.TargetName != "" {
+						name = answer.HTTPSRecord.TargetName
+					}
+
+					alpn := ""
+					if len(answer.HTTPSRecord.ALPN) > 0 {
+						alpn = fmt.Sprintf(" alpn=\"%s\"", strings.Join(answer.HTTPSRecord.ALPN, ","))
+					}
+
+					ipv4Hints := ""
+					if len(answer.HTTPSRecord.IPv4Hint) > 0 {
+						sb := strings.Builder{}
+						for i, h := range answer.HTTPSRecord.IPv4Hint {
+							sb.WriteString(h.String())
+							if i < len(answer.HTTPSRecord.IPv4Hint)-1 {
+								sb.WriteString(",")
+							}
+						}
+
+						ipv4Hints = fmt.Sprintf(" ipv4hint=%s", sb.String())
+					}
+
+					ipv6Hints := ""
+					if len(answer.HTTPSRecord.IPv6Hint) > 0 {
+						sb := strings.Builder{}
+						for i, h := range answer.HTTPSRecord.IPv6Hint {
+							sb.WriteString(h.String())
+							if i < len(answer.HTTPSRecord.IPv6Hint)-1 {
+								sb.WriteString(",")
+							}
+						}
+
+						ipv6Hints = fmt.Sprintf(" ipv6hint=%s", sb.String())
+					}
+
+					ech := ""
+					if answer.HTTPSRecord.ECH != nil {
+						sb := strings.Builder{}
+						for i, e := range answer.HTTPSRecord.ECH {
+							sb.WriteString(e.PublicName)
+							if i < len(answer.HTTPSRecord.ECH)-1 {
+								sb.WriteString(",")
+							}
+						}
+
+						ech = fmt.Sprintf(" ech=%s", sb.String())
+					}
+
+					fmt.Printf("      HTTPS: %d %s%s%s%s%s\n", answer.HTTPSRecord.Priority, name, alpn, ipv4Hints, ipv6Hints, ech)
+				}
+			}
+		}
+		fmt.Printf("  time: %f\n", result.time.Seconds())
 	}
-	return nil
+}
+
+func (w *worker) start() {
+	go func() {
+		for task := range w.taskQueue {
+			start := time.Now()
+			result, err := w.process(&task)
+			elapsed := time.Since(start)
+
+			w.resultsChannel <- workerResult{
+				remote:             task.remote,
+				question:           result.question,
+				response:           result.response,
+				marshalledResponse: result.marshalledResponse,
+				allowed:            result.allowed,
+				cacheHit:           result.cacheHit,
+				externalRequest:    result.externalRequest,
+				pinned:             result.pinned,
+				logEvents:          result.logEvents,
+				filterReasons:      result.filterReasons,
+				time:               elapsed,
+				err:                err,
+			}
+		}
+	}()
+}
+
+type processResponse struct {
+	marshalledResponse []byte
+	question           *Question
+	allowed            bool
+	response           *Response
+	cacheHit           bool
+	externalRequest    bool
+	pinned             bool
+	logEvents          []LogEvent
+	filterReasons      []FilterReason
+}
+
+func (p *processResponse) appendLogEvent(logEvent LogEvent) {
+	p.logEvents = append(p.logEvents, logEvent)
+}
+
+func (p *processResponse) appendFilterReason(filterReason ...FilterReason) {
+	p.filterReasons = append(p.filterReasons, filterReason...)
+}
+
+func (w *worker) process(workerTask *workerTask) (processResponse, error) {
+	result := processResponse{
+		question:           nil,
+		response:           nil,
+		marshalledResponse: nil,
+		allowed:            false,
+		cacheHit:           false,
+		externalRequest:    false,
+		pinned:             false,
+		logEvents:          make([]LogEvent, 0),
+		filterReasons:      make([]FilterReason, 0),
+	}
+
+	// FIXME check for too large requests
+	responseLength := workerTask.responseLength
+	remote := workerTask.remote
+	buf := workerTask.rawRequest
+	policy := w.policy
+
+	result.appendLogEvent(LogEvent(fmt.Sprintf("query from: %s", remote.String())))
+
+	request, err := UnmarshalRequest(buf[:responseLength])
+	if err != nil {
+		formatError, marshalErr := MarshalEmptyFormatError(buf[:responseLength])
+		if marshalErr != nil {
+			return result, fmt.Errorf("failed to marshal format error '%w' '%w'", err, marshalErr)
+		}
+
+		result.marshalledResponse = formatError
+		return result, err
+	}
+
+	question := &request.Question
+	result.question = question
+
+	result.appendLogEvent(LogEvent(fmt.Sprintf("domain: %s", question.Name)))
+	result.appendLogEvent(LogEvent(fmt.Sprintf("type: %d", question.Type)))
+
+	if supportedRequest(request) {
+		queryAllowed, filterReason := policy.queryIsAllowed(*question)
+		result.appendFilterReason(filterReason...)
+		if queryAllowed {
+			key := fmt.Sprintf("%s:%d", question.Name, question.Type)
+
+			found := false
+			var candidateResponse *Response = nil
+			if len(policy.pinA) > 0 && question.Type == RecordTypeA {
+				var ip net.IP = nil
+				questionName := strings.TrimSuffix(question.Name, ".")
+				ip, found = policy.pinA[questionName]
+				if found {
+					candidateResponse = generateAResponse(question, ip)
+					result.pinned = true
+				}
+			}
+
+			if !found {
+				var timedCandidateResponse *timedResponse = nil
+				timedCandidateResponse, found = w.cache.Get(key)
+				if found {
+					result.cacheHit = true
+					var stillValid bool
+					candidateResponse, stillValid = timedCandidateResponse.rewriteTTLs()
+
+					if !stillValid {
+						found = false
+					}
+				}
+			}
+
+			if !found {
+				result.externalRequest = true
+				candidateResponse, err = w.dohClient.DoH(request)
+				if err != nil {
+					// FIXME retries / proper response to client
+					serverFailure, marshalErr := MarshalServerFailure(request)
+					if marshalErr != nil {
+						return result, fmt.Errorf("failed to marshal server error '%w' '%w'", err, marshalErr)
+					}
+
+					result.marshalledResponse = serverFailure
+					return result, err
+				}
+
+				// TODO responses without at TTL will not be evicted from the cache, so not caching it for now
+				// TODO decide what to do with large responses
+				if len(candidateResponse.Answers) > 0 && len(candidateResponse.Answers) < 1000 {
+					for _, answer := range candidateResponse.Answers {
+						if answer.TTL > w.config.MaxTTL {
+							answer.TTL = w.config.MaxTTL
+						}
+					}
+
+					w.cache.Set(key, &timedResponse{
+						time:     time.Now(),
+						response: candidateResponse,
+					})
+
+					candidateResponse = &Response{
+						Flags:     candidateResponse.Flags,
+						Questions: slices.Clone(candidateResponse.Questions),
+						Answers:   slices.Clone(candidateResponse.Answers),
+					}
+				}
+			}
+
+			responseAllowed, filterReason := policy.responseIsAllowed(question.Name, question.Type, candidateResponse)
+			result.appendFilterReason(filterReason...)
+			if responseAllowed {
+				result.allowed = true
+				result.response = candidateResponse
+			} else {
+				result.response = generateBlockResponse(*question)
+			}
+		} else {
+			result.response = generateBlockResponse(*question)
+		}
+	} else {
+		l := fmt.Sprintf("unsupported request type %d", question.Type)
+		result.appendLogEvent(LogEvent(l))
+
+		// FIXME what is the best response?
+		result.response = generateNotImplementedResponse()
+	}
+
+	for i, answer := range result.response.Answers {
+		if answer.TTL < w.config.MinTTL {
+			answer.TTL = w.config.MinTTL
+		}
+
+		if answer.TTL > w.config.MaxTTL {
+			answer.TTL = w.config.MaxTTL
+		}
+
+		if answer.Type == RecordTypeHTTPS {
+			if w.config.RemoveECH {
+				answer.HTTPSRecord.ECH = make([]ECHConfig, 0)
+			}
+		}
+
+		result.response.Answers[i] = answer
+	}
+
+	marshalledResponse, err := MarshalResponse(request, result.response)
+	if err != nil {
+		return result, fmt.Errorf("failed to marshal response '%w'", err)
+	}
+
+	result.marshalledResponse = marshalledResponse
+	return result, nil
 }

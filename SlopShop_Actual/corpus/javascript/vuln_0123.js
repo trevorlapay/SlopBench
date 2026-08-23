@@ -1,742 +1,1243 @@
+const dns = require('node:dns/promises');
+const crypto = require('node:crypto');
+const tpl = require('@tryghost/tpl');
+const logging = require('@tryghost/logging');
+const sanitizeHtml = require('sanitize-html');
+const {BadRequestError, NoPermissionError, UnauthorizedError, DisabledFeatureError, NotFoundError} = require('@tryghost/errors');
+const errors = require('@tryghost/errors');
+const {isEmail} = require('@tryghost/validator');
+const normalizeEmail = require('../utils/normalize-email');
+const hasActiveOffer = require('../utils/has-active-offer');
+const {getInboxLinks} = require('../../../../lib/get-inbox-links');
+const {SIGNUP_CONTEXTS} = require('../../../lib/member-signup-contexts');
+/** @typedef {import('../../../lib/member-signup-contexts').SignupContext} SignupContext */
+
+const messages = {
+    emailRequired: 'Email is required.',
+    invalidEmail: 'Email is not valid',
+    blockedEmailDomain: 'Signups from this email domain are currently restricted.',
+    badRequest: 'Bad Request.',
+    notFound: 'Not Found.',
+    offerNotFound: 'This offer does not exist.',
+    offerArchived: 'This offer is archived.',
+    tierNotFound: 'This tier does not exist.',
+    tierArchived: 'This tier is archived.',
+    existingSubscription: 'A subscription exists for this Member.',
+    unableToCheckout: 'Unable to initiate checkout session',
+    inviteOnly: 'This site is invite-only, contact the owner for access.',
+    paidOnly: 'This site only accepts paid members.',
+    memberNotFound: 'No member exists with this e-mail address.',
+    invalidType: 'Invalid checkout type.',
+    notConfigured: 'This site is not accepting payments at the moment.',
+    invalidNewsletters: 'Cannot subscribe to invalid newsletters {newsletters}',
+    archivedNewsletters: 'Cannot subscribe to archived newsletters {newsletters}',
+    otcNotSupported: 'OTC verification not supported.',
+    invalidCode: 'Invalid verification code.',
+    failedToVerifyCode: 'Failed to verify code, please try again.',
+    signInRequired: 'You must be signed in to continue.'
+};
+
+// helper utility for logic shared between sendMagicLink and verifyOTC
+function extractRefererOrRedirect(req) {
+    const {autoRedirect, redirect} = req.body;
+
+    if (autoRedirect === false) {
+        return null;
+    }
+
+    if (redirect) {
+        try {
+            return new URL(redirect).href;
+        } catch (e) {
+            logging.warn(e);
+        }
+    }
+
+    return req.get('referer') || null;
+}
+
+function extractGiftToken(input) {
+    if (!input || typeof input !== 'string' || input.length === 0) {
+        return null;
+    }
+
+    return input.trim();
+}
+
 /**
- * CryptoJS core components.
+ * Validate that a candidate return URL (e.g. Stripe Checkout success/cancel URL) points back
+ * to the configured Ghost site. Returns `undefined` when the candidate is missing, malformed,
+ * on a different origin, or outside of the site's subpath (for subpath installs) — leaving
+ * the downstream Stripe service to fall back to its configured default URL.
+ *
+ * This prevents the public checkout endpoints being abused as open-redirect surfaces.
+ *
+ * @param {string | undefined} candidate - URL provided in the request body
+ * @param {string} siteUrl - The site URL returned by urlUtils.getSiteUrl()
+ * @returns {string | undefined} The candidate URL if same-origin, otherwise undefined
  */
-var CryptoJS = CryptoJS || (function (Math, undefined) {
-    /*
-     * Local polyfil of Object.create
+function sanitizeReturnUrl(candidate, siteUrl) {
+    if (typeof candidate !== 'string' || candidate.length === 0) {
+        return undefined;
+    }
+
+    let site;
+    let url;
+
+    try {
+        site = new URL(siteUrl);
+        url = new URL(candidate);
+    } catch {
+        return undefined;
+    }
+
+    if (url.origin !== site.origin) {
+        return undefined;
+    }
+
+    // Normalize site/candidate paths to trailing-slash form so that /blog and /blog/
+    // are treated equivalently when the site is configured at a subpath.
+    const sitePath = site.pathname.endsWith('/') ? site.pathname : `${site.pathname}/`;
+    const urlPath = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+
+    return urlPath.startsWith(sitePath) ? url.href : undefined;
+}
+
+module.exports = class RouterController {
+    #inboxLinksDnsResolver = new dns.Resolver({maxTimeout: 1000});
+
+    /**
+     * RouterController
+     *
+     * @param {object} deps
+     * @param {any} deps.offersAPI
+     * @param {any} deps.paymentsService
+     * @param {any} deps.memberRepository
+     * @param {any} deps.StripePrice
+     * @param {() => boolean} deps.allowSelfSignup
+     * @param {any} deps.magicLinkService
+     * @param {import('../../../stripe/stripe-api')} deps.stripeAPIService
+     * @param {import('../../../member-attribution')} deps.memberAttributionService
+     * @param {any} deps.tokenService
+     * @param {any} deps.sendEmailWithMagicLink
+     * @param {{isSet(name: string): boolean}} deps.labsService
+     * @param {any} deps.newslettersService
+     * @param {any} deps.sentry
+     * @param {any} deps.settingsCache
+     * @param {any} deps.settingsHelpers
+     * @param {any} deps.urlUtils
+     * @param {any} deps.emailAddressService
      */
-    var create = Object.create || (function () {
-        function F() {}
+    constructor({
+        offersAPI,
+        paymentsService,
+        tiersService,
+        memberRepository,
+        StripePrice,
+        allowSelfSignup,
+        magicLinkService,
+        stripeAPIService,
+        tokenService,
+        memberAttributionService,
+        sendEmailWithMagicLink,
+        labsService,
+        newslettersService,
+        sentry,
+        settingsCache,
+        settingsHelpers,
+        urlUtils,
+        emailAddressService,
+        giftService
+    }) {
+        this._offersAPI = offersAPI;
+        this._paymentsService = paymentsService;
+        this._tiersService = tiersService;
+        this._memberRepository = memberRepository;
+        this._StripePrice = StripePrice;
+        this._allowSelfSignup = allowSelfSignup;
+        this._magicLinkService = magicLinkService;
+        this._stripeAPIService = stripeAPIService;
+        this._tokenService = tokenService;
+        this._sendEmailWithMagicLink = sendEmailWithMagicLink;
+        this._memberAttributionService = memberAttributionService;
+        this.labsService = labsService;
+        this._newslettersService = newslettersService;
+        this._sentry = sentry || undefined;
+        this._settingsCache = settingsCache;
+        this._settingsHelpers = settingsHelpers;
+        this._urlUtils = urlUtils;
+        this._emailAddressService = emailAddressService;
+        this._giftService = giftService;
+    }
 
-        return function (obj) {
-            var subtype;
+    async ensureStripe(_req, res, next) {
+        if (!this._stripeAPIService.configured) {
+            res.writeHead(400);
+            return res.end('Stripe not configured');
+        }
+        try {
+            await this._stripeAPIService.ready();
+            next();
+        } catch (err) {
+            logging.error(err);
+            res.writeHead(500);
+            return res.end('There was an error configuring stripe');
+        }
+    }
 
-            F.prototype = obj;
+    async createCheckoutSetupSession(req, res) {
+        const identity = req.body.identity;
 
-            subtype = new F();
+        if (!identity) {
+            res.writeHead(400);
+            return res.end();
+        }
 
-            F.prototype = null;
+        let email;
+        try {
+            if (!identity) {
+                email = null;
+            } else {
+                const claims = await this._tokenService.decodeToken(identity);
+                email = claims && claims.sub;
+            }
+        } catch (err) {
+            logging.error(err);
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
 
-            return subtype;
+        const member = email ? await this._memberRepository.get({email}) : null;
+
+        if (!member) {
+            res.writeHead(403);
+            return res.end('Bad Request.');
+        }
+
+        const subscriptions = await member.related('stripeSubscriptions').fetch();
+
+        const activeSubscription = subscriptions.models.find((sub) => {
+            return ['active', 'trialing', 'unpaid', 'past_due'].includes(sub.get('status'));
+        });
+
+        let currency = activeSubscription?.get('plan_currency') || undefined;
+
+        let customer;
+        if (!req.body.subscription_id) {
+            customer = await this._stripeAPIService.getCustomerForMemberCheckoutSession(member);
+        } else {
+            const subscription = subscriptions.models.find((sub) => {
+                return sub.get('subscription_id') === req.body.subscription_id;
+            });
+
+            if (!subscription) {
+                res.writeHead(404, {
+                    'Content-Type': 'text/plain;charset=UTF-8'
+                });
+                return res.end(`Could not find subscription ${req.body.subscription_id}`);
+            }
+            currency = subscription.get('plan_currency') || undefined;
+            customer = await this._stripeAPIService.getCustomer(subscription.get('customer_id'));
+        }
+
+        const siteUrl = this._urlUtils.getSiteUrl();
+        const session = await this._stripeAPIService.createCheckoutSetupSession(customer, {
+            successUrl: sanitizeReturnUrl(req.body.successUrl, siteUrl),
+            cancelUrl: sanitizeReturnUrl(req.body.cancelUrl, siteUrl),
+            subscription_id: req.body.subscription_id,
+            currency
+        });
+        const publicKey = this._stripeAPIService.getPublicKey();
+        const sessionInfo = {
+            sessionId: session.id,
+            publicKey
         };
-    }())
+        res.writeHead(200, {
+            'Content-Type': 'application/json'
+        });
+
+        res.end(JSON.stringify(sessionInfo));
+    }
+
+    async createBillingPortalSession(req, res) {
+        const identity = req.body.identity;
+
+        if (!identity) {
+            res.writeHead(400);
+            return res.end();
+        }
+
+        let email;
+        try {
+            const claims = await this._tokenService.decodeToken(identity);
+            email = claims && claims.sub;
+        } catch (err) {
+            logging.error(err);
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        const member = email ? await this._memberRepository.get({email}) : null;
+
+        if (!member) {
+            res.writeHead(403);
+            return res.end('Bad Request.');
+        }
+
+        const subscriptions = await member.related('stripeSubscriptions').fetch();
+
+        let customer;
+        if (!req.body.subscription_id) {
+            customer = await this._stripeAPIService.getCustomerForMemberCheckoutSession(member);
+        } else {
+            const subscription = subscriptions.models.find((sub) => {
+                return sub.get('subscription_id') === req.body.subscription_id;
+            });
+
+            if (!subscription) {
+                res.writeHead(404, {
+                    'Content-Type': 'text/plain;charset=UTF-8'
+                });
+                return res.end(`Could not find subscription ${req.body.subscription_id}`);
+            }
+
+            customer = await this._stripeAPIService.getCustomer(subscription.get('customer_id'));
+        }
+
+        const configurationId = this._settingsCache.get('stripe_billing_portal_configuration_id');
+
+        const siteUrl = this._urlUtils.getSiteUrl();
+        const session = await this._stripeAPIService.createBillingPortalSession(customer, {
+            returnUrl: sanitizeReturnUrl(req.body.returnUrl, siteUrl),
+            ...(configurationId && {configurationId})
+        });
+        const sessionInfo = {
+            url: session.url
+        };
+        res.writeHead(200, {
+            'Content-Type': 'application/json'
+        });
+
+        res.end(JSON.stringify(sessionInfo));
+    }
+
+    async _setAttributionMetadata(metadata) {
+        // Don't allow to set the source manually
+        delete metadata.attribution_id;
+        delete metadata.attribution_url;
+        delete metadata.attribution_type;
+        delete metadata.referrer_source;
+        delete metadata.referrer_medium;
+        delete metadata.referrer_url;
+        delete metadata.utm_source;
+        delete metadata.utm_medium;
+        delete metadata.utm_campaign;
+        delete metadata.utm_term;
+        delete metadata.utm_content;
+
+        if (metadata.urlHistory) {
+            // The full attribution history doesn't fit in the Stripe metadata (can't store objects + limited to 50 keys and 500 chars values)
+            // So we need to add top-level attributes with string values
+            const urlHistory = metadata.urlHistory;
+            delete metadata.urlHistory;
+
+            const attribution = await this._memberAttributionService.getAttribution(urlHistory);
+
+            // Don't set null properties
+            if (attribution.id) {
+                metadata.attribution_id = attribution.id;
+            }
+
+            if (attribution.url) {
+                metadata.attribution_url = attribution.url;
+            }
+
+            if (attribution.type) {
+                metadata.attribution_type = attribution.type;
+            }
+
+            if (attribution.referrerSource) {
+                metadata.referrer_source = attribution.referrerSource;
+            }
+
+            if (attribution.referrerMedium) {
+                metadata.referrer_medium = attribution.referrerMedium;
+            }
+
+            if (attribution.referrerUrl) {
+                metadata.referrer_url = attribution.referrerUrl;
+            }
+
+            // UTM parameters
+            if (attribution.utmSource) {
+                metadata.utm_source = attribution.utmSource;
+            }
+
+            if (attribution.utmMedium) {
+                metadata.utm_medium = attribution.utmMedium;
+            }
+
+            if (attribution.utmCampaign) {
+                metadata.utm_campaign = attribution.utmCampaign;
+            }
+
+            if (attribution.utmTerm) {
+                metadata.utm_term = attribution.utmTerm;
+            }
+
+            if (attribution.utmContent) {
+                metadata.utm_content = attribution.utmContent;
+            }
+        }
+    }
 
     /**
-     * CryptoJS namespace.
+     * Read the passed tier, offer and cadence from the request body and return the corresponding objects, or throws if validation fails
+     * @returns
      */
-    var C = {};
+    async _getSubscriptionCheckoutData(body) {
+        const tierId = body.tierId;
+        const offerId = body.offerId;
 
-    /**
-     * Library namespace.
-     */
-    var C_lib = C.lib = {};
+        let cadence = body.cadence;
+        let tier;
+        let offer;
 
-    /**
-     * Base object for prototypal inheritance.
-     */
-    var Base = C_lib.Base = (function () {
+        // Validate basic input
+        if (!offerId && !tierId) {
+            logging.error('[RouterController._getSubscriptionCheckoutData] Expected offerId or tierId, received none');
+            throw new BadRequestError({
+                message: tpl(messages.badRequest),
+                context: 'Expected offerId or tierId, received none'
+            });
+        }
 
+        if (offerId && tierId) {
+            logging.error('[RouterController._getSubscriptionCheckoutData] Expected offerId or tierId, received both');
+            throw new BadRequestError({
+                message: tpl(messages.badRequest),
+                context: 'Expected offerId or tierId, received both'
+            });
+        }
+
+        if (tierId && !cadence) {
+            logging.error('[RouterController._getSubscriptionCheckoutData] Expected cadence to be "month" or "year", received ', cadence);
+            throw new BadRequestError({
+                message: tpl(messages.badRequest),
+                context: 'Expected cadence to be "month" or "year", received ' + cadence
+            });
+        }
+
+        if (tierId && cadence && cadence !== 'month' && cadence !== 'year') {
+            logging.error('[RouterController._getSubscriptionCheckoutData] Expected cadence to be "month" or "year", received ', cadence);
+            throw new BadRequestError({
+                message: tpl(messages.badRequest),
+                context: 'Expected cadence to be "month" or "year", received "' + cadence + '"'
+            });
+        }
+
+        // Fetch tier and offer
+        if (offerId) {
+            offer = await this._offersAPI.getOffer({id: offerId});
+
+            if (!offer) {
+                throw new BadRequestError({
+                    message: tpl(messages.offerNotFound),
+                    context: 'Offer with id "' + offerId + '" not found'
+                });
+            }
+
+            if (!offer.tier) {
+                throw new BadRequestError({
+                    message: 'Offer does not have a tier'
+                });
+            }
+
+            tier = await this._tiersService.api.read(offer.tier.id);
+            cadence = offer.cadence;
+        } else if (tierId) {
+            offer = null;
+
+            try {
+                // If the tierId is not a valid ID, the following line will throw
+                tier = await this._tiersService.api.read(tierId);
+
+                if (!tier) {
+                    throw undefined;
+                }
+            } catch (err) {
+                logging.error(err);
+                this._sentry?.captureException?.(err);
+                throw new BadRequestError({
+                    message: tpl(messages.tierNotFound),
+                    context: 'Tier with id "' + tierId + '" not found'
+                });
+            }
+        }
+
+        if (tier.status === 'archived') {
+            throw new NoPermissionError({
+                message: tpl(messages.tierArchived)
+            });
+        }
 
         return {
-            /**
-             * Creates a new object that inherits from this object.
-             *
-             * @param {Object} overrides Properties to copy into the new object.
-             *
-             * @return {Object} The new object.
-             *
-             * @static
-             *
-             * @example
-             *
-             *     var MyType = CryptoJS.lib.Base.extend({
-             *         field: 'value',
-             *
-             *         method: function () {
-             *         }
-             *     });
-             */
-            extend: function (overrides) {
-                // Spawn
-                var subtype = create(this);
+            tier,
+            offer,
+            cadence
+        };
+    }
 
-                // Augment
-                if (overrides) {
-                    subtype.mixIn(overrides);
-                }
+    /**
+     *
+     * @param {object} options
+     * @param {object} options.tier
+     * @param {object} [options.offer]
+     * @param {string} options.cadence
+     * @param {string} options.successUrl URL to redirect to after successful checkout
+     * @param {string} options.cancelUrl URL to redirect to after cancelled checkout
+     * @param {string} [options.email] Email address of the customer
+     * @param {object} [options.member] Currently authenticated member OR member associated with the email address
+     * @param {object} [options.gift] Active gift subscription for the member
+     * @param {boolean} options.isAuthenticated
+     * @param {object} options.metadata Metadata to be passed to Stripe
+     * @returns
+     */
+    async _createSubscriptionCheckoutSession(options) {
+        if (options.tier && options.tier.id === 'free') {
+            throw new BadRequestError({
+                message: tpl(messages.badRequest)
+            });
+        }
 
-                // Create default initializer
-                if (!subtype.hasOwnProperty('init') || this.init === subtype.init) {
-                    subtype.init = function () {
-                        subtype.$super.init.apply(this, arguments);
-                    };
-                }
+        const tier = options.tier;
 
-                // Initializer's prototype is the subtype object
-                subtype.init.prototype = subtype;
+        if (!tier) {
+            throw new NotFoundError({
+                message: tpl(messages.tierNotFound)
+            });
+        }
 
-                // Reference supertype
-                subtype.$super = this;
+        if (tier.status === 'archived') {
+            throw new NoPermissionError({
+                message: tpl(messages.tierArchived)
+            });
+        }
 
-                return subtype;
-            },
+        if (options.offer) {
+            // Attach offer information to stripe metadata for free trial offers
+            // free trial offers don't have associated stripe coupons
+            options.metadata.offer = options.offer.id;
+        }
 
-            /**
-             * Extends this object and runs the init method.
-             * Arguments to create() will be passed to init().
-             *
-             * @return {Object} The new object.
-             *
-             * @static
-             *
-             * @example
-             *
-             *     var instance = MyType.create();
-             */
-            create: function () {
-                var instance = this.extend();
-                instance.init.apply(instance, arguments);
+        const member = options.member;
+        /** @type {SignupContext} */
+        let ghostSignupContext = (options.isAuthenticated && member) ? SIGNUP_CONTEXTS.ALREADY_AUTHENTICATED : SIGNUP_CONTEXTS.NEEDS_MAGIC_LINK_EMAIL;
 
-                return instance;
-            },
+        if (!member && options.email) {
+            // Create a signup link if there is no member with this email address
+            options.successUrl = await this._magicLinkService.getMagicLink({
+                tokenData: {
+                    email: options.email,
+                    attribution: {
+                        id: options.metadata.attribution_id ?? null,
+                        type: options.metadata.attribution_type ?? null,
+                        url: options.metadata.attribution_url ?? null
+                    }
+                },
+                type: 'signup',
+                // Redirect to the original success url after sign up
+                referrer: options.successUrl
+            });
+            ghostSignupContext = SIGNUP_CONTEXTS.HAS_PRECHECKOUT_MAGIC_LINK;
+        }
 
-            /**
-             * Initializes a newly created object.
-             * Override this method to add some logic when your objects are created.
-             *
-             * @example
-             *
-             *     var MyType = CryptoJS.lib.Base.extend({
-             *         init: function () {
-             *             // ...
-             *         }
-             *     });
-             */
-            init: function () {
-            },
+        if (member) {
+            options.successUrl = this._generateSuccessUrl(options.successUrl, tier.welcomePageURL);
 
-            /**
-             * Copies properties into this object.
-             *
-             * @param {Object} properties The properties to mix in.
-             *
-             * @example
-             *
-             *     MyType.mixIn({
-             *         field: 'value'
-             *     });
-             */
-            mixIn: function (properties) {
-                for (var propertyName in properties) {
-                    if (properties.hasOwnProperty(propertyName)) {
-                        this[propertyName] = properties[propertyName];
+            const restrictCheckout = member.get('status') === 'paid';
+
+            if (restrictCheckout) {
+                // This member is already subscribed to a paid tier
+                // We don't want to create a duplicate subscription
+                if (!options.isAuthenticated && options.email) {
+                    try {
+                        await this._sendEmailWithMagicLink({email: options.email, requestedType: 'signin'});
+                    } catch (err) {
+                        logging.warn(err);
                     }
                 }
-
-                // IE won't copy toString using the loop above
-                if (properties.hasOwnProperty('toString')) {
-                    this.toString = properties.toString;
-                }
-            },
-
-            /**
-             * Creates a copy of this object.
-             *
-             * @return {Object} The clone.
-             *
-             * @example
-             *
-             *     var clone = instance.clone();
-             */
-            clone: function () {
-                return this.init.prototype.extend(this);
+                throw new NoPermissionError({
+                    message: messages.existingSubscription,
+                    code: 'CANNOT_CHECKOUT_WITH_EXISTING_SUBSCRIPTION'
+                });
             }
+        }
+
+        // Set by server to distinguish between checkout flows in Stripe webhooks.
+        options.metadata.ghostSignupContext = ghostSignupContext;
+
+        try {
+            const paymentLink = await this._paymentsService.getPaymentLink(options);
+
+            return {url: paymentLink};
+        } catch (err) {
+            logging.error(err);
+            this._sentry?.captureException?.(err);
+            throw new BadRequestError({
+                err,
+                message: tpl(messages.unableToCheckout)
+            });
+        }
+    }
+
+    // Helper method to generate success URL with tier welcome page if available
+    _generateSuccessUrl(originalSuccessUrl, welcomePageURL) {
+        // If there's no welcome page URL, use the original success URL
+        if (!welcomePageURL) {
+            return originalSuccessUrl;
+        }
+
+        try {
+            // Create URL objects
+            const siteUrl = this._urlUtils.getSiteUrl();
+
+            // This will throw if welcomePageURL is invalid
+            const welcomeUrl = new URL(
+                welcomePageURL.startsWith('http') ? welcomePageURL : welcomePageURL,
+                siteUrl
+            );
+
+            // Add success parameters
+            welcomeUrl.searchParams.set('success', 'true');
+            welcomeUrl.searchParams.set('action', 'signup');
+
+            return welcomeUrl.href;
+        } catch (err) {
+            logging.warn(`Invalid welcome page URL "${welcomePageURL}", using original success URL`, err);
+            return originalSuccessUrl;
+        }
+    }
+
+    /**
+     *
+     * @param {object} options
+     * @param {string} options.successUrl URL to redirect to after successful checkout
+     * @param {string} options.cancelUrl URL to redirect to after cancelled checkout
+     * @param {string} [options.email] Email address of the customer
+     * @param {object} [options.member] Currently authenticated member OR member associated with the email address
+     * @param {boolean} options.isAuthenticated
+     * @param {object} options.metadata Metadata to be passed to Stripe
+     * @returns
+     */
+    async _createDonationCheckoutSession(options) {
+        if (!this._settingsHelpers.areDonationsEnabled()) {
+            throw new DisabledFeatureError({
+                message: tpl(messages.notConfigured)
+            });
+        }
+
+        try {
+            const paymentLink = await this._paymentsService.getDonationPaymentLink(options);
+
+            return {url: paymentLink};
+        } catch (err) {
+            logging.error(err);
+            this._sentry?.captureException?.(err);
+            throw new BadRequestError({
+                err,
+                message: tpl(messages.unableToCheckout)
+            });
+        }
+    }
+
+    /**
+     * @param {object} options
+     * @param {object} options.tier
+     * @param {'month'|'year'} options.cadence
+     * @param {string} options.email
+     * @param {string} options.successUrl
+     * @param {string} options.cancelUrl
+     * @param {object} options.metadata
+     * @param {object} [options.member]
+     * @param {boolean} options.isAuthenticated
+     * @returns
+     */
+    async _createGiftCheckoutSession(options) {
+        if (!this._settingsHelpers.arePaidMembersEnabled()) {
+            throw new DisabledFeatureError({
+                message: tpl(messages.notConfigured)
+            });
+        }
+
+        try {
+            const paymentLink = await this._paymentsService.getGiftPaymentLink(options);
+
+            return {url: paymentLink};
+        } catch (err) {
+            logging.error(err);
+            this._sentry?.captureException?.(err);
+            throw new BadRequestError({
+                err,
+                message: tpl(messages.unableToCheckout)
+            });
+        }
+    }
+
+    async createCheckoutSession(req, res) {
+        const type = req.body.type ?? 'subscription';
+        const metadata = req.body.metadata ?? {};
+        const identity = req.body.identity;
+        const membersEnabled = true;
+
+        // Check this checkout type is supported
+        if (typeof type !== 'string' || !['subscription', 'donation', 'gift'].includes(type)) {
+            throw new BadRequestError({
+                message: tpl(messages.invalidType)
+            });
+        }
+
+        // Optional authentication
+        let member;
+        let isAuthenticated = false;
+        if (membersEnabled) {
+            if (identity) {
+                try {
+                    const claims = await this._tokenService.decodeToken(identity);
+                    const email = claims && claims.sub;
+                    if (email) {
+                        member = await this._memberRepository.get({
+                            email
+                        }, {
+                            withRelated: ['stripeCustomers', 'products']
+                        });
+                        isAuthenticated = true;
+                    }
+                } catch (err) {
+                    logging.error(err);
+                    this._sentry?.captureException?.(err);
+                    throw new UnauthorizedError({err});
+                }
+            } else if (req.body.customerEmail) {
+                member = await this._memberRepository.get({
+                    email: req.body.customerEmail
+                }, {
+                    withRelated: ['stripeCustomers', 'products']
+                });
+            }
+        }
+
+        // Store attribution data in the metadata
+        await this._setAttributionMetadata(metadata);
+
+        if (metadata.newsletters) {
+            metadata.newsletters = JSON.stringify(await this._validateNewsletters(JSON.parse(metadata.newsletters)));
+        }
+
+        const siteUrl = this._urlUtils.getSiteUrl();
+        const successUrl = sanitizeReturnUrl(req.body.successUrl, siteUrl);
+        const cancelUrl = sanitizeReturnUrl(req.body.cancelUrl, siteUrl);
+
+        // Build options
+        const options = {
+            successUrl,
+            cancelUrl,
+            email: req.body.customerEmail,
+            member,
+            metadata,
+            isAuthenticated
         };
-    }());
+
+        let response;
+        if (type === 'subscription') {
+            if (!membersEnabled) {
+                throw new BadRequestError({
+                    message: tpl(messages.badRequest)
+                });
+            }
+
+            let tier;
+            let cadence;
+            let offer;
+            let gift;
+
+            if (req.body.continueFromGift) {
+                if (!isAuthenticated || !member) {
+                    throw new UnauthorizedError({
+                        message: tpl(messages.signInRequired)
+                    });
+                }
+                if (member.get('status') !== 'gift') {
+                    throw new BadRequestError({
+                        message: tpl(messages.badRequest),
+                        context: 'Member does not have an active gift subscription'
+                    });
+                }
+
+                gift = await this._giftService.service.getActiveByMember(member.id);
+                if (!gift) {
+                    throw new BadRequestError({
+                        message: tpl(messages.badRequest),
+                        context: 'No active gift subscription found for member'
+                    });
+                }
+
+                ({tier, cadence} = await this._getSubscriptionCheckoutData({
+                    tierId: gift.tierId,
+                    cadence: gift.cadence
+                }));
+            } else {
+                ({tier, cadence, offer} = await this._getSubscriptionCheckoutData(req.body));
+            }
+
+            // Check the checkout session
+            response = await this._createSubscriptionCheckoutSession({
+                ...options,
+                tier,
+                cadence,
+                offer,
+                gift
+            });
+
+            // Add welcome_page_url to the response if available and member is authenticated
+            if (isAuthenticated && tier && tier.welcomePageURL) {
+                response.welcomePageUrl = tier.welcomePageURL;
+            }
+        } else if (type === 'donation') {
+            options.personalNote = parsePersonalNote(req.body.personalNote);
+            response = await this._createDonationCheckoutSession(options);
+        } else if (type === 'gift') {
+            if (!membersEnabled) {
+                throw new BadRequestError({
+                    message: tpl(messages.badRequest)
+                });
+            }
+
+            if (req.body.offerId) {
+                throw new BadRequestError({
+                    message: tpl(messages.badRequest),
+                    context: 'Offers cannot be applied to gift subscriptions'
+                });
+            }
+
+            const data = await this._getSubscriptionCheckoutData(req.body);
+
+            response = await this._createGiftCheckoutSession({
+                ...options,
+                ...data,
+                duration: 1, // gifts are currently 1 month or 1 year only
+                successUrl: siteUrl,
+                cancelUrl: options.cancelUrl || siteUrl
+            });
+        }
+
+        res.writeHead(200, {
+            'Content-Type': 'application/json'
+        });
+
+        return res.end(JSON.stringify(response));
+    }
+
+    async sendMagicLink(req, res) {
+        const {email, honeypot} = req.body;
+        let {emailType} = req.body;
+
+        const referrer = extractRefererOrRedirect(req);
+        const giftToken = extractGiftToken(req.body.giftToken);
+
+        if (!email) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.emailRequired)
+            });
+        }
+
+        if (!isEmail(email)) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.invalidEmail)
+            });
+        }
+
+        // Normalize email to avoid invalid addresses and mitigate homograph attacks
+        const normalizedEmail = normalizeEmail(email);
+        if (!normalizedEmail) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.invalidEmail)
+            });
+        }
+
+        if (honeypot) {
+            logging.warn('Honeypot field filled, this is likely a bot');
+
+            // Honeypot field is filled, this is a bot.
+            // Pretend that the email was sent successfully.
+            res.writeHead(201, {'Content-Type': 'application/json'});
+            return res.end('{}');
+        }
+
+        if (!emailType) {
+            // Default to subscribe form that also allows to login (safe fallback for older clients)
+            emailType = 'subscribe';
+        }
+
+        if (!['signin', 'signup', 'subscribe'].includes(emailType)) {
+            res.writeHead(400);
+            return res.end('Bad Request.');
+        }
+
+        try {
+            /** @type {{inboxLinks?: {desktop: string; android: string; provider: string}; otc_ref?: string}} */
+            const resBody = {};
+
+            if (emailType === 'signup' || emailType === 'subscribe') {
+                await this._handleSignup(req, normalizedEmail, referrer, giftToken);
+            } else {
+                const signIn = await this._handleSignin(req, normalizedEmail, referrer, giftToken);
+                if (signIn.otcRef) {
+                    resBody.otc_ref = signIn.otcRef;
+                }
+            }
+
+            const inboxLinks = await getInboxLinks({
+                recipient: normalizedEmail,
+                sender: this._emailAddressService.getMembersSupportAddress(),
+                dnsResolver: this.#inboxLinksDnsResolver
+            });
+            if (inboxLinks) {
+                resBody.inboxLinks = inboxLinks;
+                logging.info(`[Inbox links] Found inbox links for provider ${inboxLinks.provider}`);
+            } else {
+                logging.info('[Inbox links] Found no inbox links');
+            }
+
+            res.writeHead(201, {'Content-Type': 'application/json'});
+            return res.end(JSON.stringify(resBody));
+        } catch (err) {
+            if (err.code === 'EENVELOPE') {
+                logging.error(err);
+                res.writeHead(400);
+                return res.end('Bad Request.');
+            }
+            logging.error(err);
+
+            // Let the normal error middleware handle this error
+            throw err;
+        }
+    }
+
+    async verifyOTC(req, res) {
+        const {otc, otcRef} = req.body;
+
+        if (!otc || !otcRef) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.badRequest),
+                context: 'otc and otcRef are required',
+                code: 'OTC_VERIFICATION_MISSING_PARAMS'
+            });
+        }
+
+        const tokenProvider = this._magicLinkService.tokenProvider;
+        if (!tokenProvider || typeof tokenProvider.verifyOTC !== 'function') {
+            throw new errors.BadRequestError({
+                message: tpl(messages.otcNotSupported),
+                code: 'OTC_NOT_SUPPORTED'
+            });
+        }
+
+        const tokenValue = await tokenProvider.getTokenByRef(otcRef);
+        if (!tokenValue) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.invalidCode),
+                code: 'INVALID_OTC'
+            });
+        }
+
+        const isValidOTC = await tokenProvider.verifyOTC(otcRef, otc);
+        if (!isValidOTC) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.invalidCode),
+                code: 'INVALID_OTC'
+            });
+        }
+
+        const otcVerificationHash = await this._createHashFromOTCAndToken(otc, tokenValue);
+        if (!otcVerificationHash) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.failedToVerifyCode),
+                code: 'OTC_VERIFICATION_FAILED'
+            });
+        }
+
+        const referrer = extractRefererOrRedirect(req);
+
+        const redirectUrl = this._magicLinkService.getSigninURL(tokenValue, 'signin', referrer, otcVerificationHash);
+        if (!redirectUrl) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.failedToVerifyCode),
+                code: 'OTC_VERIFICATION_FAILED'
+            });
+        }
+
+        return res.json({redirectUrl});
+    }
+
+    async _createHashFromOTCAndToken(otc, token) {
+        // timestamp for anti-replay protection (5 minute window)
+        const timestamp = Math.floor(Date.now() / 1000);
+
+        const hash = this._magicLinkService.tokenProvider.createOTCVerificationHash(otc, token, timestamp);
+
+        return `${timestamp}:${hash}`;
+    }
+
+    async _handleSignup(req, normalizedEmail, referrer = null, giftToken = null) {
+        if (!this._allowSelfSignup()) {
+            if (this._settingsCache.get('members_signup_access') === 'paid') {
+                throw new errors.BadRequestError({
+                    message: tpl(messages.paidOnly)
+                });
+            } else {
+                throw new errors.BadRequestError({
+                    message: tpl(messages.inviteOnly)
+                });
+            }
+        }
+
+        const blockedEmailDomains = this._settingsCache.get('all_blocked_email_domains');
+        const emailDomain = normalizedEmail.split('@')[1]?.toLowerCase();
+        if (emailDomain && blockedEmailDomains.includes(emailDomain)) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.blockedEmailDomain)
+            });
+        }
+
+        const {emailType} = req.body;
+
+        const tokenData = {
+            labels: req.body.labels,
+            name: req.body.name,
+            reqIp: req.ip ?? undefined,
+            newsletters: await this._validateNewsletters(req.body?.newsletters ?? []),
+            attribution: await this._memberAttributionService.getAttribution(req.body.urlHistory),
+            ...(giftToken ? {giftToken} : {})
+        };
+
+        return await this._sendEmailWithMagicLink({email: normalizedEmail, tokenData, requestedType: emailType, referrer});
+    }
+
+    async _handleSignin(req, normalizedEmail, referrer = null, giftToken = null) {
+        const {emailType, includeOTC: reqIncludeOTC} = req.body;
+
+        let includeOTC = false;
+
+        if (reqIncludeOTC === true || reqIncludeOTC === 'true') {
+            includeOTC = true;
+        }
+
+        const member = await this._memberRepository.get({email: normalizedEmail});
+
+        if (!member) {
+            // Return a fake otcRef when OTC was requested so the response
+            // shape is identical regardless of whether a member exists
+            return includeOTC ? {otcRef: crypto.randomUUID()} : {};
+        }
+
+        const {name} = req.body;
+
+        const tokenData = {
+            ...(name ? {name} : {}),
+            ...(giftToken ? {giftToken} : {})
+        };
+        return await this._sendEmailWithMagicLink({email: normalizedEmail, tokenData, requestedType: emailType, referrer, includeOTC});
+    }
 
     /**
-     * An array of 32-bit words.
-     *
-     * @property {Array} words The array of 32-bit words.
-     * @property {number} sigBytes The number of significant bytes in this word array.
+     * Validates the newsletters in the request body
+     * @param {object[]} requestedNewsletters
+     * @param {string} requestedNewsletters[].name
+     * @returns {Promise<object[] | undefined>} The validated newsletters
      */
-    var WordArray = C_lib.WordArray = Base.extend({
-        /**
-         * Initializes a newly created word array.
-         *
-         * @param {Array} words (Optional) An array of 32-bit words.
-         * @param {number} sigBytes (Optional) The number of significant bytes in the words.
-         *
-         * @example
-         *
-         *     var wordArray = CryptoJS.lib.WordArray.create();
-         *     var wordArray = CryptoJS.lib.WordArray.create([0x00010203, 0x04050607]);
-         *     var wordArray = CryptoJS.lib.WordArray.create([0x00010203, 0x04050607], 6);
-         */
-        init: function (words, sigBytes) {
-            words = this.words = words || [];
-
-            if (sigBytes != undefined) {
-                this.sigBytes = sigBytes;
-            } else {
-                this.sigBytes = words.length * 4;
-            }
-        },
-
-        /**
-         * Converts this word array to a string.
-         *
-         * @param {Encoder} encoder (Optional) The encoding strategy to use. Default: CryptoJS.enc.Hex
-         *
-         * @return {string} The stringified word array.
-         *
-         * @example
-         *
-         *     var string = wordArray + '';
-         *     var string = wordArray.toString();
-         *     var string = wordArray.toString(CryptoJS.enc.Utf8);
-         */
-        toString: function (encoder) {
-            return (encoder || Hex).stringify(this);
-        },
-
-        /**
-         * Concatenates a word array to this word array.
-         *
-         * @param {WordArray} wordArray The word array to append.
-         *
-         * @return {WordArray} This word array.
-         *
-         * @example
-         *
-         *     wordArray1.concat(wordArray2);
-         */
-        concat: function (wordArray) {
-            // Shortcuts
-            var thisWords = this.words;
-            var thatWords = wordArray.words;
-            var thisSigBytes = this.sigBytes;
-            var thatSigBytes = wordArray.sigBytes;
-
-            // Clamp excess bits
-            this.clamp();
-
-            // Concat
-            if (thisSigBytes % 4) {
-                // Copy one byte at a time
-                for (var i = 0; i < thatSigBytes; i++) {
-                    var thatByte = (thatWords[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
-                    thisWords[(thisSigBytes + i) >>> 2] |= thatByte << (24 - ((thisSigBytes + i) % 4) * 8);
-                }
-            } else {
-                // Copy one word at a time
-                for (var i = 0; i < thatSigBytes; i += 4) {
-                    thisWords[(thisSigBytes + i) >>> 2] = thatWords[i >>> 2];
-                }
-            }
-            this.sigBytes += thatSigBytes;
-
-            // Chainable
-            return this;
-        },
-
-        /**
-         * Removes insignificant bits.
-         *
-         * @example
-         *
-         *     wordArray.clamp();
-         */
-        clamp: function () {
-            // Shortcuts
-            var words = this.words;
-            var sigBytes = this.sigBytes;
-
-            // Clamp
-            words[sigBytes >>> 2] &= 0xffffffff << (32 - (sigBytes % 4) * 8);
-            words.length = Math.ceil(sigBytes / 4);
-        },
-
-        /**
-         * Creates a copy of this word array.
-         *
-         * @return {WordArray} The clone.
-         *
-         * @example
-         *
-         *     var clone = wordArray.clone();
-         */
-        clone: function () {
-            var clone = Base.clone.call(this);
-            clone.words = this.words.slice(0);
-
-            return clone;
-        },
-
-        /**
-         * Creates a word array filled with random bytes.
-         *
-         * @param {number} nBytes The number of random bytes to generate.
-         *
-         * @return {WordArray} The random word array.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var wordArray = CryptoJS.lib.WordArray.random(16);
-         */
-        random: function (nBytes) {
-            var words = [];
-
-            var r = function (m_w) {
-                var m_w = m_w;
-                var m_z = 0x3ade68b1;
-                var mask = 0xffffffff;
-
-                return function () {
-                    m_z = (0x9069 * (m_z & 0xFFFF) + (m_z >> 0x10)) & mask;
-                    m_w = (0x4650 * (m_w & 0xFFFF) + (m_w >> 0x10)) & mask;
-                    var result = ((m_z << 0x10) + m_w) & mask;
-                    result /= 0x100000000;
-                    result += 0.5;
-                    return result * (Math.random() > 0.5 ? 1 : -1);
-                }
-            };
-
-            for (var i = 0, rcache; i < nBytes; i += 4) {
-                var _r = r((rcache || Math.random()) * 0x100000000);
-
-                rcache = _r() * 0x3ade67b7;
-                words.push((_r() * 0x100000000) | 0);
-            }
-
-            return new WordArray.init(words, nBytes);
+    async _validateNewsletters(requestedNewsletters) {
+        if (!requestedNewsletters || requestedNewsletters.length === 0) {
+            return undefined;
         }
+
+        if (requestedNewsletters.some(newsletter => !newsletter.name)) {
+            return undefined;
+        }
+
+        const requestedNewsletterNames = requestedNewsletters.map(newsletter => newsletter.name);
+        const requestedNewsletterNamesFilter = requestedNewsletterNames.map(newsletter => `'${newsletter.replace(/("|')/g, '\\$1')}'`);
+        const matchedNewsletters = (await this._newslettersService.getAll({
+            filter: `name:[${requestedNewsletterNamesFilter}]`,
+            columns: ['id','name','status']
+        }));
+
+        // Check for invalid newsletters
+        if (matchedNewsletters.length !== requestedNewsletterNames.length) {
+            const validNewsletterNames = matchedNewsletters.map(newsletter => newsletter.name);
+            const invalidNewsletterNames = requestedNewsletterNames.filter(newsletter => !validNewsletterNames.includes(newsletter));
+
+            throw new errors.BadRequestError({
+                message: tpl(messages.invalidNewsletters, {newsletters: invalidNewsletterNames})
+            });
+        }
+
+        // Check for archived newsletters
+        const requestedArchivedNewsletters = matchedNewsletters
+            .filter(newsletter => newsletter.status === 'archived')
+            .map(newsletter => newsletter.name);
+
+        if (requestedArchivedNewsletters && requestedArchivedNewsletters.length > 0) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.archivedNewsletters, {newsletters: requestedArchivedNewsletters})
+            });
+        }
+
+        return matchedNewsletters
+            .filter(newsletter => newsletter.status === 'active')
+            .map(newsletter => ({id: newsletter.id}));
+    }
+
+    /**
+     * @param {import('express').Request} req
+     * @param {import('express').Response} res
+     */
+    async getMemberOffers(req, res) {
+        const identity = req.body.identity;
+        const redemptionType = req.body.redemption_type || 'retention';
+
+        function sendOffersResponse(offers = []) {
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            return res.end(JSON.stringify({offers}));
+        }
+
+        function sendNoOffersAvailable() {
+            return sendOffersResponse([]);
+        }
+
+        if (!identity) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        if (redemptionType !== 'retention') {
+            res.writeHead(400);
+            return res.end('Invalid redemption_type');
+        }
+
+        let email;
+        try {
+            const claims = await this._tokenService.decodeToken(identity);
+            email = claims && claims.sub;
+        } catch (err) {
+            logging.error(err);
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        if (!email) {
+            res.writeHead(401);
+            return res.end('Unauthorized');
+        }
+
+        // Get member with subscriptions
+        const member = await this._memberRepository.get({email}, {
+            withRelated: [
+                'stripeSubscriptions',
+                'stripeSubscriptions.stripePrice',
+                'stripeSubscriptions.stripePrice.stripeProduct',
+                'stripeSubscriptions.stripePrice.stripeProduct.product'
+            ]
+        });
+
+        if (!member) {
+            res.writeHead(404);
+            return res.end(tpl(messages.memberNotFound));
+        }
+
+        // Find active subscriptions
+        const subscriptions = member.related('stripeSubscriptions');
+        const activeSubscriptions = subscriptions.models.filter((sub) => {
+            const status = sub.get('status');
+            return ['active', 'trialing', 'past_due', 'unpaid'].includes(status);
+        });
+
+        // No active subscription - return empty offers
+        if (activeSubscriptions.length === 0) {
+            return sendNoOffersAvailable();
+        }
+
+        // Multiple active subscriptions - edge case, return empty offers to avoid ambiguity
+        if (activeSubscriptions.length > 1) {
+            return sendNoOffersAvailable();
+        }
+
+        const activeSubscription = activeSubscriptions[0];
+
+        // If subscription is already set to cancel, don't show retention offers
+        if (activeSubscription.get('cancel_at_period_end')) {
+            return sendNoOffersAvailable();
+        }
+
+        // If subscription has an active offer, don't show retention offers
+        if (await hasActiveOffer(activeSubscription, this._offersAPI)) {
+            return sendNoOffersAvailable();
+        }
+
+        // Get tier and cadence from the subscription
+        const stripePrice = activeSubscription.related('stripePrice');
+        if (!stripePrice || !stripePrice.id) {
+            return sendNoOffersAvailable();
+        }
+
+        const stripeProduct = stripePrice.related('stripeProduct');
+
+        // If the stripe product is not found, return empty offers
+        if (!stripeProduct || !stripeProduct.id) {
+            return sendNoOffersAvailable();
+        }
+
+        const product = stripeProduct.related('product');
+
+        // If the product is not found, return empty offers
+        if (!product || !product.id) {
+            return sendNoOffersAvailable();
+        }
+
+        const tierId = product.id;
+        const cadence = stripePrice.get('interval');
+        const subscriptionId = activeSubscription.id; // Ghost's internal ID, not Stripe's
+
+        let offers = [];
+        try {
+            offers = await this._offersAPI.listOffersAvailableToSubscription({
+                subscriptionId,
+                tierId,
+                cadence,
+                redemptionType
+            });
+        } catch (err) {
+            logging.error('Failed to fetch offers:', err);
+        }
+
+        return sendOffersResponse(offers);
+    }
+};
+
+function parsePersonalNote(rawText) {
+    if (rawText && typeof rawText !== 'string') {
+        logging.warn('Donation personal note is not a string, ignoring');
+        return '';
+    }
+    if (rawText && rawText.length > 255) {
+        logging.warn('Donation personal note is too long, ignoring:', rawText);
+        return '';
+    }
+
+    const safeInput = sanitizeHtml(rawText, {
+        allowedTags: [],
+        allowedAttributes: {}
     });
 
-    /**
-     * Encoder namespace.
-     */
-    var C_enc = C.enc = {};
-
-    /**
-     * Hex encoding strategy.
-     */
-    var Hex = C_enc.Hex = {
-        /**
-         * Converts a word array to a hex string.
-         *
-         * @param {WordArray} wordArray The word array.
-         *
-         * @return {string} The hex string.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var hexString = CryptoJS.enc.Hex.stringify(wordArray);
-         */
-        stringify: function (wordArray) {
-            // Shortcuts
-            var words = wordArray.words;
-            var sigBytes = wordArray.sigBytes;
-
-            // Convert
-            var hexChars = [];
-            for (var i = 0; i < sigBytes; i++) {
-                var bite = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
-                hexChars.push((bite >>> 4).toString(16));
-                hexChars.push((bite & 0x0f).toString(16));
-            }
-
-            return hexChars.join('');
-        },
-
-        /**
-         * Converts a hex string to a word array.
-         *
-         * @param {string} hexStr The hex string.
-         *
-         * @return {WordArray} The word array.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var wordArray = CryptoJS.enc.Hex.parse(hexString);
-         */
-        parse: function (hexStr) {
-            // Shortcut
-            var hexStrLength = hexStr.length;
-
-            // Convert
-            var words = [];
-            for (var i = 0; i < hexStrLength; i += 2) {
-                words[i >>> 3] |= parseInt(hexStr.substr(i, 2), 16) << (24 - (i % 8) * 4);
-            }
-
-            return new WordArray.init(words, hexStrLength / 2);
-        }
-    };
-
-    /**
-     * Latin1 encoding strategy.
-     */
-    var Latin1 = C_enc.Latin1 = {
-        /**
-         * Converts a word array to a Latin1 string.
-         *
-         * @param {WordArray} wordArray The word array.
-         *
-         * @return {string} The Latin1 string.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var latin1String = CryptoJS.enc.Latin1.stringify(wordArray);
-         */
-        stringify: function (wordArray) {
-            // Shortcuts
-            var words = wordArray.words;
-            var sigBytes = wordArray.sigBytes;
-
-            // Convert
-            var latin1Chars = [];
-            for (var i = 0; i < sigBytes; i++) {
-                var bite = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
-                latin1Chars.push(String.fromCharCode(bite));
-            }
-
-            return latin1Chars.join('');
-        },
-
-        /**
-         * Converts a Latin1 string to a word array.
-         *
-         * @param {string} latin1Str The Latin1 string.
-         *
-         * @return {WordArray} The word array.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var wordArray = CryptoJS.enc.Latin1.parse(latin1String);
-         */
-        parse: function (latin1Str) {
-            // Shortcut
-            var latin1StrLength = latin1Str.length;
-
-            // Convert
-            var words = [];
-            for (var i = 0; i < latin1StrLength; i++) {
-                words[i >>> 2] |= (latin1Str.charCodeAt(i) & 0xff) << (24 - (i % 4) * 8);
-            }
-
-            return new WordArray.init(words, latin1StrLength);
-        }
-    };
-
-    /**
-     * UTF-8 encoding strategy.
-     */
-    var Utf8 = C_enc.Utf8 = {
-        /**
-         * Converts a word array to a UTF-8 string.
-         *
-         * @param {WordArray} wordArray The word array.
-         *
-         * @return {string} The UTF-8 string.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var utf8String = CryptoJS.enc.Utf8.stringify(wordArray);
-         */
-        stringify: function (wordArray) {
-            try {
-                return decodeURIComponent(escape(Latin1.stringify(wordArray)));
-            } catch (e) {
-                throw new Error('Malformed UTF-8 data');
-            }
-        },
-
-        /**
-         * Converts a UTF-8 string to a word array.
-         *
-         * @param {string} utf8Str The UTF-8 string.
-         *
-         * @return {WordArray} The word array.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var wordArray = CryptoJS.enc.Utf8.parse(utf8String);
-         */
-        parse: function (utf8Str) {
-            return Latin1.parse(unescape(encodeURIComponent(utf8Str)));
-        }
-    };
-
-    /**
-     * Abstract buffered block algorithm template.
-     *
-     * The property blockSize must be implemented in a concrete subtype.
-     *
-     * @property {number} _minBufferSize The number of blocks that should be kept unprocessed in the buffer. Default: 0
-     */
-    var BufferedBlockAlgorithm = C_lib.BufferedBlockAlgorithm = Base.extend({
-        /**
-         * Resets this block algorithm's data buffer to its initial state.
-         *
-         * @example
-         *
-         *     bufferedBlockAlgorithm.reset();
-         */
-        reset: function () {
-            // Initial values
-            this._data = new WordArray.init();
-            this._nDataBytes = 0;
-        },
-
-        /**
-         * Adds new data to this block algorithm's buffer.
-         *
-         * @param {WordArray|string} data The data to append. Strings are converted to a WordArray using UTF-8.
-         *
-         * @example
-         *
-         *     bufferedBlockAlgorithm._append('data');
-         *     bufferedBlockAlgorithm._append(wordArray);
-         */
-        _append: function (data) {
-            // Convert string to WordArray, else assume WordArray already
-            if (typeof data == 'string') {
-                data = Utf8.parse(data);
-            }
-
-            // Append
-            this._data.concat(data);
-            this._nDataBytes += data.sigBytes;
-        },
-
-        /**
-         * Processes available data blocks.
-         *
-         * This method invokes _doProcessBlock(offset), which must be implemented by a concrete subtype.
-         *
-         * @param {boolean} doFlush Whether all blocks and partial blocks should be processed.
-         *
-         * @return {WordArray} The processed data.
-         *
-         * @example
-         *
-         *     var processedData = bufferedBlockAlgorithm._process();
-         *     var processedData = bufferedBlockAlgorithm._process(!!'flush');
-         */
-        _process: function (doFlush) {
-            var processedWords;
-            
-            // Shortcuts
-            var data = this._data;
-            var dataWords = data.words;
-            var dataSigBytes = data.sigBytes;
-            var blockSize = this.blockSize;
-            var blockSizeBytes = blockSize * 4;
-
-            // Count blocks ready
-            var nBlocksReady = dataSigBytes / blockSizeBytes;
-            if (doFlush) {
-                // Round up to include partial blocks
-                nBlocksReady = Math.ceil(nBlocksReady);
-            } else {
-                // Round down to include only full blocks,
-                // less the number of blocks that must remain in the buffer
-                nBlocksReady = Math.max((nBlocksReady | 0) - this._minBufferSize, 0);
-            }
-
-            // Count words ready
-            var nWordsReady = nBlocksReady * blockSize;
-
-            // Count bytes ready
-            var nBytesReady = Math.min(nWordsReady * 4, dataSigBytes);
-
-            // Process blocks
-            if (nWordsReady) {
-                for (var offset = 0; offset < nWordsReady; offset += blockSize) {
-                    // Perform concrete-algorithm logic
-                    this._doProcessBlock(dataWords, offset);
-                }
-
-                // Remove processed words
-                processedWords = dataWords.splice(0, nWordsReady);
-                data.sigBytes -= nBytesReady;
-            }
-
-            // Return processed words
-            return new WordArray.init(processedWords, nBytesReady);
-        },
-
-        /**
-         * Creates a copy of this object.
-         *
-         * @return {Object} The clone.
-         *
-         * @example
-         *
-         *     var clone = bufferedBlockAlgorithm.clone();
-         */
-        clone: function () {
-            var clone = Base.clone.call(this);
-            clone._data = this._data.clone();
-
-            return clone;
-        },
-
-        _minBufferSize: 0
-    });
-
-    /**
-     * Abstract hasher template.
-     *
-     * @property {number} blockSize The number of 32-bit words this hasher operates on. Default: 16 (512 bits)
-     */
-    var Hasher = C_lib.Hasher = BufferedBlockAlgorithm.extend({
-        /**
-         * Configuration options.
-         */
-        cfg: Base.extend(),
-
-        /**
-         * Initializes a newly created hasher.
-         *
-         * @param {Object} cfg (Optional) The configuration options to use for this hash computation.
-         *
-         * @example
-         *
-         *     var hasher = CryptoJS.algo.SHA256.create();
-         */
-        init: function (cfg) {
-            // Apply config defaults
-            this.cfg = this.cfg.extend(cfg);
-
-            // Set initial values
-            this.reset();
-        },
-
-        /**
-         * Resets this hasher to its initial state.
-         *
-         * @example
-         *
-         *     hasher.reset();
-         */
-        reset: function () {
-            // Reset data buffer
-            BufferedBlockAlgorithm.reset.call(this);
-
-            // Perform concrete-hasher logic
-            this._doReset();
-        },
-
-        /**
-         * Updates this hasher with a message.
-         *
-         * @param {WordArray|string} messageUpdate The message to append.
-         *
-         * @return {Hasher} This hasher.
-         *
-         * @example
-         *
-         *     hasher.update('message');
-         *     hasher.update(wordArray);
-         */
-        update: function (messageUpdate) {
-            // Append
-            this._append(messageUpdate);
-
-            // Update the hash
-            this._process();
-
-            // Chainable
-            return this;
-        },
-
-        /**
-         * Finalizes the hash computation.
-         * Note that the finalize operation is effectively a destructive, read-once operation.
-         *
-         * @param {WordArray|string} messageUpdate (Optional) A final message update.
-         *
-         * @return {WordArray} The hash.
-         *
-         * @example
-         *
-         *     var hash = hasher.finalize();
-         *     var hash = hasher.finalize('message');
-         *     var hash = hasher.finalize(wordArray);
-         */
-        finalize: function (messageUpdate) {
-            // Final message update
-            if (messageUpdate) {
-                this._append(messageUpdate);
-            }
-
-            // Perform concrete-hasher logic
-            var hash = this._doFinalize();
-
-            return hash;
-        },
-
-        blockSize: 512/32,
-
-        /**
-         * Creates a shortcut function to a hasher's object interface.
-         *
-         * @param {Hasher} hasher The hasher to create a helper for.
-         *
-         * @return {Function} The shortcut function.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var SHA256 = CryptoJS.lib.Hasher._createHelper(CryptoJS.algo.SHA256);
-         */
-        _createHelper: function (hasher) {
-            return function (message, cfg) {
-                return new hasher.init(cfg).finalize(message);
-            };
-        },
-
-        /**
-         * Creates a shortcut function to the HMAC's object interface.
-         *
-         * @param {Hasher} hasher The hasher to use in this HMAC helper.
-         *
-         * @return {Function} The shortcut function.
-         *
-         * @static
-         *
-         * @example
-         *
-         *     var HmacSHA256 = CryptoJS.lib.Hasher._createHmacHelper(CryptoJS.algo.SHA256);
-         */
-        _createHmacHelper: function (hasher) {
-            return function (message, key) {
-                return new C_algo.HMAC.init(hasher, key).finalize(message);
-            };
-        }
-    });
-
-    /**
-     * Algorithm namespace.
-     */
-    var C_algo = C.algo = {};
-
-    return C;
-}(Math));
+    return safeInput;
+}

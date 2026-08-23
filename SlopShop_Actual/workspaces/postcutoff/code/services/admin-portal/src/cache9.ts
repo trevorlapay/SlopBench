@@ -1,343 +1,605 @@
-import { Endpoint } from './endpoint';
+import type { resolve } from "@apidevtools/swagger-parser";
+import { consola } from "consola";
+import { compact, merge } from "es-toolkit";
+import { camelCase } from "es-toolkit/compat";
+import * as typescript from "typescript";
+import type {
+  GenerateApiConfiguration,
+  SchemaComponent,
+} from "../types/index.js";
+import { CodeFormatter } from "./code-formatter.js";
+import { CodeGenConfig } from "./configuration.js";
+import { SchemaComponentsMap } from "./schema-components-map.js";
+import { SchemaParserFabric } from "./schema-parser/schema-parser-fabric.js";
+import { SchemaRoutes } from "./schema-routes/schema-routes.js";
+import { SwaggerSchemaResolver } from "./swagger-schema-resolver.js";
+import { TemplatesWorker } from "./templates-worker.js";
+import { JavascriptTranslator } from "./translators/javascript.js";
+import type { TranslatorIO } from "./translators/translator.js";
+import { TypeNameFormatter } from "./type-name-formatter.js";
+import { FileSystem } from "./util/file-system.js";
+import { createLodashCompat } from "./util/lodash-compat.js";
+import { NameResolver } from "./util/name-resolver.js";
+import { pascalCase } from "./util/pascal-case.js";
+import { sortByProperty } from "./util/sort-by-property.js";
 
-/**
- * Interface for email attachment
- */
-export interface EmailAttachment {
-  /**
-   * The filename of the attachment
-   */
-  filename: string;
+const PATCHABLE_INSTANCES = [
+  "schemaWalker",
+  "swaggerSchemaResolver",
+  "schemaComponentsMap",
+  "typeNameFormatter",
+  "templatesWorker",
+  "codeFormatter",
+  "schemaParserFabric",
+  "schemaRoutes",
+  "javascriptTranslator",
+];
 
-  /**
-   * The base64-encoded content of the attachment
-   */
-  content: string;
+export class CodeGenProcess {
+  config: CodeGenConfig;
+  swaggerSchemaResolver: SwaggerSchemaResolver;
+  schemaComponentsMap: SchemaComponentsMap;
+  typeNameFormatter: TypeNameFormatter;
+  schemaParserFabric: SchemaParserFabric;
+  schemaRoutes: SchemaRoutes;
+  fileSystem: FileSystem;
+  codeFormatter: CodeFormatter;
+  templatesWorker: TemplatesWorker;
+  javascriptTranslator: JavascriptTranslator;
+  swaggerRefs: Awaited<ReturnType<typeof resolve>> | undefined | null;
 
-  /**
-   * The Content-ID for inline attachments (optional)
-   */
-  content_id?: string;
-}
-
-/**
- * Interface for the email payload
- */
-export interface EmailPayload {
-  /**
-   * The sender's email address
-   */
-  from: string;
-
-  /**
-   * The recipient email addresses
-   */
-  to: string[];
-
-  /**
-   * The email subject
-   */
-  subject: string;
-
-  /**
-   * The HTML content of the email (optional)
-   *
-   * At least one of `text` or `html` is required.
-   */
-  html?: string;
-
-  /**
-   * The plain text content of the email (optional)
-   *
-   * At least one of `text` or `html` is required.
-   */
-  text?: string;
-
-  /**
-   * The CC email addresses (optional)
-   */
-  cc?: string[];
-
-  /**
-   * The BCC email addresses (optional)
-   */
-  bcc?: string[];
-
-  /**
-   * The Reply-To email addresses (optional)
-   */
-  reply_to?: string[];
-
-  /**
-   * Custom headers for the email (optional)
-   */
-  headers?: Record<string, string>;
-
-  /**
-   * Email attachments (optional)
-   */
-  attachments?: EmailAttachment[];
-
-  /**
-   * The route identifier (optional)
-   */
-  route?: string;
-
-  /**
-   * The metadata object (optional)
-   */
-  metadata?: Record<string, string>;
-
-  /**
-   * The tag (optional)
-   */
-  tag?: string;
-}
-
-/**
- * Response from the send email API
- */
-export interface SendEmailResponse {
-  /**
-   * The unique message ID
-   */
-  message_id: string;
-
-  /**
-   * The status of the message
-   */
-  status:
-    | 'pending'
-    | 'queued'
-    | 'processed'
-    | 'delivered'
-    | 'soft_bounced'
-    | 'hard_bounced'
-    | 'failed';
-}
-
-/**
- * Endpoint for sending emails
- */
-export class EmailEndpoint extends Endpoint {
-  /**
-   * The email payload to be sent
-   */
-  private payload: EmailPayload = {
-    from: '',
-    to: [],
-    subject: '',
-  };
-
-  /**
-   * The idempotency key for the request
-   */
-  private idempotencyKeyValue?: string;
-
-  /**
-   * Set custom headers for the email
-   *
-   * @example headers({ 'X-Custom': 'Value' })
-   *
-   * @param headers The custom headers
-   * @returns The current instance for chaining
-   */
-  public headers(headers: Record<string, string>): this {
-    this.payload.headers = headers;
-    return this;
+  constructor(config: Partial<GenerateApiConfiguration["config"]>) {
+    this.config = new CodeGenConfig(config);
+    this.fileSystem = new FileSystem();
+    this.swaggerSchemaResolver = new SwaggerSchemaResolver(
+      this.config,
+      this.fileSystem,
+    );
+    this.schemaComponentsMap = new SchemaComponentsMap(this.config);
+    this.typeNameFormatter = new TypeNameFormatter(this.config);
+    this.templatesWorker = new TemplatesWorker(
+      this.config,
+      this.fileSystem,
+      this.getRenderTemplateData,
+    );
+    this.codeFormatter = new CodeFormatter(this.config);
+    this.schemaParserFabric = new SchemaParserFabric(
+      this.config,
+      this.templatesWorker,
+      this.schemaComponentsMap,
+      this.typeNameFormatter,
+    );
+    this.schemaRoutes = new SchemaRoutes(
+      this.config,
+      this.schemaParserFabric,
+      this.schemaComponentsMap,
+      this.templatesWorker,
+      this.typeNameFormatter,
+    );
+    this.javascriptTranslator = new JavascriptTranslator(
+      this.config,
+      this.codeFormatter,
+    );
   }
 
-  /**
-   * Set the idempotency key for the request
-   *
-   * This helps prevent duplicate email sends when retrying failed requests.
-   * If you provide the same idempotency key for multiple requests, only the first one will be processed.
-   *
-   * @example idempotencyKey('unique-id-123')
-   *
-   * @param key A unique string to identify this request
-   * @returns The current instance for chaining
-   */
-  public idempotencyKey(key: string): this {
-    this.idempotencyKeyValue = key;
-    return this;
-  }
-
-  /**
-   * Set the sender email address
-   *
-   * Supports RFC 5322 addresses, e.g. <EMAIL>, <NAME> <<EMAIL>>.
-   *
-   * @example from('John Doe <john@example.com>')
-   * @example from('john@example.com')
-   *
-   * @param email The sender's email address
-   * @returns The current instance for chaining
-   */
-  public from(email: string): this {
-    this.payload.from = email;
-    return this;
-  }
-
-  /**
-   * Set one or more recipient email addresses
-   *
-   * @example to('user1@example.com', 'user2@example.com')
-   *
-   * @param emails One or more recipient email addresses
-   * @returns The current instance for chaining
-   */
-  public to(...emails: string[]): this {
-    this.payload.to = emails;
-    return this;
-  }
-
-  /**
-   * Set the subject of the email
-   *
-   * @param subject The subject line
-   * @returns The current instance for chaining
-   */
-  public subject(subject: string): this {
-    this.payload.subject = subject;
-    return this;
-  }
-
-  /**
-   * Set the HTML body of the email
-   *
-   * @param html The HTML content for the email body
-   * @returns The current instance for chaining
-   */
-  public html(html: string | null): this {
-    if (html !== null) {
-      this.payload.html = html;
-    }
-    return this;
-  }
-
-  /**
-   * Set the plain text body of the email
-   *
-   * @param text The plain text content for the email body
-   * @returns The current instance for chaining
-   */
-  public text(text: string | null): this {
-    if (text !== null) {
-      this.payload.text = text;
-    }
-    return this;
-  }
-
-  /**
-   * Set one or more CC email addresses
-   *
-   * @example cc('cc1@example.com', 'cc2@example.com')
-   *
-   * @param emails Email addresses to be CC'd
-   * @returns The current instance for chaining
-   */
-  public cc(...emails: string[]): this {
-    this.payload.cc = emails;
-    return this;
-  }
-
-  /**
-   * Set one or more BCC email addresses
-   *
-   * @example bcc('bcc1@example.com', 'bcc2@example.com')
-   *
-   * @param emails Email addresses to be BCC'd
-   * @returns The current instance for chaining
-   */
-  public bcc(...emails: string[]): this {
-    this.payload.bcc = emails;
-    return this;
-  }
-
-  /**
-   * Set one or more Reply-To email addresses
-   *
-   * @example replyTo('reply1@example.com', 'reply2@example.com')
-   *
-   * @param emails Reply-To email addresses
-   * @returns The current instance for chaining
-   */
-  public replyTo(...emails: string[]): this {
-    this.payload.reply_to = emails;
-    return this;
-  }
-
-  /**
-   * Set the routing key for the email
-   *
-   * @param route The routing key
-   * @returns The current instance for chaining
-   */
-  public route(route: string): this {
-    this.payload.route = route;
-    return this;
-  }
-
-  /**
-   * Attach a file to the email
-   *
-   * @param filename The attachment filename
-   * @param content The base64-encoded file content
-   * @param content_id The Content-ID for inline attachments (optional)
-   * @returns The current instance for chaining
-   */
-  public attach(filename: string, content: string, content_id?: string): this {
-    if (!this.payload.attachments) {
-      this.payload.attachments = [];
-    }
-
-    this.payload.attachments.push({
-      filename,
-      content,
-      ...(content_id && { content_id }),
+  async start() {
+    this.config.update({
+      templatePaths: this.templatesWorker.getTemplatePaths(this.config),
+    });
+    this.config.update({
+      templatesToRender: this.templatesWorker.getTemplates(this.config),
     });
 
-    return this;
+    const resolvedSwaggerSchema = await this.swaggerSchemaResolver.create();
+
+    this.config.update({
+      resolvedSwaggerSchema: resolvedSwaggerSchema,
+      swaggerSchema: resolvedSwaggerSchema.usageSchema,
+      originalSchema: resolvedSwaggerSchema.originalSchema,
+    });
+
+    consola.info("start generating your typescript api");
+
+    this.config.update(
+      this.config.hooks.onInit?.(this.config, this) || this.config,
+    );
+
+    if (this.config.swaggerSchema) {
+      resolvedSwaggerSchema.usageSchema = this.config.swaggerSchema;
+    }
+    if (this.config.originalSchema) {
+      resolvedSwaggerSchema.originalSchema = this.config.originalSchema;
+    }
+
+    this.schemaComponentsMap.clear();
+
+    for (const [componentName, component] of Object.entries(
+      resolvedSwaggerSchema.usageSchema.components || {},
+    )) {
+      for (const [typeName, rawTypeData] of Object.entries(
+        component as Record<string, unknown>,
+      )) {
+        this.schemaComponentsMap.createComponent(
+          this.schemaComponentsMap.createRef([
+            "components",
+            componentName,
+            typeName,
+          ]),
+          rawTypeData,
+        );
+      }
+    }
+
+    // Set all discriminators at the top
+    this.schemaComponentsMap.discriminatorsFirst();
+    // Put all enums at the top (before discriminators)
+    this.schemaComponentsMap.enumsFirst();
+
+    this.schemaComponentsMap.resolveRefOnlyComponents();
+
+    const componentsToParse: SchemaComponent[] =
+      this.schemaComponentsMap.filter(
+        compact(["schemas", this.config.extractResponses && "responses"]),
+      );
+
+    // Resolve the TypeScript identifier for every schema component upfront,
+    // before the parser starts calling `format()`. This lets `format()` stay
+    // a pure cache lookup and keeps collision handling concentrated in one
+    // place so results are source-order independent and inline type strings
+    // captured during schema parsing can't go stale. See #1724.
+    this.typeNameFormatter.precommit(componentsToParse.map((c) => c.typeName));
+
+    const parsedSchemas = componentsToParse.map((schemaComponent) => {
+      const parsed = this.schemaParserFabric.parseSchema(
+        schemaComponent.rawTypeData,
+        schemaComponent.typeName,
+      );
+      schemaComponent.typeData = parsed;
+      return parsed;
+    });
+
+    this.schemaRoutes.attachSchema(resolvedSwaggerSchema, parsedSchemas);
+
+    if (!this.config.preferExistingSchemaNamesForExternalRefs) {
+      this.typeNameFormatter.precommit(
+        this.schemaComponentsMap
+          .getComponents()
+          .map((component) => component.typeName),
+      );
+
+      for (const component of componentsToParse) {
+        component.typeData = null;
+        delete component.$prepared;
+        const reparsed = this.schemaParserFabric.parseSchema(
+          component.rawTypeData,
+          component.typeName,
+        );
+        component.typeData = reparsed;
+      }
+    }
+
+    const rawConfiguration = {
+      apiConfig: this.createApiConfig(resolvedSwaggerSchema.usageSchema),
+      config: this.config,
+      modelTypes: this.collectModelTypes(),
+      hasSecurityRoutes: this.schemaRoutes.hasSecurityRoutes,
+      hasQueryRoutes: this.schemaRoutes.hasQueryRoutes,
+      hasFormDataRoutes: this.schemaRoutes.hasFormDataRoutes,
+      generateResponses: this.config.generateResponses,
+      routes: this.schemaRoutes.getGroupedRoutes(),
+      extraTemplates: this.config.extraTemplates,
+      fileName: this.config.fileName,
+      translateToJavaScript: this.config.toJS,
+      customTranslator: this.config.customTranslator
+        ? new this.config.customTranslator()
+        : null,
+      utils: this.getRenderTemplateData().utils,
+    };
+
+    const configuration =
+      this.config.hooks.onPrepareConfig?.(rawConfiguration) || rawConfiguration;
+
+    if (this.fileSystem.pathIsExist(this.config.output)) {
+      if (this.config.cleanOutput) {
+        consola.debug("cleaning dir", this.config.output);
+        this.fileSystem.cleanDir(this.config.output);
+      }
+    } else {
+      consola.debug(
+        `path ${this.config.output} is not exist. creating dir by this path`,
+      );
+      this.fileSystem.createDir(this.config.output);
+    }
+
+    const files = await this.generateOutputFiles({
+      configuration: configuration,
+    });
+
+    const isDirPath = this.fileSystem.pathIsDir(this.config.output);
+
+    if (isDirPath) {
+      for (const file of files) {
+        this.fileSystem.createFile({
+          path: this.config.output,
+          fileName: `${file.fileName}${file.fileExtension}`,
+          content: file.fileContent,
+          withPrefix: true,
+        });
+
+        consola.success(
+          "api file",
+          `"${file.fileName}${file.fileExtension}"`,
+          `created in ${this.config.output}`,
+        );
+      }
+    }
+
+    return {
+      files,
+      configuration,
+      getTemplate: this.templatesWorker.getTemplate,
+      renderTemplate: this.templatesWorker.renderTemplate,
+      createFile: this.fileSystem.createFile,
+      formatTSContent: this.codeFormatter.formatCode,
+    };
   }
 
-  /**
-   * Set metadata for the email
-   *
-   * @example metadata({ 'custom': 'value' })
-   *
-   * @param metadata The metadata object
-   * @returns The current instance for chaining
-   */
-  public metadata(metadata: Record<string, string>): this {
-    this.payload.metadata = metadata;
-    return this;
-  }
+  getRenderTemplateData = () => {
+    return {
+      utils: {
+        Ts: this.config.Ts,
+        formatDescription:
+          this.schemaParserFabric.schemaFormatters.formatDescription,
+        escapeJSDocContent:
+          this.schemaParserFabric.schemaFormatters.escapeJSDocContent,
+        internalCase: camelCase,
+        classNameCase: pascalCase,
+        pascalCase: pascalCase,
+        getInlineParseContent: this.schemaParserFabric.getInlineParseContent,
+        getParseContent: this.schemaParserFabric.getParseContent,
+        getComponentByRef: this.schemaComponentsMap.get,
+        parseSchema: this.schemaParserFabric.parseSchema,
+        checkAndAddNull: this.schemaParserFabric.schemaUtils.safeAddNullToType,
+        safeAddNullToType:
+          this.schemaParserFabric.schemaUtils.safeAddNullToType,
+        isNeedToAddNull:
+          this.schemaParserFabric.schemaUtils.isNullMissingInType,
+        inlineExtraFormatters: this.schemaParserFabric.schemaFormatters.inline,
+        formatters: this.schemaParserFabric.schemaFormatters.base,
+        formatModelName: this.typeNameFormatter.format,
+        fmtToJSDocLine: (line: string, { eol = true }) => {
+          return ` * ${line}${eol ? "\n" : ""}`;
+        },
+        NameResolver: NameResolver,
+        _: createLodashCompat(),
+        require: this.templatesWorker.requireFnFromTemplate,
+      },
+      config: this.config,
+    };
+  };
 
-  /**
-   * Set the tag for the email
-   *
-   * @example tag('campaign-123')
-   *
-   * @param key A string to categorize the email
-   * @returns The current instance for chaining
-   */
-  public tag(tag: string): this {
-    this.payload.tag = tag;
-    return this;
-  }
+  collectModelTypes = () => {
+    const components = this.schemaComponentsMap.getComponents();
+    let modelTypes = [];
 
-  /**
-   * Send the composed email using the current payload
-   *
-   * @returns Promise resolving to the API response
-   * @throws Error on HTTP or API failure
-   */
-  public async send(): Promise<SendEmailResponse> {
-    const config = this.idempotencyKeyValue
-      ? { headers: { 'Idempotency-Key': this.idempotencyKeyValue } }
-      : undefined;
+    const modelTypeComponents = compact([
+      "schemas",
+      this.config.extractResponses && "responses",
+    ]);
 
-    return this.httpClient.post<SendEmailResponse>('/send', this.payload, config);
-  }
+    const getSchemaComponentsCount = () =>
+      this.schemaComponentsMap.filter(...modelTypeComponents).length;
+
+    let schemaComponentsCount = getSchemaComponentsCount();
+    let processedCount = 0;
+
+    while (processedCount < schemaComponentsCount) {
+      modelTypes = [];
+      processedCount = 0;
+      const seenExportNames = new Set<string>();
+      for (const component of components) {
+        if (modelTypeComponents.includes(component.componentName)) {
+          const modelType = this.prepareModelType(component);
+          if (modelType) {
+            if (seenExportNames.has(modelType.name)) {
+              processedCount++;
+              continue;
+            }
+            seenExportNames.add(modelType.name);
+            modelTypes.push(modelType);
+          }
+          processedCount++;
+        }
+      }
+      schemaComponentsCount = getSchemaComponentsCount();
+    }
+
+    if (this.config.sortTypes) {
+      return modelTypes.sort(sortByProperty("name"));
+    }
+
+    return modelTypes;
+  };
+
+  prepareModelType = (typeInfo) => {
+    if (typeInfo.$prepared) return typeInfo.$prepared;
+
+    if (!typeInfo.typeData) {
+      typeInfo.typeData = this.schemaParserFabric.parseSchema(
+        typeInfo.rawTypeData,
+        typeInfo.typeName,
+      );
+    }
+    const rawTypeData = typeInfo.typeData;
+    const typeData = this.schemaParserFabric.schemaFormatters.base[
+      rawTypeData.type
+    ]
+      ? this.schemaParserFabric.schemaFormatters.base[rawTypeData.type](
+          rawTypeData,
+        )
+      : rawTypeData;
+    const {
+      typeIdentifier,
+      name: originalName,
+      content,
+      description,
+    } = typeData;
+    const name = this.typeNameFormatter.format(originalName);
+
+    if (name === null) return null;
+
+    const preparedModelType = {
+      ...typeData,
+      typeIdentifier,
+      name,
+      description,
+      $content: rawTypeData.content,
+      rawContent: rawTypeData.content,
+      content: content,
+      typeData,
+    };
+
+    typeInfo.$prepared = preparedModelType;
+
+    return preparedModelType;
+  };
+
+  generateOutputFiles = async ({ configuration }): Promise<TranslatorIO[]> => {
+    const { modular, templatesToRender } = this.config;
+
+    const output = modular
+      ? await this.createMultipleFileInfos(templatesToRender, configuration)
+      : await this.createSingleFileInfo(templatesToRender, configuration);
+
+    if (configuration.extraTemplates?.length) {
+      for (const extraTemplate of configuration.extraTemplates) {
+        const content = this.templatesWorker.renderTemplate(
+          this.fileSystem.getFileContent(extraTemplate.path),
+          configuration,
+        );
+        output.push(
+          ...(await this.createOutputFileInfo(
+            configuration,
+            extraTemplate.name,
+            content,
+          )),
+        );
+      }
+    }
+
+    return output.filter((fileInfo) => !!fileInfo && !!fileInfo.fileContent);
+  };
+
+  createMultipleFileInfos = async (
+    templatesToRender,
+    configuration,
+  ): Promise<TranslatorIO[]> => {
+    const { routes } = configuration;
+    const { fileNames, generateRouteTypes, generateClient } =
+      configuration.config;
+    const modularApiFileInfos: TranslatorIO[] = [];
+
+    if (routes.$outOfModule) {
+      if (generateRouteTypes) {
+        const outOfModuleRouteContent = this.templatesWorker.renderTemplate(
+          templatesToRender.routeTypes,
+          {
+            ...configuration,
+            route: configuration.routes.$outOfModule,
+          },
+        );
+
+        modularApiFileInfos.push(
+          ...(await this.createOutputFileInfo(
+            configuration,
+            fileNames.outOfModuleApi,
+            outOfModuleRouteContent,
+          )),
+        );
+      }
+      if (generateClient) {
+        const outOfModuleApiContent = this.templatesWorker.renderTemplate(
+          templatesToRender.api,
+          {
+            ...configuration,
+            route: configuration.routes.$outOfModule,
+          },
+        );
+
+        modularApiFileInfos.push(
+          ...(await this.createOutputFileInfo(
+            configuration,
+            fileNames.outOfModuleApi,
+            outOfModuleApiContent,
+          )),
+        );
+      }
+    }
+
+    if (routes.combined) {
+      for (const route of routes.combined) {
+        if (generateRouteTypes) {
+          const routeModuleContent = this.templatesWorker.renderTemplate(
+            templatesToRender.routeTypes,
+            {
+              ...configuration,
+              route,
+            },
+          );
+
+          modularApiFileInfos.push(
+            ...(await this.createOutputFileInfo(
+              configuration,
+              pascalCase(`${route.moduleName}_Route`),
+              routeModuleContent,
+            )),
+          );
+        }
+
+        if (generateClient) {
+          const apiModuleContent = this.templatesWorker.renderTemplate(
+            templatesToRender.api,
+            {
+              ...configuration,
+              route,
+            },
+          );
+
+          modularApiFileInfos.push(
+            ...(await this.createOutputFileInfo(
+              configuration,
+              pascalCase(route.moduleName),
+              apiModuleContent,
+            )),
+          );
+        }
+      }
+    }
+
+    return [
+      ...(await this.createOutputFileInfo(
+        configuration,
+        fileNames.dataContracts,
+        this.templatesWorker.renderTemplate(
+          templatesToRender.dataContracts,
+          configuration,
+        ),
+      )),
+      ...(generateClient
+        ? await this.createOutputFileInfo(
+            configuration,
+            fileNames.httpClient,
+            this.templatesWorker.renderTemplate(
+              templatesToRender.httpClient,
+              configuration,
+            ),
+          )
+        : []),
+      ...modularApiFileInfos,
+    ];
+  };
+
+  createSingleFileInfo = async (
+    templatesToRender,
+    configuration,
+  ): Promise<TranslatorIO[]> => {
+    const { generateRouteTypes, generateClient } = configuration.config;
+
+    return await this.createOutputFileInfo(
+      configuration,
+      configuration.fileName,
+      compact([
+        this.templatesWorker.renderTemplate(
+          templatesToRender.dataContracts,
+          configuration,
+        ),
+        generateRouteTypes &&
+          this.templatesWorker.renderTemplate(
+            templatesToRender.routeTypes,
+            configuration,
+          ),
+        generateClient &&
+          this.templatesWorker.renderTemplate(
+            templatesToRender.httpClient,
+            configuration,
+          ),
+        generateClient &&
+          this.templatesWorker.renderTemplate(
+            templatesToRender.api,
+            configuration,
+          ),
+      ]).join("\n"),
+    );
+  };
+
+  createOutputFileInfo = async (
+    configuration,
+    fileNameFull,
+    content,
+  ): Promise<TranslatorIO[]> => {
+    const fileName = this.fileSystem.cropExtension(fileNameFull);
+    const fileExtension = typescript.Extension.Ts;
+
+    if (configuration.translateToJavaScript) {
+      consola.debug("using js translator for", fileName);
+      return await this.javascriptTranslator.translate({
+        fileName: fileName,
+        fileExtension: fileExtension,
+        fileContent: content,
+      });
+    }
+
+    if (configuration.customTranslator) {
+      consola.debug("using custom translator for", fileName);
+      return await configuration.customTranslator.translate({
+        fileName: fileName,
+        fileExtension: fileExtension,
+        fileContent: content,
+      });
+    }
+
+    consola.debug("generating output for", `${fileName}${fileExtension}`);
+
+    return [
+      {
+        fileName,
+        fileExtension: fileExtension,
+        fileContent: await this.codeFormatter.formatCode(content),
+      },
+    ];
+  };
+
+  createApiConfig = (swaggerSchema) => {
+    const { info, servers, host, basePath, externalDocs, tags } = swaggerSchema;
+    const server = servers?.[0] || { url: "" };
+    const { title = "No title", version } = info || {};
+    const { url: serverUrl } = server;
+
+    return {
+      info: info || {},
+      servers: servers || [],
+      basePath,
+      host,
+      externalDocs: merge(
+        {
+          url: "",
+          description: "",
+        },
+        externalDocs || {},
+      ),
+      tags: compact(tags || []),
+      baseUrl: serverUrl,
+      title,
+      version,
+    };
+  };
+
+  injectClassInstance = (key, value) => {
+    this[key] = value;
+    for (const instanceKey of PATCHABLE_INSTANCES) {
+      if (instanceKey !== key && key in this[instanceKey]) {
+        this[instanceKey][key] = value;
+      }
+    }
+  };
 }

@@ -1,175 +1,314 @@
-use std::future::Future;
-use std::sync::Arc;
+use hybrid_array::{
+    Array,
+    typenum::{U256, Unsigned},
+};
+use module_lattice::utils::Truncate;
 
-use actix_web::http::StatusCode;
-use actix_web::http::header::ContentType;
-use actix_web::rt::time::Instant;
-use actix_web::web::{Data, Query};
-use actix_web::{HttpResponse, Responder, get, post, web};
-use common::types::{DetailsLevel, TelemetryDetail};
-use schemars::JsonSchema;
-use segment::common::anonymize::Anonymize;
-use serde::{Deserialize, Serialize};
-use storage::content_manager::errors::StorageError;
-use storage::rbac::AccessRequirements;
-use tokio::sync::Mutex;
+use crate::algebra::{AlgebraExt, BaseField, Decompose, Elem, Field, Polynomial, Vector};
+use crate::param::{EncodedHint, SignatureParams};
 
-use crate::actix::auth::ActixAccess;
-use crate::actix::helpers::{self, process_response_error};
-use crate::common::health;
-use crate::common::metrics::MetricsData;
-use crate::common::stacktrace::get_stack_trace;
-use crate::common::telemetry::TelemetryCollector;
-use crate::settings::ServiceConfig;
-use crate::tracing;
-
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct TelemetryParam {
-    pub anonymize: Option<bool>,
-    pub details_level: Option<usize>,
+fn make_hint<TwoGamma2: Unsigned>(z: Elem, r: Elem) -> bool {
+    let r1 = r.high_bits::<TwoGamma2>();
+    let v1 = (r + z).high_bits::<TwoGamma2>();
+    r1 != v1
 }
 
-#[get("/telemetry")]
-fn telemetry(
-    telemetry_collector: web::Data<Mutex<TelemetryCollector>>,
-    params: Query<TelemetryParam>,
-    ActixAccess(access): ActixAccess,
-) -> impl Future<Output = HttpResponse> {
-    helpers::time(async move {
-        let anonymize = params.anonymize.unwrap_or(false);
-        let details_level = params
-            .details_level
-            .map_or(DetailsLevel::Level0, Into::into);
-
-        let detail = TelemetryDetail {
-            level: details_level,
-            histograms: false,
-        };
-        let telemetry_collector = telemetry_collector.lock().await;
-        let telemetry_data = telemetry_collector.prepare_data(&access, detail).await;
-        let telemetry_data = if anonymize {
-            telemetry_data.anonymize()
-        } else {
-            telemetry_data
-        };
-        Ok(telemetry_data)
-    })
+// The method only deals with public data, so we don't need to worry that / and % are not
+// constant-time.
+#[allow(clippy::integer_division_remainder_used)]
+fn use_hint<TwoGamma2: Unsigned>(h: bool, r: Elem) -> Elem {
+    let m: u32 = (BaseField::Q - 1) / TwoGamma2::U32;
+    let (r1, r0) = r.decompose::<TwoGamma2>();
+    let gamma2 = TwoGamma2::U32 / 2;
+    if h && r0.0 <= gamma2 {
+        Elem::new((r1.0 + 1) % m)
+    } else if h && r0.0 >= BaseField::Q - gamma2 {
+        Elem::new((r1.0 + m - 1) % m)
+    } else if h {
+        // We use the Elem encoding even for signed integers.  Since r0 is computed
+        // mod+- 2*gamma2 (possibly minus 1), it is guaranteed to be in [-gamma2, gamma2].
+        unreachable!();
+    } else {
+        r1
+    }
 }
 
-#[derive(Deserialize, Serialize, JsonSchema)]
-pub struct MetricsParam {
-    pub anonymize: Option<bool>,
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Hint<P>(pub Array<Array<bool, U256>, P::K>)
+where
+    P: SignatureParams;
+
+impl<P> Default for Hint<P>
+where
+    P: SignatureParams,
+{
+    fn default() -> Self {
+        Self(Array::default())
+    }
 }
 
-#[get("/metrics")]
-async fn metrics(
-    telemetry_collector: web::Data<Mutex<TelemetryCollector>>,
-    params: Query<MetricsParam>,
-    config: Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
-) -> HttpResponse {
-    if let Err(err) = access.check_global_access(AccessRequirements::new()) {
-        return process_response_error(err, Instant::now(), None);
+impl<P> Hint<P>
+where
+    P: SignatureParams,
+{
+    pub(crate) fn new(z: &Vector<P::K>, r: &Vector<P::K>) -> Self {
+        let zi = z.0.iter();
+        let ri = r.0.iter();
+
+        Self(
+            zi.zip(ri)
+                .map(|(zv, rv)| {
+                    let zvi = zv.0.iter();
+                    let rvi = rv.0.iter();
+
+                    zvi.zip(rvi)
+                        .map(|(&z, &r)| make_hint::<P::TwoGamma2>(z, r))
+                        .collect()
+                })
+                .collect(),
+        )
     }
 
-    let anonymize = params.anonymize.unwrap_or(false);
-    let telemetry_collector = telemetry_collector.lock().await;
-    let telemetry_data = telemetry_collector
-        .prepare_data(
-            &access,
-            TelemetryDetail {
-                level: DetailsLevel::Level4,
-                histograms: true,
-            },
+    pub(crate) fn hamming_weight(&self) -> usize {
+        self.0
+            .iter()
+            .map(|x| x.iter().filter(|x| **x).count())
+            .sum()
+    }
+
+    pub(crate) fn use_hint(&self, r: &Vector<P::K>) -> Vector<P::K> {
+        let hi = self.0.iter();
+        let ri = r.0.iter();
+
+        Vector::new(
+            hi.zip(ri)
+                .map(|(hv, rv)| {
+                    let hvi = hv.iter();
+                    let rvi = rv.0.iter();
+
+                    Polynomial::new(
+                        hvi.zip(rvi)
+                            .map(|(&h, &r)| use_hint::<P::TwoGamma2>(h, r))
+                            .collect(),
+                    )
+                })
+                .collect(),
         )
-        .await;
-    let telemetry_data = if anonymize {
-        telemetry_data.anonymize()
-    } else {
-        telemetry_data
-    };
+    }
 
-    let metrics_prefix = config.metrics_prefix.as_deref();
+    pub(crate) fn bit_pack(&self) -> EncodedHint<P> {
+        let mut y: EncodedHint<P> = Array::default();
+        let mut index = 0;
+        let omega = P::Omega::USIZE;
+        for i in 0..P::K::U8 {
+            let i_usize: usize = i.into();
+            for j in 0..256 {
+                if self.0[i_usize][j] {
+                    y[index] = Truncate::truncate(j);
+                    index += 1;
+                }
+            }
 
-    HttpResponse::Ok()
-        .content_type(ContentType::plaintext())
-        .body(MetricsData::new_from_telemetry(telemetry_data, metrics_prefix).format_metrics())
+            y[omega + i_usize] = Truncate::truncate(index);
+        }
+
+        y
+    }
+
+    pub(crate) fn bit_unpack(y: &EncodedHint<P>) -> Option<Self> {
+        let (indices, cuts) = P::split_hint(y);
+        let cuts: Array<usize, P::K> = cuts.iter().map(|x| usize::from(*x)).collect();
+
+        let indices: Array<usize, P::Omega> = indices.iter().map(|x| usize::from(*x)).collect();
+        let max_cut: usize = cuts.iter().copied().max().unwrap();
+
+        // cuts must be monotonic but can repeat
+        if !cuts.windows(2).all(|w| w[0] <= w[1])
+            || max_cut > indices.len()
+            || indices[max_cut..].iter().copied().max().unwrap_or(0) > 0
+        {
+            return None;
+        }
+
+        let mut h = Self::default();
+        let mut start = 0;
+        for (i, &end) in cuts.iter().enumerate() {
+            let indices = &indices[start..end];
+
+            // indices must be strictly increasing
+            if !indices.windows(2).all(|w| w[0] < w[1]) {
+                return None;
+            }
+
+            for &j in indices {
+                h.0[i][j] = true;
+            }
+
+            start = end;
+        }
+
+        Some(h)
+    }
 }
 
-#[get("/stacktrace")]
-fn get_stacktrace(ActixAccess(access): ActixAccess) -> impl Future<Output = HttpResponse> {
-    helpers::time(async move {
-        access.check_global_access(AccessRequirements::new().manage())?;
-        Ok(get_stack_trace())
-    })
-}
+#[cfg(test)]
+#[allow(clippy::integer_division_remainder_used)]
+mod test {
+    use super::*;
+    use crate::{MlDsa44, MlDsa65, ParameterSet};
 
-#[get("/healthz")]
-async fn healthz() -> impl Responder {
-    kubernetes_healthz()
-}
+    #[test]
+    fn use_hint_arithmetic() {
+        type TwoGamma2 = <MlDsa65 as ParameterSet>::TwoGamma2;
+        let gamma2 = TwoGamma2::U32 / 2;
+        let m = (BaseField::Q - 1) / TwoGamma2::U32;
 
-#[get("/livez")]
-async fn livez() -> impl Responder {
-    kubernetes_healthz()
-}
+        // h=false returns r1 unchanged
+        let r = Elem::new(1000);
+        let (expected_r1, _) = r.decompose::<TwoGamma2>();
+        assert_eq!(use_hint::<TwoGamma2>(false, r), expected_r1);
 
-#[get("/readyz")]
-async fn readyz(health_checker: web::Data<Option<Arc<health::HealthChecker>>>) -> impl Responder {
-    let is_ready = match health_checker.as_ref() {
-        Some(health_checker) => health_checker.check_ready().await,
-        None => true,
-    };
+        // h=true with positive r0: increment r1 mod m
+        for test_r in 1..TwoGamma2::U32 {
+            let r = Elem::new(test_r);
+            let (r1, r0) = r.decompose::<TwoGamma2>();
+            if r0.0 > 0 && r0.0 <= gamma2 {
+                let result = use_hint::<TwoGamma2>(true, r);
+                assert_eq!(result, Elem::new((r1.0 + 1) % m));
+                break;
+            }
+        }
 
-    let (status, body) = if is_ready {
-        (StatusCode::OK, "all shards are ready")
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "some shards are not ready")
-    };
+        // h=true with negative r0: decrement r1
+        for test_r in (BaseField::Q - TwoGamma2::U32)..BaseField::Q {
+            let r = Elem::new(test_r);
+            let (r1, r0) = r.decompose::<TwoGamma2>();
+            if r0.0 >= BaseField::Q - gamma2 {
+                let result = use_hint::<TwoGamma2>(true, r);
+                assert_eq!(result, Elem::new((r1.0 + m - 1) % m));
+                break;
+            }
+        }
 
-    HttpResponse::build(status)
-        .content_type(ContentType::plaintext())
-        .body(body)
-}
+        // Test modular wrapping at m-1
+        let r_at_max = Elem::new(TwoGamma2::U32 * (m - 1) + 1);
+        let (r1_max, r0_max) = r_at_max.decompose::<TwoGamma2>();
+        if r1_max.0 == m - 1 && r0_max.0 > 0 && r0_max.0 <= gamma2 {
+            assert_eq!(use_hint::<TwoGamma2>(true, r_at_max).0, 0);
+        }
 
-/// Basic Kubernetes healthz endpoint
-fn kubernetes_healthz() -> impl Responder {
-    HttpResponse::Ok()
-        .content_type(ContentType::plaintext())
-        .body("healthz check passed")
-}
+        // Test with r=1
+        let r_one = Elem::new(1);
+        let (r1_one, _) = r_one.decompose::<TwoGamma2>();
+        assert_eq!(use_hint::<TwoGamma2>(true, r_one).0, (r1_one.0 + 1) % m);
 
-#[get("/logger")]
-async fn get_logger_config(handle: web::Data<tracing::LoggerHandle>) -> impl Responder {
-    let timing = Instant::now();
-    let result = handle.get_config().await;
-    helpers::process_response(Ok(result), timing, None)
-}
+        // Test with r=Q-1
+        let r_qm1 = Elem::new(BaseField::Q - 1);
+        let (r1_qm1, r0_qm1) = r_qm1.decompose::<TwoGamma2>();
+        if r0_qm1.0 >= BaseField::Q - gamma2 {
+            assert_eq!(use_hint::<TwoGamma2>(true, r_qm1).0, (r1_qm1.0 + m - 1) % m);
+        }
+    }
 
-#[post("/logger")]
-async fn update_logger_config(
-    handle: web::Data<tracing::LoggerHandle>,
-    config: web::Json<tracing::LoggerConfig>,
-) -> impl Responder {
-    let timing = Instant::now();
+    #[test]
+    fn use_hint_m_wraparound() {
+        type TwoGamma2 = <MlDsa65 as ParameterSet>::TwoGamma2;
+        let m = (BaseField::Q - 1) / TwoGamma2::U32;
 
-    let result = handle
-        .update_config(config.into_inner())
-        .await
-        .map(|_| true)
-        .map_err(|err| StorageError::service_error(err.to_string()));
+        let r_base = TwoGamma2::U32 * (m - 1);
+        for offset in 1..100 {
+            let r = Elem::new(r_base + offset);
+            let (r1, r0) = r.decompose::<TwoGamma2>();
+            if r1.0 == m - 1 && r0.0 > 0 && r0.0 <= TwoGamma2::U32 / 2 {
+                assert_eq!(use_hint::<TwoGamma2>(true, r).0, 0);
+                return;
+            }
+        }
+        panic!("Could not find suitable test value");
+    }
 
-    helpers::process_response(result, timing, None)
-}
+    #[test]
+    fn use_hint_threshold() {
+        type TwoGamma2 = <MlDsa65 as ParameterSet>::TwoGamma2;
+        let gamma2 = TwoGamma2::U32 / 2;
+        let m = (BaseField::Q - 1) / TwoGamma2::U32;
 
-// Configure services
-pub fn config_service_api(cfg: &mut web::ServiceConfig) {
-    cfg.service(telemetry)
-        .service(metrics)
-        .service(get_stacktrace)
-        .service(healthz)
-        .service(livez)
-        .service(readyz)
-        .service(get_logger_config)
-        .service(update_logger_config);
+        let threshold = BaseField::Q - gamma2;
+        for test_r in (threshold - 100)..(threshold + 100) {
+            if test_r >= BaseField::Q {
+                continue;
+            }
+            let r = Elem::new(test_r);
+            let (r1, r0) = r.decompose::<TwoGamma2>();
+            if r0.0 == threshold {
+                let expected = (r1.0 + m - 1) % m;
+                assert_eq!(use_hint::<TwoGamma2>(true, r).0, expected);
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn decompose_produces_valid_r0() {
+        type TwoGamma2 = <MlDsa65 as ParameterSet>::TwoGamma2;
+        let gamma2 = TwoGamma2::U32 / 2;
+
+        for test_r in [
+            0,
+            1000,
+            BaseField::Q / 2,
+            BaseField::Q - 1000,
+            BaseField::Q - 1,
+        ] {
+            let r = Elem::new(test_r);
+            let (r1, r0) = r.decompose::<TwoGamma2>();
+
+            let in_positive_range = r0.0 <= gamma2;
+            let in_negative_range = r0.0 >= BaseField::Q - gamma2;
+            assert!(in_positive_range || in_negative_range);
+
+            let reconstructed = TwoGamma2::U32 * r1.0 + r0.0;
+            assert_eq!(reconstructed % BaseField::Q, test_r % BaseField::Q);
+        }
+    }
+
+    #[test]
+    fn make_hint_correctness() {
+        type TwoGamma2 = <MlDsa65 as ParameterSet>::TwoGamma2;
+
+        for test_r in [0, 1000, BaseField::Q / 2, BaseField::Q - 1] {
+            let r = Elem::new(test_r);
+            let r1 = r.high_bits::<TwoGamma2>();
+
+            assert!(!make_hint::<TwoGamma2>(Elem::new(0), r));
+
+            for test_z in [0, 1, TwoGamma2::U32 / 2, TwoGamma2::U32] {
+                let z = Elem::new(test_z);
+                let h = make_hint::<TwoGamma2>(z, r);
+                let v1 = (r + z).high_bits::<TwoGamma2>();
+                assert_eq!(h, r1 != v1);
+            }
+        }
+    }
+
+    #[test]
+    fn hint_round_trip() {
+        fn test<P: SignatureParams + PartialEq + core::fmt::Debug>() {
+            let mut h = Hint::<P>::default();
+            for i in 0..P::K::USIZE {
+                if i < h.0.len() {
+                    h.0[i][0] = true;
+                    h.0[i][10] = true;
+                    if i > 0 {
+                        h.0[i][i * 5] = true;
+                    }
+                }
+            }
+            let packed = h.bit_pack();
+            let unpacked = Hint::<P>::bit_unpack(&packed).unwrap();
+            assert_eq!(h, unpacked);
+        }
+        test::<MlDsa44>();
+        test::<MlDsa65>();
+    }
 }

@@ -1,406 +1,594 @@
 'use strict'
 
-const { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
-const { SCHEMES, getSchemeHandler } = require('./lib/schemes')
+const { createPublicKey, createSecretKey } = require('node:crypto')
+const Cache = require('mnemonist/lru-cache')
 
-/**
- * @template {import('./types/index').URIComponent|string} T
- * @param {T} uri
- * @param {import('./types/index').Options} [options]
- * @returns {T}
- */
-function normalize (uri, options) {
-  if (typeof uri === 'string') {
-    uri = /** @type {T} */ (normalizeString(uri, options))
-  } else if (typeof uri === 'object') {
-    uri = /** @type {T} */ (parse(serialize(uri, options), options))
-  }
-  return uri
+const { hsAlgorithms, verifySignature, detectPublicKeyAlgorithms } = require('./crypto')
+const createDecoder = require('./decoder')
+const { TokenError } = require('./error')
+const { getAsyncKey, ensurePromiseCallback, hashToken } = require('./utils')
+
+const defaultCacheSize = 1000
+
+function exactStringClaimMatcher(allowed, actual) {
+  return allowed === actual
 }
 
-/**
- * @param {string} baseURI
- * @param {string} relativeURI
- * @param {import('./types/index').Options} [options]
- * @returns {string}
- */
-function resolve (baseURI, relativeURI, options) {
-  const schemelessOptions = options ? Object.assign({ scheme: 'null' }, options) : { scheme: 'null' }
-  const resolved = resolveComponent(parse(baseURI, schemelessOptions), parse(relativeURI, schemelessOptions), schemelessOptions, true)
-  schemelessOptions.skipEscape = true
-  return serialize(resolved, schemelessOptions)
+function checkAreCompatibleAlgorithms(expected, actual) {
+  for (const expectedAlg of expected) {
+    // if at least one of the expected algorithms is compatible we're done
+    if (actual.includes(expectedAlg)) {
+      return
+    }
+  }
+
+  throw new TokenError(
+    TokenError.codes.invalidKey,
+    `Invalid public key provided for algorithms ${expected.join(', ')}.`
+  )
 }
 
-/**
- * @param {import ('./types/index').URIComponent} base
- * @param {import ('./types/index').URIComponent} relative
- * @param {import('./types/index').Options} [options]
- * @param {boolean} [skipNormalization=false]
- * @returns {import ('./types/index').URIComponent}
- */
-function resolveComponent (base, relative, options, skipNormalization) {
-  /** @type {import('./types/index').URIComponent} */
-  const target = {}
-  if (!skipNormalization) {
-    base = parse(serialize(base, options), options) // normalize base component
-    relative = parse(serialize(relative, options), options) // normalize relative component
+function prepareKeyOrSecret(key, isSecret) {
+  if (typeof key === 'string') {
+    key = Buffer.from(key, 'utf-8')
   }
-  options = options || {}
 
-  if (!options.tolerant && relative.scheme) {
-    target.scheme = relative.scheme
-    // target.authority = relative.authority;
-    target.userinfo = relative.userinfo
-    target.host = relative.host
-    target.port = relative.port
-    target.path = removeDotSegments(relative.path || '')
-    target.query = relative.query
+  return isSecret ? createSecretKey(key) : createPublicKey(key)
+}
+
+function ensureStringClaimMatcher(raw) {
+  if (!Array.isArray(raw)) {
+    raw = [raw]
+  }
+
+  return raw
+    .filter(r => r)
+    .map(r => {
+      if (r && typeof r.test === 'function') {
+        return r
+      }
+
+      return { test: exactStringClaimMatcher.bind(null, r) }
+    })
+}
+
+function createCache(rawSize) {
+  const size = parseInt(rawSize === true ? defaultCacheSize : rawSize, 10)
+  return size > 0 ? new Cache(size) : null
+}
+
+function cacheSet(
+  {
+    cache,
+    token,
+    cacheTTL,
+    payload,
+    ignoreExpiration,
+    ignoreNotBefore,
+    maxAge,
+    clockTimestamp = Date.now(),
+    clockTolerance,
+    errorCacheTTL,
+    cacheKeyBuilder
+  },
+  value
+) {
+  if (!cache) {
+    return value
+  }
+
+  const cacheValue = [value, 0, 0]
+
+  if (value instanceof TokenError) {
+    const ttl = typeof errorCacheTTL === 'function' ? errorCacheTTL(value) : errorCacheTTL
+    cacheValue[2] = clockTimestamp + clockTolerance + ttl
+    cache.set(cacheKeyBuilder(token), cacheValue)
+    return value
+  }
+
+  const hasIat = payload && typeof payload.iat === 'number'
+
+  // Add time range of the token
+  if (hasIat) {
+    cacheValue[1] = !ignoreNotBefore && typeof payload.nbf === 'number' ? payload.nbf * 1000 - clockTolerance : 0
+
+    if (!ignoreExpiration) {
+      if (typeof payload.exp === 'number') {
+        cacheValue[2] = payload.exp * 1000 + clockTolerance
+      } else if (maxAge) {
+        cacheValue[2] = payload.iat * 1000 + maxAge + clockTolerance
+      }
+    }
+  }
+
+  // The maximum TTL for the token cannot exceed the configured cacheTTL
+  const maxTTL = clockTimestamp + clockTolerance + cacheTTL
+  cacheValue[2] = cacheValue[2] === 0 ? maxTTL : Math.min(cacheValue[2], maxTTL)
+
+  cache.set(cacheKeyBuilder(token), cacheValue)
+
+  return value
+}
+
+function handleCachedResult(cached, callback, promise) {
+  if (cached instanceof TokenError) {
+    if (!callback) {
+      throw cached
+    }
+
+    callback(cached)
   } else {
-    if (relative.userinfo !== undefined || relative.host !== undefined || relative.port !== undefined) {
-      // target.authority = relative.authority;
-      target.userinfo = relative.userinfo
-      target.host = relative.host
-      target.port = relative.port
-      target.path = removeDotSegments(relative.path || '')
-      target.query = relative.query
-    } else {
-      if (!relative.path) {
-        target.path = base.path
-        if (relative.query !== undefined) {
-          target.query = relative.query
-        } else {
-          target.query = base.query
-        }
-      } else {
-        if (relative.path[0] === '/') {
-          target.path = removeDotSegments(relative.path)
-        } else {
-          if ((base.userinfo !== undefined || base.host !== undefined || base.port !== undefined) && !base.path) {
-            target.path = '/' + relative.path
-          } else if (!base.path) {
-            target.path = relative.path
-          } else {
-            target.path = base.path.slice(0, base.path.lastIndexOf('/') + 1) + relative.path
-          }
-          target.path = removeDotSegments(target.path)
-        }
-        target.query = relative.query
-      }
-      // target.authority = base.authority;
-      target.userinfo = base.userinfo
-      target.host = base.host
-      target.port = base.port
+    if (!callback) {
+      return cached
     }
-    target.scheme = base.scheme
+
+    callback(null, cached)
   }
 
-  target.fragment = relative.fragment
-
-  return target
+  return promise
 }
 
-/**
- * @param {import ('./types/index').URIComponent|string} uriA
- * @param {import ('./types/index').URIComponent|string} uriB
- * @param {import ('./types/index').Options} options
- * @returns {boolean}
- */
-function equal (uriA, uriB, options) {
-  const normalizedA = normalizeComparableURI(uriA, options)
-  const normalizedB = normalizeComparableURI(uriB, options)
+function validateAlgorithmAndSignature(input, header, signature, key, allowedAlgorithms) {
+  // According to the signature and key, check with algorithms are supported
+  // Verify the token is allowed
+  if (!allowedAlgorithms.includes(header.alg)) {
+    throw new TokenError(TokenError.codes.invalidAlgorithm, 'The token algorithm is invalid.')
+  }
 
-  return normalizedA !== undefined && normalizedB !== undefined && normalizedA.toLowerCase() === normalizedB.toLowerCase()
+  // Verify the signature, if present
+  if (signature && !verifySignature(header.alg, key, input, signature)) {
+    throw new TokenError(TokenError.codes.invalidSignature, 'The token signature is invalid.')
+  }
 }
 
-/**
- * @param {Readonly<import('./types/index').URIComponent>} cmpts
- * @param {import('./types/index').Options} [opts]
- * @returns {string}
- */
-function serialize (cmpts, opts) {
-  const component = {
-    host: cmpts.host,
-    scheme: cmpts.scheme,
-    userinfo: cmpts.userinfo,
-    port: cmpts.port,
-    path: cmpts.path,
-    query: cmpts.query,
-    nid: cmpts.nid,
-    nss: cmpts.nss,
-    uuid: cmpts.uuid,
-    fragment: cmpts.fragment,
-    reference: cmpts.reference,
-    resourceName: cmpts.resourceName,
-    secure: cmpts.secure,
-    error: ''
+function validateClaimType(values, claim, allowArray, isArray, type) {
+  const typeFailureMessage = allowArray
+    ? `The ${claim} claim must be a ${type} or an array of ${type}s.`
+    : `The ${claim} claim must be a ${type}.`
+
+  if (isArray && !allowArray) {
+    throw new TokenError(TokenError.codes.invalidClaimValue, typeFailureMessage)
   }
-  const options = Object.assign({}, opts)
-  const uriTokens = []
 
-  // find scheme handler
-  const schemeHandler = getSchemeHandler(options.scheme || component.scheme)
+  if (values.map(v => typeof v).some(t => t !== type)) {
+    throw new TokenError(TokenError.codes.invalidClaimType, typeFailureMessage)
+  }
+}
 
-  // perform scheme specific serialization
-  if (schemeHandler && schemeHandler.serialize) schemeHandler.serialize(component, options)
+function validateClaimValues(values, claim, allowed, isArray) {
+  const failureMessage = isArray
+    ? `None of ${claim} claim values are allowed.`
+    : `The ${claim} claim value is not allowed.`
 
-  if (component.path !== undefined) {
-    if (!options.skipEscape) {
-      component.path = escapePreservingEscapes(component.path)
+  if (!values.some(v => allowed.some(a => a.test(v)))) {
+    throw new TokenError(TokenError.codes.invalidClaimValue, failureMessage)
+  }
+}
 
-      if (component.scheme !== undefined) {
-        component.path = component.path.split('%3A').join(':')
+function validateClaimDateValue(value, modifier, now, greater, errorCode, errorVerb) {
+  const adjusted = value * 1000 + (modifier || 0)
+  const valid = greater ? now >= adjusted : now <= adjusted
+
+  if (!valid) {
+    throw new TokenError(TokenError.codes[errorCode], `The token ${errorVerb} at ${new Date(adjusted).toISOString()}.`)
+  }
+}
+
+// Standard JWS header parameter names (RFC 7515 §4 + JWA) that MUST NOT appear in crit
+const JWS_REGISTERED_HEADERS = new Set([
+  'alg',
+  'jku',
+  'jwk',
+  'kid',
+  'x5u',
+  'x5c',
+  'x5t',
+  'x5t#S256',
+  'typ',
+  'cty',
+  'crit'
+])
+
+function validateCrit(header, allowedCritHeaders) {
+  if (!header.crit) return
+
+  // crit MUST be a non-empty array
+  if (!Array.isArray(header.crit) || header.crit.length === 0) {
+    throw new TokenError(TokenError.codes.invalidCritHeader, 'The crit header must be a non-empty array.')
+  }
+
+  const seen = new Set()
+  for (const ext of header.crit) {
+    if (typeof ext !== 'string') {
+      throw new TokenError(TokenError.codes.invalidCritHeader, 'Each crit entry must be a string.')
+    }
+
+    // MUST NOT contain standard JWS/JWA header names (recipients MAY reject)
+    if (JWS_REGISTERED_HEADERS.has(ext)) {
+      throw new TokenError(
+        TokenError.codes.invalidCritHeader,
+        `The crit header must not contain the standard header parameter name "${ext}".`
+      )
+    }
+
+    // MUST NOT contain duplicate names (recipients MAY reject)
+    if (seen.has(ext)) {
+      throw new TokenError(TokenError.codes.invalidCritHeader, `Duplicate entry "${ext}" in crit header.`)
+    }
+    seen.add(ext)
+
+    // Extension listed in crit MUST be understood by the recipient
+    if (!allowedCritHeaders.has(ext)) {
+      throw new TokenError(TokenError.codes.invalidCritHeader, `Critical extension "${ext}" is not supported.`)
+    }
+
+    // Extension listed in crit MUST be present in the header
+    if (!(ext in header)) {
+      throw new TokenError(
+        TokenError.codes.invalidCritHeader,
+        `Critical extension "${ext}" is listed in crit but is not present in the header.`
+      )
+    }
+  }
+}
+
+function verifyToken(
+  key,
+  { input, header, payload, signature },
+  { validators, allowedAlgorithms, checkTyp, clockTimestamp, requiredClaims, allowedCritHeaders }
+) {
+  // Verify the key
+  /* istanbul ignore next */
+  const hasKey = key instanceof Buffer ? key.length : !!key
+
+  if (hasKey && !signature) {
+    throw new TokenError(TokenError.codes.missingSignature, 'The token signature is missing.')
+  } else if (!hasKey && signature) {
+    throw new TokenError(TokenError.codes.missingKey, 'The key option is missing.')
+  }
+
+  validateAlgorithmAndSignature(input, header, signature, key, allowedAlgorithms)
+
+  // Verify crit (RFC 7515 §4.1.11)
+  validateCrit(header, allowedCritHeaders)
+
+  // Verify typ
+  if (
+    checkTyp &&
+    (typeof header.typ !== 'string' || checkTyp !== header.typ.toLowerCase().replace(/^application\//, ''))
+  ) {
+    throw new TokenError(TokenError.codes.invalidType, 'Invalid typ.')
+  }
+
+  if (requiredClaims) {
+    for (const claim of requiredClaims) {
+      if (!(claim in payload)) {
+        throw new TokenError(TokenError.codes.missingRequiredClaim, `The ${claim} claim is required.`)
       }
+    }
+  }
+
+  // Verify the payload
+  const now = clockTimestamp || Date.now()
+
+  for (const { type, claim, allowed, array, modifier, greater, errorCode, errorVerb } of validators) {
+    const value = payload[claim]
+    const isArray = Array.isArray(value)
+    const values = isArray ? value : [value]
+
+    // We have already checked above that all required claims are present
+    // Therefore we can skip this validator if the claim is not present
+    if (!(claim in payload)) {
+      continue
+    }
+
+    // Validate type
+    validateClaimType(values, claim, array, isArray, type === 'date' ? 'number' : 'string')
+
+    if (type === 'date') {
+      validateClaimDateValue(value, modifier, now, greater, errorCode, errorVerb)
     } else {
-      component.path = normalizePercentEncoding(component.path)
+      validateClaimValues(values, claim, allowed, isArray)
     }
   }
+}
 
-  if (options.reference !== 'suffix' && component.scheme) {
-    uriTokens.push(component.scheme, ':')
-  }
+function verify(
+  {
+    key,
+    allowedAlgorithms,
+    complete,
+    cacheTTL,
+    checkTyp,
+    clockTimestamp,
+    clockTolerance,
+    ignoreExpiration,
+    ignoreNotBefore,
+    maxAge,
+    isAsync,
+    validators,
+    decode,
+    cache,
+    requiredClaims,
+    allowedCritHeaders,
+    errorCacheTTL,
+    cacheKeyBuilder
+  },
+  token,
+  cb
+) {
+  const [callback, promise] = isAsync ? ensurePromiseCallback(cb) : []
 
-  const authority = recomposeAuthority(component)
-  if (authority !== undefined) {
-    if (options.reference !== 'suffix') {
-      uriTokens.push('//')
-    }
+  // Check the cache
+  if (cache) {
+    const [value, min, max] = cache.get(cacheKeyBuilder(token)) || [undefined, 0, 0]
+    const now = clockTimestamp || Date.now()
 
-    uriTokens.push(authority)
-
-    if (component.path && component.path[0] !== '/') {
-      uriTokens.push('/')
-    }
-  }
-  if (component.path !== undefined) {
-    let s = component.path
-
-    if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) {
-      s = removeDotSegments(s)
-    }
-
+    // Validate time range
     if (
-      authority === undefined &&
-      s[0] === '/' &&
-      s[1] === '/'
+      /* istanbul ignore next */
+      typeof value !== 'undefined' &&
+      (min === 0 ||
+        (now < min && value.code === 'FAST_JWT_INACTIVE') ||
+        (now >= min && value.code !== 'FAST_JWT_INACTIVE')) &&
+      (max === 0 || now <= max)
     ) {
-      // don't allow the path to start with "//"
-      s = '/%2F' + s.slice(2)
-    }
-
-    uriTokens.push(s)
-  }
-
-  if (component.query !== undefined) {
-    uriTokens.push('?', component.query)
-  }
-
-  if (component.fragment !== undefined) {
-    uriTokens.push('#', component.fragment)
-  }
-  return uriTokens.join('')
-}
-
-const URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u
-
-/**
- * @param {import('./types/index').URIComponent} parsed
- * @param {RegExpMatchArray} matches
- * @returns {string|undefined}
- */
-function getParseError (parsed, matches) {
-  if (matches[2] !== undefined && parsed.path && parsed.path[0] !== '/') {
-    return 'URI path must start with "/" when authority is present.'
-  }
-
-  if (typeof parsed.port === 'number' && (parsed.port < 0 || parsed.port > 65535)) {
-    return 'URI port is malformed.'
-  }
-
-  return undefined
-}
-
-/**
- * @param {string} uri
- * @param {import('./types/index').Options} [opts]
- * @returns {{ parsed: import('./types/index').URIComponent, malformedAuthorityOrPort: boolean }}
- */
-function parseWithStatus (uri, opts) {
-  const options = Object.assign({}, opts)
-  /** @type {import('./types/index').URIComponent} */
-  const parsed = {
-    scheme: undefined,
-    userinfo: undefined,
-    host: '',
-    port: undefined,
-    path: '',
-    query: undefined,
-    fragment: undefined
-  }
-
-  let malformedAuthorityOrPort = false
-
-  let isIP = false
-  if (options.reference === 'suffix') {
-    if (options.scheme) {
-      uri = options.scheme + ':' + uri
-    } else {
-      uri = '//' + uri
+      // Cache hit
+      return handleCachedResult(value, callback, promise)
     }
   }
 
-  const matches = uri.match(URI_PARSE)
-
-  if (matches) {
-    // store each component
-    parsed.scheme = matches[1]
-    parsed.userinfo = matches[3]
-    parsed.host = matches[4]
-    parsed.port = parseInt(matches[5], 10)
-    parsed.path = matches[6] || ''
-    parsed.query = matches[7]
-    parsed.fragment = matches[8]
-
-    // fix port number
-    if (isNaN(parsed.port)) {
-      parsed.port = matches[5]
+  /*
+    As very first thing, decode the token - If invalid, everything else is useless.
+    We don't involve cache here since it's much slower.
+  */
+  let decoded
+  try {
+    decoded = decode(token)
+  } catch (e) {
+    if (callback) {
+      callback(e)
+      return promise
     }
 
-    const parseError = getParseError(parsed, matches)
-    if (parseError !== undefined) {
-      parsed.error = parsed.error || parseError
-      malformedAuthorityOrPort = true
+    throw e
+  }
+
+  const { header, payload, signature, input } = decoded
+  const cacheContext = {
+    cache,
+    token,
+    cacheTTL,
+    errorCacheTTL,
+    ignoreExpiration,
+    ignoreNotBefore,
+    maxAge,
+    clockTimestamp,
+    clockTolerance,
+    payload,
+    cacheKeyBuilder
+  }
+  const validationContext = {
+    validators,
+    allowedAlgorithms,
+    checkTyp,
+    clockTimestamp,
+    clockTolerance,
+    requiredClaims,
+    allowedCritHeaders
+  }
+
+  // We have the key
+  if (!callback) {
+    try {
+      verifyToken(key, decoded, validationContext)
+
+      return cacheSet(cacheContext, complete ? { header, payload, signature, input } : payload)
+    } catch (e) {
+      throw cacheSet(cacheContext, e)
+    }
+  }
+
+  // Get the key asynchronously
+  getAsyncKey(key, { header, payload, signature }, (err, currentKey) => {
+    if (err) {
+      return callback(
+        cacheSet(cacheContext, TokenError.wrap(err, TokenError.codes.keyFetchingError, 'Cannot fetch key.'))
+      )
     }
 
-    if (parsed.host) {
-      const ipv4result = isIPv4(parsed.host)
-      if (ipv4result === false) {
-        const ipv6result = normalizeIPv6(parsed.host)
-        parsed.host = ipv6result.host.toLowerCase()
-        isIP = ipv6result.isIPV6
+    if (typeof currentKey === 'string') {
+      currentKey = Buffer.from(currentKey, 'utf-8')
+    } else if (!(currentKey instanceof Buffer)) {
+      return callback(
+        cacheSet(
+          cacheContext,
+          new TokenError(
+            TokenError.codes.keyFetchingError,
+            'The key returned from the callback must be a string or a buffer containing a secret or a public key.'
+          )
+        )
+      )
+    }
+
+    try {
+      // Detect the private key - If the algorithms were known, just verify they match, otherwise assign them
+      const availableAlgorithms = detectPublicKeyAlgorithms(currentKey)
+
+      if (validationContext.allowedAlgorithms.length) {
+        checkAreCompatibleAlgorithms(allowedAlgorithms, availableAlgorithms)
       } else {
-        isIP = true
+        validationContext.allowedAlgorithms = availableAlgorithms
       }
+
+      currentKey = prepareKeyOrSecret(currentKey, availableAlgorithms[0] === hsAlgorithms[0])
+
+      verifyToken(currentKey, decoded, validationContext)
+    } catch (e) {
+      return callback(cacheSet(cacheContext, e))
     }
-    if (parsed.scheme === undefined && parsed.userinfo === undefined && parsed.host === undefined && parsed.port === undefined && parsed.query === undefined && !parsed.path) {
-      parsed.reference = 'same-document'
-    } else if (parsed.scheme === undefined) {
-      parsed.reference = 'relative'
-    } else if (parsed.fragment === undefined) {
-      parsed.reference = 'absolute'
+
+    callback(null, cacheSet(cacheContext, complete ? { header, payload, signature, input: token } : payload))
+  })
+
+  return promise
+}
+
+module.exports = function createVerifier(options) {
+  let {
+    key,
+    algorithms: allowedAlgorithms,
+    complete,
+    cache: cacheSize,
+    cacheTTL,
+    errorCacheTTL,
+    checkTyp,
+    clockTimestamp,
+    clockTolerance,
+    ignoreExpiration,
+    ignoreNotBefore,
+    maxAge,
+    allowedJti,
+    allowedAud,
+    allowedIss,
+    allowedSub,
+    allowedNonce,
+    requiredClaims,
+    allowedCritHeaders,
+    cacheKeyBuilder
+  } = { cacheTTL: 600_000, clockTolerance: 0, errorCacheTTL: -1, cacheKeyBuilder: hashToken, ...options }
+
+  // Validate options
+  if (!Array.isArray(allowedAlgorithms)) {
+    allowedAlgorithms = []
+  }
+
+  const keyType = typeof key
+  if (keyType !== 'string' && keyType !== 'object' && keyType !== 'function') {
+    throw new TokenError(
+      TokenError.codes.INVALID_OPTION,
+      'The key option must be a string, a buffer or a function returning the algorithm secret or public key.'
+    )
+  }
+
+  if (key && keyType !== 'function') {
+    // Detect the private key - If the algorithms were known, just verify they match, otherwise assign them
+    const availableAlgorithms = detectPublicKeyAlgorithms(key)
+
+    if (allowedAlgorithms.length) {
+      checkAreCompatibleAlgorithms(allowedAlgorithms, availableAlgorithms)
     } else {
-      parsed.reference = 'uri'
+      allowedAlgorithms = availableAlgorithms
     }
 
-    // check for reference errors
-    if (options.reference && options.reference !== 'suffix' && options.reference !== parsed.reference) {
-      parsed.error = parsed.error || 'URI is not a ' + options.reference + ' reference.'
-    }
-
-    // find scheme handler
-    const schemeHandler = getSchemeHandler(options.scheme || parsed.scheme)
-
-    // check if scheme can't handle IRIs
-    if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
-      // if host component is a domain name
-      if (parsed.host && (options.domainHost || (schemeHandler && schemeHandler.domainHost)) && isIP === false && nonSimpleDomain(parsed.host)) {
-        // convert Unicode IDN -> ASCII IDN
-        try {
-          parsed.host = URL.domainToASCII(parsed.host.toLowerCase())
-        } catch (e) {
-          parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e
-        }
-      }
-      // convert IRI -> URI
-    }
-
-    if (!schemeHandler || (schemeHandler && !schemeHandler.skipNormalize)) {
-      if (uri.indexOf('%') !== -1) {
-        if (parsed.scheme !== undefined) {
-          parsed.scheme = unescape(parsed.scheme)
-        }
-        if (parsed.host !== undefined) {
-          parsed.host = reescapeHostDelimiters(unescape(parsed.host), isIP)
-        }
-      }
-      if (parsed.path) {
-        parsed.path = normalizePathEncoding(parsed.path)
-      }
-      if (parsed.fragment) {
-        try {
-          parsed.fragment = encodeURI(decodeURIComponent(parsed.fragment))
-        } catch {
-          parsed.error = parsed.error || 'URI malformed'
-        }
-      }
-    }
-
-    // perform scheme specific parsing
-    if (schemeHandler && schemeHandler.parse) {
-      schemeHandler.parse(parsed, options)
-    }
-  } else {
-    parsed.error = parsed.error || 'URI can not be parsed.'
-  }
-  return { parsed, malformedAuthorityOrPort }
-}
-
-/**
- * @param {string} uri
- * @param {import('./types/index').Options} [opts]
- * @returns
- */
-function parse (uri, opts) {
-  return parseWithStatus(uri, opts).parsed
-}
-
-/**
- * @param {string} uri
- * @param {import('./types/index').Options} [opts]
- * @returns {string}
- */
-function normalizeString (uri, opts) {
-  return normalizeStringWithStatus(uri, opts).normalized
-}
-
-/**
- * @param {string} uri
- * @param {import('./types/index').Options} [opts]
- * @returns {{ normalized: string, malformedAuthorityOrPort: boolean }}
- */
-function normalizeStringWithStatus (uri, opts) {
-  const { parsed, malformedAuthorityOrPort } = parseWithStatus(uri, opts)
-  return {
-    normalized: malformedAuthorityOrPort ? uri : serialize(parsed, opts),
-    malformedAuthorityOrPort
-  }
-}
-
-/**
- * @param {import ('./types/index').URIComponent|string} uri
- * @param {import('./types/index').Options} [opts]
- * @returns {string|undefined}
- */
-function normalizeComparableURI (uri, opts) {
-  if (typeof uri === 'string') {
-    const { normalized, malformedAuthorityOrPort } = normalizeStringWithStatus(uri, opts)
-    return malformedAuthorityOrPort ? undefined : normalized
+    key = prepareKeyOrSecret(key, availableAlgorithms[0] === hsAlgorithms[0])
   }
 
-  if (typeof uri === 'object') {
-    return serialize(uri, opts)
+  if (clockTimestamp && (typeof clockTimestamp !== 'number' || clockTimestamp < 0)) {
+    throw new TokenError(TokenError.codes.invalidOption, 'The clockTimestamp option must be a positive number.')
   }
-}
 
-const fastUri = {
-  SCHEMES,
-  normalize,
-  resolve,
-  resolveComponent,
-  equal,
-  serialize,
-  parse
-}
+  if (clockTolerance && (typeof clockTolerance !== 'number' || clockTolerance < 0)) {
+    throw new TokenError(TokenError.codes.invalidOption, 'The clockTolerance option must be a positive number.')
+  }
 
-module.exports = fastUri
-module.exports.default = fastUri
-module.exports.fastUri = fastUri
+  if (cacheTTL && (typeof cacheTTL !== 'number' || cacheTTL < 0)) {
+    throw new TokenError(TokenError.codes.invalidOption, 'The cacheTTL option must be a positive number.')
+  }
+
+  if (
+    (errorCacheTTL && typeof errorCacheTTL !== 'function' && typeof errorCacheTTL !== 'number') ||
+    errorCacheTTL < -1
+  ) {
+    throw new TokenError(
+      TokenError.codes.invalidOption,
+      'The errorCacheTTL option must be a number greater than -1 or a function.'
+    )
+  }
+
+  if (requiredClaims && !Array.isArray(requiredClaims)) {
+    throw new TokenError(TokenError.codes.invalidOption, 'The requiredClaims option must be an array.')
+  }
+
+  if (allowedCritHeaders !== undefined && !Array.isArray(allowedCritHeaders)) {
+    throw new TokenError(TokenError.codes.invalidOption, 'The allowedCritHeaders option must be an array of strings.')
+  }
+
+  const allowedCritHeadersSet = new Set(allowedCritHeaders || [])
+
+  // Add validators
+  const validators = []
+
+  if (!ignoreNotBefore) {
+    validators.push({
+      type: 'date',
+      claim: 'nbf',
+      errorCode: 'inactive',
+      errorVerb: 'will be active',
+      greater: true,
+      modifier: -clockTolerance
+    })
+  }
+
+  if (!ignoreExpiration) {
+    validators.push({
+      type: 'date',
+      claim: 'exp',
+      errorCode: 'expired',
+      errorVerb: 'has expired',
+      modifier: +clockTolerance
+    })
+  }
+
+  if (typeof maxAge === 'number') {
+    validators.push({ type: 'date', claim: 'iat', errorCode: 'expired', errorVerb: 'has expired', modifier: maxAge })
+  }
+
+  if (allowedJti) {
+    validators.push({ type: 'string', claim: 'jti', allowed: ensureStringClaimMatcher(allowedJti) })
+  }
+
+  if (allowedAud) {
+    validators.push({ type: 'string', claim: 'aud', allowed: ensureStringClaimMatcher(allowedAud), array: true })
+  }
+
+  if (allowedIss) {
+    validators.push({ type: 'string', claim: 'iss', allowed: ensureStringClaimMatcher(allowedIss) })
+  }
+
+  if (allowedSub) {
+    validators.push({ type: 'string', claim: 'sub', allowed: ensureStringClaimMatcher(allowedSub) })
+  }
+
+  if (allowedNonce) {
+    validators.push({ type: 'string', claim: 'nonce', allowed: ensureStringClaimMatcher(allowedNonce) })
+  }
+
+  const normalizedTyp = checkTyp ? checkTyp.toLowerCase().replace(/^application\//, '') : null
+
+  const context = {
+    key,
+    allowedAlgorithms,
+    complete,
+    cacheTTL,
+    errorCacheTTL,
+    checkTyp: normalizedTyp,
+    clockTimestamp,
+    clockTolerance,
+    ignoreExpiration,
+    ignoreNotBefore,
+    maxAge,
+    isAsync: keyType === 'function',
+    validators,
+    decode: createDecoder({ complete: true }),
+    cache: createCache(cacheSize),
+    requiredClaims,
+    allowedCritHeaders: allowedCritHeadersSet,
+    cacheKeyBuilder
+  }
+
+  // Return the verifier
+  const verifier = verify.bind(null, context)
+  verifier.cache = context.cache
+  return verifier
+}

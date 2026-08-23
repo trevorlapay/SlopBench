@@ -1,0 +1,29 @@
+{
+  "cve": "GHSA-5wp8-q9mx-8jx8",
+  "osv_id": "GHSA-5wp8-q9mx-8jx8",
+  "aliases": [],
+  "published": "2026-03-05T00:38:14+00:00",
+  "ecosystem": "crates.io",
+  "package": "zeptoclaw",
+  "cwe_ids": [
+    "CWE-77"
+  ],
+  "primary_cwe": "CWE-77",
+  "summary": "zeptoclaw has Shell allowlist-blocklist bypass via command/argument injection and file name wildcards",
+  "severity": "CVSS:3.1/AV:N/AC:L/PR:N/",
+  "repo": "https://github.com/qhkm/zeptoclaw",
+  "fix_commit": "68916c3e4f3af107f11940b27854fc7ef517058b",
+  "upstream_path": "src/security/shell.rs",
+  "language": "rust",
+  "start_line": 132,
+  "end_line": 135,
+  "hunks": 8,
+  "file_lines": 794,
+  "local_path": "corpus/rust/GHSA-5wp8-q9mx-8jx8__shell.rs",
+  "references": [
+    "https://github.com/qhkm/zeptoclaw/security/advisories/GHSA-5wp8-q9mx-8jx8",
+    "https://github.com/qhkm/zeptoclaw/commit/68916c3e4f3af107f11940b27854fc7ef517058b",
+    "https://github.com/qhkm/zeptoclaw",
+    "https://github.com/qhkm/zeptoclaw/blob/fe2ef07cfec5bb46b42cdd65f52b9230c03e9270/src/security/shell.rs#L218-L243"
+  ]
+}

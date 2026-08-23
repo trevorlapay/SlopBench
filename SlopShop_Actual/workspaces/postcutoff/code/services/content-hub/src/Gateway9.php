@@ -1,2018 +1,813 @@
 <?php
-/**
- * @link https://craftcms.com/
- * @copyright Copyright (c) Pixel & Tonic, Inc.
- * @license https://craftcms.github.io/license/
- */
+namespace RobRichards\XMLSecLibs;
 
-namespace craft\services;
-
-use Craft;
-use craft\base\ElementInterface;
-use craft\base\Field;
-use craft\base\FieldInterface;
-use craft\base\FieldLayoutElement;
-use craft\base\MemoizableArray;
-use craft\behaviors\CustomFieldBehavior;
-use craft\db\Connection;
-use craft\db\Query;
-use craft\db\Table;
-use craft\errors\MissingComponentException;
-use craft\events\ApplyFieldSaveEvent;
-use craft\events\ConfigEvent;
-use craft\events\DefineCompatibleFieldTypesEvent;
-use craft\events\FieldEvent;
-use craft\events\FieldGroupEvent;
-use craft\events\FieldLayoutEvent;
-use craft\events\RegisterComponentTypesEvent;
-use craft\fieldlayoutelements\CustomField;
-use craft\fields\Assets as AssetsField;
-use craft\fields\Categories as CategoriesField;
-use craft\fields\Checkboxes;
-use craft\fields\Color;
-use craft\fields\Country;
-use craft\fields\Date;
-use craft\fields\Dropdown;
-use craft\fields\Email;
-use craft\fields\Entries as EntriesField;
-use craft\fields\Lightswitch;
-use craft\fields\Matrix as MatrixField;
-use craft\fields\MissingField;
-use craft\fields\Money;
-use craft\fields\MultiSelect;
-use craft\fields\Number;
-use craft\fields\PlainText;
-use craft\fields\RadioButtons;
-use craft\fields\Table as TableField;
-use craft\fields\Tags as TagsField;
-use craft\fields\Time;
-use craft\fields\Url;
-use craft\fields\Users as UsersField;
-use craft\helpers\ArrayHelper;
-use craft\helpers\Component as ComponentHelper;
-use craft\helpers\DateTimeHelper;
-use craft\helpers\Db;
-use craft\helpers\ElementHelper;
-use craft\helpers\FieldHelper;
-use craft\helpers\Json;
-use craft\helpers\ProjectConfig as ProjectConfigHelper;
-use craft\helpers\StringHelper;
-use craft\models\FieldGroup;
-use craft\models\FieldLayout;
-use craft\models\FieldLayoutTab;
-use craft\records\Field as FieldRecord;
-use craft\records\FieldGroup as FieldGroupRecord;
-use craft\records\FieldLayout as FieldLayoutRecord;
-use craft\records\FieldLayoutField as FieldLayoutFieldRecord;
-use craft\records\FieldLayoutTab as FieldLayoutTabRecord;
-use Throwable;
-use yii\base\Component;
-use yii\base\Exception;
-use yii\base\InvalidArgumentException;
-use yii\db\Exception as DbException;
-use yii\db\Expression;
-use yii\db\Schema;
-use yii\db\Transaction;
-use yii\web\BadRequestHttpException;
+use DOMElement;
+use Exception;
 
 /**
- * Fields service.
+ * xmlseclibs.php
  *
- * An instance of the service is available via [[\craft\base\ApplicationTrait::getFields()|`Craft::$app->getFields()`]].
+ * Copyright (c) 2007-2024, Robert Richards <rrichards@cdatazone.org>.
+ * All rights reserved.
  *
- * @author Pixel & Tonic, Inc. <support@pixelandtonic.com>
- * @since 3.0.0
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *   * Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *
+ *   * Redistributions in binary form must reproduce the above copyright
+ *     notice, this list of conditions and the following disclaimer in
+ *     the documentation and/or other materials provided with the
+ *     distribution.
+ *
+ *   * Neither the name of Robert Richards nor the names of his
+ *     contributors may be used to endorse or promote products derived
+ *     from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ * FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ * BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ *
+ * @author    Robert Richards <rrichards@cdatazone.org>
+ * @copyright 2007-2024 Robert Richards <rrichards@cdatazone.org>
+ * @license   http://www.opensource.org/licenses/bsd-license.php  BSD License
  */
-class Fields extends Component
+
+class XMLSecurityKey
 {
-    /**
-     * @event RegisterComponentTypesEvent The event that is triggered when registering field types.
-     *
-     * Field types must implement [[FieldInterface]]. [[Field]] provides a base implementation.
-     *
-     * See [Field Types](https://craftcms.com/docs/4.x/extend/field-types.html) for documentation on creating field types.
-     * ---
-     * ```php
-     * use craft\events\RegisterComponentTypesEvent;
-     * use craft\services\Fields;
-     * use yii\base\Event;
-     *
-     * Event::on(Fields::class,
-     *     Fields::EVENT_REGISTER_FIELD_TYPES,
-     *     function(RegisterComponentTypesEvent $event) {
-     *         $event->types[] = MyFieldType::class;
-     *     }
-     * );
-     * ```
-     */
-    public const EVENT_REGISTER_FIELD_TYPES = 'registerFieldTypes';
+    const TRIPLEDES_CBC = 'http://www.w3.org/2001/04/xmlenc#tripledes-cbc';
+    const AES128_CBC = 'http://www.w3.org/2001/04/xmlenc#aes128-cbc';
+    const AES192_CBC = 'http://www.w3.org/2001/04/xmlenc#aes192-cbc';
+    const AES256_CBC = 'http://www.w3.org/2001/04/xmlenc#aes256-cbc';
+    const AES128_GCM = 'http://www.w3.org/2009/xmlenc11#aes128-gcm';
+    const AES192_GCM = 'http://www.w3.org/2009/xmlenc11#aes192-gcm';
+    const AES256_GCM = 'http://www.w3.org/2009/xmlenc11#aes256-gcm';
+    const RSA_1_5 = 'http://www.w3.org/2001/04/xmlenc#rsa-1_5';
+    const RSA_OAEP_MGF1P = 'http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p';
+    const RSA_OAEP = 'http://www.w3.org/2009/xmlenc11#rsa-oaep';
+    const DSA_SHA1 = 'http://www.w3.org/2000/09/xmldsig#dsa-sha1';
+    const RSA_SHA1 = 'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
+    const RSA_SHA256 = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
+    const RSA_SHA384 = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha384';
+    const RSA_SHA512 = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha512';
+    const HMAC_SHA1 = 'http://www.w3.org/2000/09/xmldsig#hmac-sha1';
+    const AUTHTAG_LENGTH = 16;
+
+    /** @var array */
+    private $cryptParams = array();
+
+    /** @var int|string */
+    public $type = 0;
+
+    /** @var mixed|null */
+    public $key = null;
+
+    /** @var string  */
+    public $passphrase = "";
+
+    /** @var string|null */
+    public $iv = null;
+
+    /** @var string|null */
+    public $name = null;
+
+    /** @var mixed|null */
+    public $keyChain = null;
+
+    /** @var bool */
+    public $isEncrypted = false;
+
+    /** @var XMLSecEnc|null */
+    public $encryptedCtx = null;
+
+    /** @var mixed|null */
+    public $guid = null;
 
     /**
-     * @event DefineCompatibleFieldTypesEvent The event that is triggered when defining the compatible field types for a field.
-     * @see getCompatibleFieldTypes()
-     * @since 4.5.7
-     */
-    public const EVENT_DEFINE_COMPATIBLE_FIELD_TYPES = 'defineCompatibleFieldTypes';
-
-    /**
-     * @event FieldGroupEvent The event that is triggered before a field group is saved.
-     */
-    public const EVENT_BEFORE_SAVE_FIELD_GROUP = 'beforeSaveFieldGroup';
-
-    /**
-     * @event FieldGroupEvent The event that is triggered after a field group is saved.
-     */
-    public const EVENT_AFTER_SAVE_FIELD_GROUP = 'afterSaveFieldGroup';
-
-    /**
-     * @event FieldGroupEvent The event that is triggered before a field group delete is applied to the database.
-     * @since 3.1.0
-     */
-    public const EVENT_BEFORE_APPLY_GROUP_DELETE = 'beforeApplyGroupDelete';
-
-    /**
-     * @event FieldGroupEvent The event that is triggered before a field group is deleted.
-     */
-    public const EVENT_BEFORE_DELETE_FIELD_GROUP = 'beforeDeleteFieldGroup';
-
-    /**
-     * @event FieldGroupEvent The event that is triggered after a field group is deleted.
-     */
-    public const EVENT_AFTER_DELETE_FIELD_GROUP = 'afterDeleteFieldGroup';
-
-    /**
-     * @event FieldEvent The event that is triggered before a field is saved.
-     */
-    public const EVENT_BEFORE_SAVE_FIELD = 'beforeSaveField';
-
-    /**
-     * @event ApplyFieldSaveEvent The event that is triggered before a field save is applied to the database.
-     * @since 4.13.0
-     */
-    public const EVENT_BEFORE_APPLY_FIELD_SAVE = 'beforeApplyFieldSave';
-
-    /**
-     * @event FieldEvent The event that is triggered after a field is saved.
-     */
-    public const EVENT_AFTER_SAVE_FIELD = 'afterSaveField';
-
-    /**
-     * @event FieldEvent The event that is triggered before a field is deleted.
-     */
-    public const EVENT_BEFORE_DELETE_FIELD = 'beforeDeleteField';
-
-    /**
-     * @event FieldEvent The event that is triggered before a field delete is applied to the database.
-     * @since 3.1.0
-     */
-    public const EVENT_BEFORE_APPLY_FIELD_DELETE = 'beforeApplyFieldDelete';
-
-    /**
-     * @event FieldEvent The event that is triggered after a field is deleted.
-     */
-    public const EVENT_AFTER_DELETE_FIELD = 'afterDeleteField';
-
-    /**
-     * @event FieldLayoutEvent The event that is triggered before a field layout is saved.
-     */
-    public const EVENT_BEFORE_SAVE_FIELD_LAYOUT = 'beforeSaveFieldLayout';
-
-    /**
-     * @event FieldLayoutEvent The event that is triggered after a field layout is saved.
-     */
-    public const EVENT_AFTER_SAVE_FIELD_LAYOUT = 'afterSaveFieldLayout';
-
-    /**
-     * @event FieldLayoutEvent The event that is triggered before a field layout is deleted.
-     */
-    public const EVENT_BEFORE_DELETE_FIELD_LAYOUT = 'beforeDeleteFieldLayout';
-
-    /**
-     * @event FieldLayoutEvent The event that is triggered after a field layout is deleted.
-     */
-    public const EVENT_AFTER_DELETE_FIELD_LAYOUT = 'afterDeleteFieldLayout';
-
-    /**
+     * This variable contains the certificate as a string if this key represents an X509-certificate.
+     * If this key doesn't represent a certificate, this will be null.
      * @var string|null
      */
-    public ?string $oldFieldColumnPrefix = null;
+    private $x509Certificate = null;
 
     /**
-     * @var MemoizableArray<FieldGroup>|null
-     * @see _groups()
+     * This variable contains the certificate thumbprint if we have loaded an X509-certificate.
+     * @var string|null
      */
-    private ?MemoizableArray $_groups = null;
+    private $X509Thumbprint = null;
 
     /**
-     * @var MemoizableArray<FieldInterface>|null
-     * @see _fields()
+     * @param string $type
+     * @param null|array $params
+     * @throws Exception
      */
-    private ?MemoizableArray $_fields = null;
-
-    /**
-     * @var MemoizableArray<FieldLayout>|null
-     * @see _layouts()
-     */
-    private ?MemoizableArray $_layouts = null;
-
-    /**
-     * @var array
-     */
-    private array $_savingFields = [];
-
-    /**
-     * Serializer
-     *
-     * @since 3.5.14
-     */
-    public function __serialize()
+    public function __construct($type, $params=null)
     {
-        $vars = get_object_vars($this);
-        unset($vars['_groups'], $vars['_fields']);
-        return $vars;
-    }
-
-    // Groups
-    // -------------------------------------------------------------------------
-
-    /**
-     * Returns a memoizable array of all field groups.
-     *
-     * @return MemoizableArray<FieldGroup>
-     */
-    private function _groups(): MemoizableArray
-    {
-        if (!isset($this->_groups)) {
-            $this->_groups = new MemoizableArray($this->_createGroupQuery()->all(), fn(array $result) => new FieldGroup($result));
-        }
-
-        return $this->_groups;
-    }
-
-    /**
-     * Returns all field groups.
-     *
-     * @return FieldGroup[] The field groups
-     */
-    public function getAllGroups(): array
-    {
-        return $this->_groups()->all();
-    }
-
-    /**
-     * Returns a field group by its ID.
-     *
-     * @param int $groupId The field group’s ID
-     * @return FieldGroup|null The field group, or null if it doesn’t exist
-     */
-    public function getGroupById(int $groupId): ?FieldGroup
-    {
-        return $this->_groups()->firstWhere('id', $groupId);
-    }
-
-    /**
-     * Returns a field group by its UID.
-     *
-     * @param string $groupUid The field group’s UID
-     * @return FieldGroup|null The field group, or null if it doesn’t exist
-     * @since 3.3.0
-     */
-    public function getGroupByUid(string $groupUid): ?FieldGroup
-    {
-        return $this->_groups()->firstWhere('uid', $groupUid, true);
-    }
-
-    /**
-     * Saves a field group.
-     *
-     * @param FieldGroup $group The field group to be saved
-     * @param bool $runValidation Whether the group should be validated
-     * @return bool Whether the field group was saved successfully
-     */
-    public function saveGroup(FieldGroup $group, bool $runValidation = true): bool
-    {
-        $isNewGroup = !$group->id;
-
-        // Fire a 'beforeSaveFieldGroup' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_SAVE_FIELD_GROUP)) {
-            $this->trigger(self::EVENT_BEFORE_SAVE_FIELD_GROUP, new FieldGroupEvent([
-                'group' => $group,
-                'isNew' => $isNewGroup,
-            ]));
-        }
-
-        if ($runValidation && !$group->validate()) {
-            Craft::info('Field group not saved due to validation error.', __METHOD__);
-            return false;
-        }
-
-        if ($isNewGroup) {
-            $group->uid = StringHelper::UUID();
-        }
-
-        $configPath = ProjectConfig::PATH_FIELD_GROUPS . '.' . $group->uid;
-        $configData = $group->getConfig();
-        Craft::$app->getProjectConfig()->set($configPath, $configData, "Save field group “{$group->name}”");
-
-        if ($isNewGroup) {
-            $group->id = Db::idByUid(Table::FIELDGROUPS, $group->uid);
-        }
-
-        return true;
-    }
-
-    /**
-     * Handle field group change
-     *
-     * @param ConfigEvent $event
-     */
-    public function handleChangedGroup(ConfigEvent $event): void
-    {
-        $data = $event->newValue;
-        $uid = $event->tokenMatches[0];
-
-        $groupRecord = $this->_getGroupRecord($uid, true);
-        $isNewGroup = $groupRecord->getIsNewRecord();
-
-        // If this is a new group, set the UID we want.
-        if ($isNewGroup) {
-            $groupRecord->uid = $uid;
-        }
-
-        $groupRecord->name = $data['name'];
-
-        if ($groupRecord->dateDeleted) {
-            $groupRecord->restore();
-        } else {
-            $groupRecord->save(false);
-        }
-
-        // Update caches
-        $this->_groups = null;
-
-        // Fire an 'afterSaveFieldGroup' event
-        if ($this->hasEventHandlers(self::EVENT_AFTER_SAVE_FIELD_GROUP)) {
-            $this->trigger(self::EVENT_AFTER_SAVE_FIELD_GROUP, new FieldGroupEvent([
-                'group' => $this->getGroupById($groupRecord->id),
-                'isNew' => $isNewGroup,
-            ]));
-        }
-    }
-
-    /**
-     * Handle field group getting deleted.
-     *
-     * @param ConfigEvent $event
-     */
-    public function handleDeletedGroup(ConfigEvent $event): void
-    {
-        $uid = $event->tokenMatches[0];
-        $groupRecord = $this->_getGroupRecord($uid);
-
-        if ($groupRecord->getIsNewRecord()) {
-            return;
-        }
-
-        $group = $this->getGroupById($groupRecord->id);
-
-        // Fire a 'beforeApplyGroupDelete' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_APPLY_GROUP_DELETE)) {
-            $this->trigger(self::EVENT_BEFORE_APPLY_GROUP_DELETE, new FieldGroupEvent([
-                'group' => $group,
-            ]));
-        }
-
-        Craft::$app->getDb()->createCommand()
-            ->softDelete(Table::FIELDGROUPS, ['id' => $groupRecord->id])
-            ->execute();
-
-        // Update caches
-        $this->_groups = null;
-
-        // Fire an 'afterDeleteFieldGroup' event
-        if ($this->hasEventHandlers(self::EVENT_AFTER_DELETE_FIELD_GROUP)) {
-            $this->trigger(self::EVENT_AFTER_DELETE_FIELD_GROUP, new FieldGroupEvent([
-                'group' => $group,
-            ]));
-        }
-    }
-
-    /**
-     * Deletes a field group by its ID.
-     *
-     * @param int $groupId The field group’s ID
-     * @return bool Whether the field group was deleted successfully
-     */
-    public function deleteGroupById(int $groupId): bool
-    {
-        $group = $this->getGroupById($groupId);
-
-        if (!$group) {
-            return false;
-        }
-
-        return $this->deleteGroup($group);
-    }
-
-    /**
-     * Deletes a field group.
-     *
-     * @param FieldGroup $group The field group
-     * @return bool Whether the field group was deleted successfully
-     */
-    public function deleteGroup(FieldGroup $group): bool
-    {
-        /** @var FieldGroupRecord|null $groupRecord */
-        $groupRecord = FieldGroupRecord::find()
-            ->where(['id' => $group->id])
-            ->with('fields')
-            ->one();
-
-        if (!$groupRecord) {
-            return false;
-        }
-
-        // Fire a 'beforeDeleteFieldGroup' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_DELETE_FIELD_GROUP)) {
-            $this->trigger(self::EVENT_BEFORE_DELETE_FIELD_GROUP, new FieldGroupEvent([
-                'group' => $group,
-            ]));
-        }
-
-        // Manually delete the fields (rather than relying on cascade deletes) so we have a chance to delete the
-        // content columns
-        $fields = $this->getFieldsByGroupId($group->id);
-
-        foreach ($fields as $field) {
-            $this->deleteField($field);
-        }
-
-        Craft::$app->getProjectConfig()->remove(ProjectConfig::PATH_FIELD_GROUPS . '.' . $group->uid, "Delete the “{$group->name}” field group");
-        return true;
-    }
-
-    // Fields
-    // -------------------------------------------------------------------------
-
-    /**
-     * Returns all available field type classes.
-     *
-     * @return string[] The available field type classes
-     * @phpstan-return class-string<FieldInterface>[]
-     */
-    public function getAllFieldTypes(): array
-    {
-        $fieldTypes = [
-            AssetsField::class,
-            CategoriesField::class,
-            Checkboxes::class,
-            Color::class,
-            Country::class,
-            Date::class,
-            Dropdown::class,
-            Email::class,
-            EntriesField::class,
-            Lightswitch::class,
-            MatrixField::class,
-            Money::class,
-            MultiSelect::class,
-            Number::class,
-            PlainText::class,
-            RadioButtons::class,
-            TableField::class,
-            TagsField::class,
-            Time::class,
-            Url::class,
-            UsersField::class,
-        ];
-
-        $event = new RegisterComponentTypesEvent([
-            'types' => $fieldTypes,
-        ]);
-        $this->trigger(self::EVENT_REGISTER_FIELD_TYPES, $event);
-
-        return $event->types;
-    }
-
-    /**
-     * Returns all field types that have a column in the content table.
-     *
-     * @return string[] The field type classes
-     * @phpstan-return class-string<FieldInterface>[]
-     */
-    public function getFieldTypesWithContent(): array
-    {
-        $fieldTypes = [];
-
-        foreach ($this->getAllFieldTypes() as $fieldType) {
-            /** @var class-string<FieldInterface> $fieldType */
-            if ($fieldType::hasContentColumn()) {
-                $fieldTypes[] = $fieldType;
-            }
-        }
-
-        return $fieldTypes;
-    }
-
-    /**
-     * Returns all field types whose column types are considered compatible with a given field.
-     *
-     * @param FieldInterface $field The current field to base compatible fields on
-     * @param bool $includeCurrent Whether $field's class should be included
-     * @return string[] The compatible field type classes
-     * @phpstan-return class-string<FieldInterface>[]
-     */
-    public function getCompatibleFieldTypes(FieldInterface $field, bool $includeCurrent = true): array
-    {
-        $types = [];
-
-        if ($field::hasContentColumn()) {
-            // If the field has any validation errors and has an ID, swap it with the saved field
-            if (!$field->getIsNew() && $field->hasErrors()) {
-                $field = $this->getFieldById($field->id);
-            }
-
-            $fieldColumnType = $field->getContentColumnType();
-
-            if (is_array($fieldColumnType)) {
-                return $includeCurrent ? [get_class($field)] : [];
-            }
-
-            foreach ($this->getAllFieldTypes() as $class) {
-                /** @var class-string<FieldInterface> $class */
-                if ($class === get_class($field)) {
-                    if ($includeCurrent) {
-                        $types[] = $class;
+        switch ($type) {
+            case (self::TRIPLEDES_CBC):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['cipher'] = 'des-ede3-cbc';
+                $this->cryptParams['type'] = 'symmetric';
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmlenc#tripledes-cbc';
+                $this->cryptParams['keysize'] = 24;
+                $this->cryptParams['blocksize'] = 8;
+                break;
+            case (self::AES128_CBC):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['cipher'] = 'aes-128-cbc';
+                $this->cryptParams['type'] = 'symmetric';
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmlenc#aes128-cbc';
+                $this->cryptParams['keysize'] = 16;
+                $this->cryptParams['blocksize'] = 16;
+                break;
+            case (self::AES192_CBC):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['cipher'] = 'aes-192-cbc';
+                $this->cryptParams['type'] = 'symmetric';
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmlenc#aes192-cbc';
+                $this->cryptParams['keysize'] = 24;
+                $this->cryptParams['blocksize'] = 16;
+                break;
+            case (self::AES256_CBC):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['cipher'] = 'aes-256-cbc';
+                $this->cryptParams['type'] = 'symmetric';
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmlenc#aes256-cbc';
+                $this->cryptParams['keysize'] = 32;
+                $this->cryptParams['blocksize'] = 16;
+                break;
+            case (self::AES128_GCM):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['cipher'] = 'aes-128-gcm';
+                $this->cryptParams['type'] = 'symmetric';
+                $this->cryptParams['method'] = 'http://www.w3.org/2009/xmlenc11#aes128-gcm';
+                $this->cryptParams['keysize'] = 16;
+                $this->cryptParams['blocksize'] = 16;
+                break;
+            case (self::AES192_GCM):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['cipher'] = 'aes-192-gcm';
+                $this->cryptParams['type'] = 'symmetric';
+                $this->cryptParams['method'] = 'http://www.w3.org/2009/xmlenc11#aes192-gcm';
+                $this->cryptParams['keysize'] = 24;
+                $this->cryptParams['blocksize'] = 16;
+                break;
+            case (self::AES256_GCM):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['cipher'] = 'aes-256-gcm';
+                $this->cryptParams['type'] = 'symmetric';
+                $this->cryptParams['method'] = 'http://www.w3.org/2009/xmlenc11#aes256-gcm';
+                $this->cryptParams['keysize'] = 32;
+                $this->cryptParams['blocksize'] = 16;
+                break;
+            case (self::RSA_1_5):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['padding'] = OPENSSL_PKCS1_PADDING;
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmlenc#rsa-1_5';
+                if (is_array($params) && ! empty($params['type'])) {
+                    if ($params['type'] == 'public' || $params['type'] == 'private') {
+                        $this->cryptParams['type'] = $params['type'];
+                        break;
                     }
-                    continue;
                 }
-
-                if (!$class::hasContentColumn()) {
-                    continue;
-                }
-
-                /** @var FieldInterface $tempField */
-                $tempField = new $class();
-                $tempFieldColumnType = $tempField->getContentColumnType();
-
-                if (is_array($tempFieldColumnType)) {
-                    continue;
-                }
-
-                if (!Db::areColumnTypesCompatible($fieldColumnType, $tempFieldColumnType)) {
-                    continue;
-                }
-
-                $types[] = $class;
-            }
-        }
-
-        // Make sure the current field class is in there if it's supposed to be
-        if ($includeCurrent && !in_array(get_class($field), $types, true)) {
-            $types[] = get_class($field);
-        }
-
-        if ($this->hasEventHandlers(self::EVENT_DEFINE_COMPATIBLE_FIELD_TYPES)) {
-            $event = new DefineCompatibleFieldTypesEvent([
-                'field' => $field,
-                'compatibleTypes' => $types,
-            ]);
-            $this->trigger(self::EVENT_DEFINE_COMPATIBLE_FIELD_TYPES, $event);
-            return $event->compatibleTypes;
-        }
-
-        return $types;
-    }
-
-    /**
-     * Creates a field with a given config.
-     *
-     * @template T of FieldInterface
-     * @param class-string<T>|array $config The field’s class name, or its config, with a `type` value and optionally a `settings` value
-     * @phpstan-param class-string<T>|array{type:class-string<T>,id?:int|string,uid?:string} $config
-     * @return T The field
-     */
-    public function createField(mixed $config): FieldInterface
-    {
-        if (is_string($config)) {
-            $config = ['type' => $config];
-        }
-
-        if (!empty($config['id']) && empty($config['uid']) && is_numeric($config['id'])) {
-            $uid = Db::uidById(Table::FIELDS, $config['id']);
-            $config['uid'] = $uid;
-        }
-
-        try {
-            $field = ComponentHelper::createComponent($config, FieldInterface::class);
-        } catch (MissingComponentException $e) {
-            $config['errorMessage'] = $e->getMessage();
-            $config['expectedType'] = $config['type'];
-            unset($config['type']);
-
-            $field = new MissingField($config);
-        }
-
-        return $field;
-    }
-
-    /**
-     * Returns a memoizable array of fields.
-     *
-     * @param string|string[]|false|null $context The field context(s) to fetch fields from. Defaults to [[\craft\services\Content::$fieldContext]].
-     * Set to `false` to get all fields regardless of context.
-     *
-     * @return MemoizableArray<FieldInterface>
-     */
-    private function _fields(mixed $context = null): MemoizableArray
-    {
-        $context ??= Craft::$app->getContent()->fieldContext;
-
-        if (!isset($this->_fields)) {
-            $this->_fields = new MemoizableArray(
-                $this->_createFieldQuery()->all(),
-                fn(array $config) => $this->createField($config),
-            );
-        }
-
-        if ($context === false) {
-            return $this->_fields;
-        }
-
-        if (is_array($context)) {
-            return $this->_fields->whereIn('context', $context, true);
-        }
-
-        return $this->_fields->where('context', $context, true);
-    }
-
-    /**
-     * Returns all fields within a field context(s).
-     *
-     * @param string|string[]|false|null $context The field context(s) to fetch fields from. Defaults to [[\craft\services\Content::$fieldContext]].
-     * Set to `false` to get all fields regardless of context.
-     * @return FieldInterface[] The fields
-     */
-    public function getAllFields(mixed $context = null): array
-    {
-        return $this->_fields($context)->all();
-    }
-
-    /**
-     * Returns all fields that have a column in the content table.
-     *
-     * @param string|string[]|false|null $context The field context(s) to fetch fields from. Defaults to [[\craft\services\Content::$fieldContext]].
-     * Set to `false` to get all fields regardless of context.
-     * @return FieldInterface[] The fields
-     */
-    public function getFieldsWithContent(mixed $context = null): array
-    {
-        return ArrayHelper::where($this->getAllFields($context), function(FieldInterface $field) {
-            return $field::hasContentColumn();
-        }, true, true, false);
-    }
-
-    /**
-     * Returns all fields that don’t have a column in the content table.
-     *
-     * @param string|string[]|false|null $context The field context(s) to fetch fields from. Defaults to [[\craft\services\Content::$fieldContext]].
-     * Set to `false` to get all fields regardless of context.
-     * @return FieldInterface[] The fields
-     * @since 4.3.2
-     */
-    public function getFieldsWithoutContent(mixed $context = null): array
-    {
-        return ArrayHelper::where($this->getAllFields($context), function(FieldInterface $field) {
-            return !$field::hasContentColumn();
-        }, true, true, false);
-    }
-
-    /**
-     * Returns all fields of a certain type.
-     *
-     * @param class-string<FieldInterface> $type The field type
-     * @param string|string[]|false|null $context The field context(s) to fetch fields from. Defaults to [[\craft\services\Content::$fieldContext]].
-     * Set to `false` to get all fields regardless of context.
-     * @return FieldInterface[] The fields
-     * @since 4.4.0
-     */
-    public function getFieldsByType(string $type, mixed $context = null): array
-    {
-        return ArrayHelper::where(
-            $this->getAllFields($context),
-            fn(FieldInterface $field) => $field instanceof $type,
-            keepKeys: false
-        );
-    }
-
-    /**
-     * Returns a field by its ID.
-     *
-     * @param int $fieldId The field’s ID
-     * @return FieldInterface|null The field, or null if it doesn’t exist
-     */
-    public function getFieldById(int $fieldId): ?FieldInterface
-    {
-        return $this->_fields(false)->firstWhere('id', $fieldId);
-    }
-
-    /**
-     * Returns a field by its UID.
-     *
-     * @param string $fieldUid The field’s UID
-     * @return FieldInterface|null The field, or null if it doesn’t exist
-     */
-    public function getFieldByUid(string $fieldUid): ?FieldInterface
-    {
-        return $this->_fields(false)->firstWhere('uid', $fieldUid, true);
-    }
-
-    /**
-     * Returns a field by its handle and optional context.
-     *
-     * ---
-     *
-     * ```php
-     * $body = Craft::$app->fields->getFieldByHandle('body');
-     * ```
-     * ```twig
-     * {% set body = craft.app.fields.getFieldByHandle('body') %}
-     * {{ body.instructions }}
-     * ```
-     *
-     * @param string $handle The field’s handle
-     * @param string|string[]|false|null $context The field context(s) to fetch fields from. Defaults to [[\craft\services\Content::$fieldContext]].
-     * Set to `false` to get all fields regardless of context.
-     * @return FieldInterface|null The field, or null if it doesn’t exist
-     */
-    public function getFieldByHandle(string $handle, mixed $context = null): ?FieldInterface
-    {
-        return $this->_fields($context)->firstWhere('handle', $handle, true);
-    }
-
-    /**
-     * Returns whether a field exists with a given handle and context.
-     *
-     * @param string $handle The field handle
-     * @param string|null $context The field context (defauts to [[\craft\services\Content::$fieldContext]])
-     * @return bool Whether a field with that handle exists
-     */
-    public function doesFieldWithHandleExist(string $handle, ?string $context = null): bool
-    {
-        return ArrayHelper::contains($this->getAllFields($context), 'handle', $handle, true);
-    }
-
-    /**
-     * Returns all the fields in a given group.
-     *
-     * @param int $groupId The field group’s ID
-     * @return FieldInterface[] The fields
-     */
-    public function getFieldsByGroupId(int $groupId): array
-    {
-        return $this->_fields(false)->where('groupId', $groupId)->all();
-    }
-
-    /**
-     * Returns the config for the given field.
-     *
-     * @param FieldInterface $field
-     * @return array
-     * @since 3.1.0
-     */
-    public function createFieldConfig(FieldInterface $field): array
-    {
-        $columnType = $field->getContentColumnType();
-        if (is_array($columnType)) {
-            array_walk($columnType, function(&$type, $key) {
-                $type = "$key:$type";
-            });
-            $columnType = array_values($columnType);
-        }
-
-        $config = [
-            'name' => $field->name,
-            'handle' => $field->handle,
-            'columnSuffix' => $field->columnSuffix,
-            'instructions' => $field->instructions,
-            'searchable' => $field->searchable,
-            'translationMethod' => $field->translationMethod,
-            'translationKeyFormat' => $field->translationKeyFormat,
-            'type' => get_class($field),
-            'settings' => ProjectConfigHelper::packAssociativeArrays($field->getSettings()),
-            'contentColumnType' => $columnType,
-        ];
-
-        if ($field->groupId) {
-            $config['fieldGroup'] = $this->getGroupById($field->groupId)->uid;
-        } else {
-            $config['fieldGroup'] = null;
-        }
-
-        return $config;
-    }
-
-    /**
-     * Saves a field.
-     *
-     * @param FieldInterface $field The Field to be saved
-     * @param bool $runValidation Whether the field should be validated
-     * @return bool Whether the field was saved successfully
-     * @throws Throwable if reasons
-     */
-    public function saveField(FieldInterface $field, bool $runValidation = true): bool
-    {
-        if ($field instanceof MissingField) {
-            $error = $field->errorMessage ?? "Unable to find component class '$field->expectedType'.";
-            $field->addError('type', $error);
-            return false;
-        }
-
-        $isNewField = $field->getIsNew();
-
-        // Fire a 'beforeSaveField' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_SAVE_FIELD)) {
-            $this->trigger(self::EVENT_BEFORE_SAVE_FIELD, new FieldEvent([
-                'field' => $field,
-                'isNew' => $isNewField,
-            ]));
-        }
-
-        if (!$field->beforeSave($isNewField)) {
-            return false;
-        }
-
-        if ($runValidation && !$field->validate()) {
-            Craft::info('Field not saved due to validation error.', __METHOD__);
-            return false;
-        }
-
-        $this->prepFieldForSave($field);
-        $configData = $this->createFieldConfig($field);
-        $appliedConfig = false;
-
-        // Only store field data in the project config for global context
-        if ($field->context === 'global') {
-            $configPath = ProjectConfig::PATH_FIELDS . '.' . $field->uid;
-            $appliedConfig = Craft::$app->getProjectConfig()->set($configPath, $configData, "Save field “{$field->handle}”");
-        }
-
-        if (!$appliedConfig) {
-            // If it’s not a global field, or there weren't any changes in the main field settings, apply the save to the DB + call afterSave()
-            $this->applyFieldSave($field->uid, $configData, $field->context);
-        }
-
-        if ($isNewField) {
-            $field->id = Db::idByUid(Table::FIELDS, $field->uid);
-        }
-
-        return true;
-    }
-
-    /**
-     * Preps a field to be saved.
-     *
-     * @param FieldInterface $field
-     * @since 3.1.2
-     */
-    public function prepFieldForSave(FieldInterface $field): void
-    {
-        // Clear the translation key format if not using a custom translation method
-        if ($field->translationMethod !== Field::TRANSLATION_METHOD_CUSTOM) {
-            $field->translationKeyFormat = null;
-        }
-
-        $isNew = $field->getIsNew();
-
-        // Make sure it's got a UUID
-        if ($isNew) {
-            if (empty($field->uid)) {
-                $field->uid = StringHelper::UUID();
-            }
-        } elseif (!$field->uid) {
-            $field->uid = Db::uidById(Table::FIELDS, $field->id);
-        }
-
-        // If this is a new field or it has multiple columns, make sure it has a column suffix
-        FieldHelper::ensureColumnSuffix($field);
-
-        // Store with all the populated data for future reference.
-        $this->_savingFields[$field->uid] = $field;
-    }
-
-    /**
-     * Handle field changes.
-     *
-     * @param ConfigEvent $event
-     * @throws Throwable
-     */
-    public function handleChangedField(ConfigEvent $event): void
-    {
-        $data = $event->newValue;
-        $fieldUid = $event->tokenMatches[0];
-
-        if (!is_array($data)) {
-            return;
-        }
-
-        $this->applyFieldSave($fieldUid, $data, 'global');
-    }
-
-    /**
-     * Deletes a field by its ID.
-     *
-     * @param int $fieldId The field’s ID
-     * @return bool Whether the field was deleted successfully
-     */
-    public function deleteFieldById(int $fieldId): bool
-    {
-        $field = $this->getFieldById($fieldId);
-
-        if (!$field) {
-            return false;
-        }
-
-        return $this->deleteField($field);
-    }
-
-    /**
-     * Deletes a field.
-     *
-     * @param FieldInterface $field The field
-     * @return bool Whether the field was deleted successfully
-     * @throws Throwable if reasons
-     */
-    public function deleteField(FieldInterface $field): bool
-    {
-        // Fire a 'beforeDeleteField' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_DELETE_FIELD)) {
-            $this->trigger(self::EVENT_BEFORE_DELETE_FIELD, new FieldEvent([
-                'field' => $field,
-            ]));
-        }
-
-        if (!$field->beforeDelete()) {
-            return false;
-        }
-
-        if ($field->context === 'global') {
-            Craft::$app->getProjectConfig()->remove(ProjectConfig::PATH_FIELDS . '.' . $field->uid, "Delete the “{$field->handle}” field");
-        } else {
-            $this->applyFieldDelete($field->uid);
-        }
-
-        return true;
-    }
-
-    /**
-     * Handle a field getting deleted.
-     *
-     * @param ConfigEvent $event
-     */
-    public function handleDeletedField(ConfigEvent $event): void
-    {
-        $fieldUid = $event->tokenMatches[0];
-        $this->applyFieldDelete($fieldUid);
-    }
-
-    /**
-     * Applies a field delete to the database.
-     *
-     * @param string $fieldUid
-     * @throws Throwable if database error
-     * @since 3.1.0
-     */
-    public function applyFieldDelete(string $fieldUid): void
-    {
-        $fieldRecord = $this->_getFieldRecord($fieldUid);
-
-        if (!$fieldRecord->id) {
-            return;
-        }
-
-        $field = $this->getFieldById($fieldRecord->id);
-
-        // Fire a 'beforeApplyFieldDelete' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_APPLY_FIELD_DELETE)) {
-            $this->trigger(self::EVENT_BEFORE_APPLY_FIELD_DELETE, new FieldEvent([
-                'field' => $field,
-            ]));
-        }
-
-        $transaction = Craft::$app->getDb()->beginTransaction();
-
-        try {
-            $field->beforeApplyDelete();
-
-            // Drop any old content columns
-            $this->_dropOldFieldColumns($fieldRecord->handle, $fieldRecord->columnSuffix);
-
-            // Delete the row in fields
-            Db::delete(Table::FIELDS, [
-                'id' => $fieldRecord->id,
-            ]);
-
-            $field->afterDelete();
-
-            $transaction->commit();
-        } catch (Throwable $e) {
-            $transaction->rollBack();
-            throw $e;
-        }
-
-        // Clear caches
-        $this->_fields = null;
-
-        // Update the field version
-        $this->updateFieldVersion();
-
-        // Fire an 'afterDeleteField' event
-        if ($this->hasEventHandlers(self::EVENT_AFTER_DELETE_FIELD)) {
-            $this->trigger(self::EVENT_AFTER_DELETE_FIELD, new FieldEvent([
-                'field' => $field,
-            ]));
-        }
-
-        // Invalidate all element caches
-        Craft::$app->getElements()->invalidateAllCaches();
-    }
-
-    /**
-     * Drop unneeded field columns from the content table.
-     *
-     * @param string $handle
-     * @param string|null $columnSuffix
-     * @param array $newColumns
-     */
-    private function _dropOldFieldColumns(string $handle, ?string $columnSuffix, array $newColumns = []): void
-    {
-        $contentService = Craft::$app->getContent();
-        $db = Craft::$app->getDb();
-        $columnPrefix = $this->oldFieldColumnPrefix ?? $contentService->fieldColumnPrefix;
-
-        if ($columnSuffix === null) {
-            $column = ElementHelper::fieldColumn($columnPrefix, $handle, null);
-            if (!isset($newColumns[$column]) && $db->columnExists($contentService->contentTable, $column)) {
-                $db->createCommand()
-                    ->dropColumn($contentService->contentTable, $column)
-                    ->execute();
-            }
-        } else {
-            $allColumns = array_keys($db->getSchema()->getTableSchema($contentService->contentTable)->columns);
-            $qColumnPrefix = preg_quote($columnPrefix, '/');
-            $qHandle = preg_quote($handle, '/');
-            $qColumnSuffix = preg_quote($columnSuffix, '/');
-            foreach ($allColumns as $column) {
-                if (!isset($newColumns[$column]) && preg_match("/^$qColumnPrefix$qHandle(_\w+)?_$qColumnSuffix\$/", $column)) {
-                    $db->createCommand()
-                        ->dropColumn($contentService->contentTable, $column)
-                        ->execute();
-                }
-            }
-        }
-    }
-
-    /**
-     * Refreshes the internal field cache.
-     *
-     * This should be called whenever a field is updated or deleted directly in
-     * the database, rather than going through this service.
-     *
-     * @since 3.0.20
-     */
-    public function refreshFields(): void
-    {
-        $this->_fields = null;
-        $this->updateFieldVersion();
-    }
-
-    // Layouts
-    // -------------------------------------------------------------------------
-
-    /**
-     * Returns a memoizable array of all field layouts.
-     *
-     * @return MemoizableArray<FieldLayout>
-     */
-    private function _layouts(): MemoizableArray
-    {
-        if (!isset($this->_layouts)) {
-            if (Craft::$app->getIsInstalled()) {
-                $layoutConfigs = $this->_createLayoutQuery()->all();
-                $layoutTabConfigs = ArrayHelper::index($this->_createLayoutTabQuery()->all(), null, ['layoutId']);
-            } else {
-                $layoutConfigs = [];
-                $layoutTabConfigs = [];
-            }
-
-            $isMysql = Craft::$app->getDb()->getIsMysql();
-
-            $this->_layouts = new MemoizableArray($layoutConfigs, function($config) use (&$layoutTabConfigs, $isMysql) {
-                $layout = new FieldLayout($config);
-                /** @phpstan-ignore-next-line  */
-                $tabConfigs = ArrayHelper::remove($layoutTabConfigs, $layout->id) ?? [];
-                $tabs = array_map(
-                    fn(array $row) => $this->_createLayoutTabFromRow(['layout' => $layout] + $row, $isMysql),
-                    $tabConfigs
-                );
-                $layout->setTabs($tabs);
-                return $layout;
-            });
-        }
-
-        return $this->_layouts;
-    }
-
-    /**
-     * Returns a field layout by its ID.
-     *
-     * @param int $layoutId The field layout’s ID
-     * @return FieldLayout|null The field layout, or null if it doesn’t exist
-     */
-    public function getLayoutById(int $layoutId): ?FieldLayout
-    {
-        return $this->_layouts()->firstWhere('id', $layoutId);
-    }
-
-    /**
-     * Returns field layouts by their IDs.
-     *
-     * @param int[] $layoutIds The field layouts’ IDs
-     * @return FieldLayout[] The field layouts
-     * @since 3.7.27
-     */
-    public function getLayoutsByIds(array $layoutIds): array
-    {
-        return $this->_layouts()->whereIn('id', $layoutIds)->all();
-    }
-
-    /**
-     * Returns a field layout by its associated element type.
-     *
-     * @param class-string<ElementInterface> $type The associated element type
-     * @return FieldLayout The field layout
-     */
-    public function getLayoutByType(string $type): FieldLayout
-    {
-        return $this->_layouts()->firstWhere('type', $type)
-            ?? new FieldLayout(['type' => $type]);
-    }
-
-    /**
-     * Returns all of the field layouts associated with a given element type.
-     *
-     * @param class-string<ElementInterface> $type
-     * @return FieldLayout[] The field layouts
-     * @since 3.5.0
-     */
-    public function getLayoutsByType(string $type): array
-    {
-        return $this->_layouts()->where('type', $type)->all();
-    }
-
-    /**
-     * Returns a layout's tabs by its ID(s).
-     *
-     * @param int|int[] $layoutId The field layout’s ID(s)
-     * @return FieldLayoutTab[] The field layout’s tabs
-     * @deprecated in 4.6.0
-     */
-    public function getLayoutTabsById(int|array $layoutId): array
-    {
-        if (empty($layoutId)) {
-            return [];
-        }
-
-        $result = $this->_createLayoutTabQuery()
-            ->where(['layoutId' => $layoutId])
-            ->all();
-
-        $isMysql = Craft::$app->getDb()->getIsMysql();
-
-        return array_map(function(array $row) use ($isMysql) {
-            return $this->_createLayoutTabFromRow($row, $isMysql);
-        }, $result);
-    }
-
-    /**
-     * Instantiates a field layout tab from its database row.
-     *
-     * @param array $row
-     * @param bool $isMysql
-     * @return FieldLayoutTab
-     */
-    private function _createLayoutTabFromRow(array $row, bool $isMysql): FieldLayoutTab
-    {
-        if ($isMysql) {
-            $row['name'] = html_entity_decode($row['name'], ENT_QUOTES | ENT_HTML5);
-        }
-
-        $settings = ArrayHelper::remove($row, 'settings');
-        if ($settings) {
-            $row = array_merge($row, Json::decode($settings));
-        }
-
-        return new FieldLayoutTab($row);
-    }
-
-    /**
-     * Returns the field IDs grouped by layout IDs, for a given set of layout IDs.
-     *
-     * @param int[] $layoutIds The field layout IDs
-     * @return array
-     */
-    public function getFieldIdsByLayoutIds(array $layoutIds): array
-    {
-        $results = (new Query())
-            ->select(['layoutId', 'fieldId'])
-            ->from([Table::FIELDLAYOUTFIELDS])
-            ->where(['layoutId' => $layoutIds])
-            ->all();
-
-        $fieldIdsByLayoutId = [];
-        foreach ($results as $result) {
-            $fieldIdsByLayoutId[$result['layoutId']][] = $result['fieldId'];
-        }
-
-        return $fieldIdsByLayoutId;
-    }
-
-    /**
-     * Creates a field layout from the given config.
-     *
-     * @param array $config
-     * @return FieldLayout
-     * @since 4.0.0
-     */
-    public function createLayout(array $config): FieldLayout
-    {
-        $config['class'] = FieldLayout::class;
-        return Craft::createObject($config);
-    }
-
-    /**
-     * Creates a field layout element instance from its config.
-     *
-     * @template T of FieldLayoutElement
-     * @param array $config
-     * @phpstan-param array{type:class-string<T>} $config
-     * @return T
-     * @throws InvalidArgumentException if `$config['type']` does not implement [[FieldLayoutElement]]
-     * @since 3.5.0
-     */
-    public function createLayoutElement(array $config): FieldLayoutElement
-    {
-        $type = ArrayHelper::remove($config, 'type');
-
-        if (!$type || !is_subclass_of($type, FieldLayoutElement::class)) {
-            throw new InvalidArgumentException("Invalid field layout element class: $type");
-        }
-
-        $config['class'] = $type;
-        /** @noinspection PhpIncompatibleReturnTypeInspection */
-        return Craft::createObject($config);
-    }
-
-    /**
-     * Assembles a field layout from post data.
-     *
-     * @param string|null $namespace The namespace that the form data was posted in, if any
-     * @return FieldLayout The field layout
-     * @throws BadRequestHttpException
-     */
-    public function assembleLayoutFromPost(?string $namespace = null): FieldLayout
-    {
-        $paramPrefix = $namespace ? rtrim($namespace, '.') . '.' : '';
-        $config = Json::decode(Craft::$app->getRequest()->getBodyParam($paramPrefix . 'fieldLayout'));
-        return $this->createLayout($config);
-    }
-
-    /**
-     * Saves a field layout.
-     *
-     * @param FieldLayout $layout The field layout
-     * @param bool $runValidation Whether the layout should be validated
-     * @return bool Whether the field layout was saved successfully
-     * @throws Exception if $layout->id is set to an invalid layout ID
-     */
-    public function saveLayout(FieldLayout $layout, bool $runValidation = true): bool
-    {
-        if (!$layout->id) {
-            // Maybe the ID just wasn't known
-            $layout->id = Db::idByUid(Table::FIELDLAYOUTS, $layout->uid);
-        }
-
-        $isNewLayout = !$layout->id;
-
-        // Fire a 'beforeSaveFieldLayout' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_SAVE_FIELD_LAYOUT)) {
-            $this->trigger(self::EVENT_BEFORE_SAVE_FIELD_LAYOUT, new FieldLayoutEvent([
-                'layout' => $layout,
-                'isNew' => $isNewLayout,
-            ]));
-        }
-
-        if ($runValidation && !$layout->validate()) {
-            Craft::info('Field layout not saved due to validation error.', __METHOD__);
-            return false;
-        }
-
-        // Fetch the tabs in case they aren’t memoized yet or don't have their own field records yet
-        $tabs = $layout->getTabs();
-
-        if (!$isNewLayout) {
-            // Get the current layout
-            /** @var FieldLayoutRecord|null $layoutRecord */
-            $layoutRecord = FieldLayoutRecord::findWithTrashed()
-                ->andWhere(['id' => $layout->id])
-                ->one();
-
-            if (!$layoutRecord) {
-                throw new Exception('Invalid field layout ID: ' . $layout->id);
-            }
-
-            // Get all the current tab records, indexed by ID
-            $tabRecords = FieldLayoutTabRecord::find()
-                ->where(['layoutId' => $layout->id])
-                ->indexBy('id')
-                ->all();
-
-            // Delete all the field layout - field joins up front (we'll recreate the ones we need later)
-            // note: apparently cascade deletes are unreliable in MySQL in this case for some reason
-            Db::delete(Table::FIELDLAYOUTFIELDS, [
-                'layoutId' => $layout->id,
-            ]);
-        } else {
-            $layoutRecord = new FieldLayoutRecord();
-            $tabRecords = [];
-        }
-
-        // Save the layout
-        $layoutRecord->type = $layout->type;
-        $layoutRecord->uid = $layout->uid;
-
-        if (!$isNewLayout) {
-            $layoutRecord->id = $layout->id;
-        }
-
-        if ($layoutRecord->dateDeleted) {
-            $layoutRecord->restore();
-        } else {
-            $layoutRecord->save(false);
-        }
-
-        if ($isNewLayout) {
-            $layout->id = $layoutRecord->id;
-        }
-
-        $layout->uid = $layoutRecord->uid;
-
-        foreach ($tabs as $tab) {
-            if ($tab->id && isset($tabRecords[$tab->id])) {
-                /** @var FieldLayoutTabRecord $tabRecord */
-                $tabRecord = $tabRecords[$tab->id];
-                unset($tabRecords[$tab->id]);
-            } else {
-                if (!isset($tab->uid)) {
-                    $tab->uid = StringHelper::UUID();
-                }
-                $tabRecord = new FieldLayoutTabRecord();
-                $tabRecord->layoutId = $layout->id;
-                $tabRecord->uid = $tab->uid;
-            }
-
-            $tabRecord->sortOrder = $tab->sortOrder;
-            if (!Craft::$app->getDb()->getSupportsMb4()) {
-                $tabRecord->name = StringHelper::encodeMb4($tab->name);
-            } else {
-                $tabRecord->name = $tab->name;
-            }
-            $tabRecord->settings = $tab->toArray(['userCondition', 'elementCondition']);
-            $tabRecord->elements = $tab->getElementConfigs();
-            $tabRecord->save(false);
-            $tab->id = $tabRecord->id;
-
-            foreach ($tab->getElements() as $i => $layoutElement) {
-                if ($layoutElement instanceof CustomField) {
-                    $fieldUid = $layoutElement->getFieldUid();
-                    $field = $this->getFieldByUid($fieldUid);
-
-                    if (!$field) {
-                        Craft::warning("Invalid field UUID: $fieldUid", __METHOD__);
-                        continue;
+                throw new Exception('Certificate "type" (private/public) must be passed via parameters');
+            case (self::RSA_OAEP_MGF1P):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['padding'] = OPENSSL_PKCS1_OAEP_PADDING;
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p';
+                $this->cryptParams['hash'] = null;
+                if (is_array($params) && ! empty($params['type'])) {
+                    if ($params['type'] == 'public' || $params['type'] == 'private') {
+                        $this->cryptParams['type'] = $params['type'];
+                        break;
                     }
-
-                    $fieldRecord = new FieldLayoutFieldRecord();
-                    $fieldRecord->layoutId = $layout->id;
-                    $fieldRecord->tabId = $tab->id;
-                    $fieldRecord->fieldId = $field->id;
-                    $fieldRecord->required = (bool)$layoutElement->required;
-                    $fieldRecord->sortOrder = $i;
-                    $fieldRecord->save(false);
                 }
-            }
+                throw new Exception('Certificate "type" (private/public) must be passed via parameters');
+            case (self::RSA_OAEP):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['padding'] = OPENSSL_PKCS1_OAEP_PADDING;
+                $this->cryptParams['method'] = 'http://www.w3.org/2009/xmlenc11#rsa-oaep';
+                $this->cryptParams['hash'] = 'http://www.w3.org/2009/xmlenc11#mgf1sha1';
+                if (is_array($params) && ! empty($params['type'])) {
+                    if ($params['type'] == 'public' || $params['type'] == 'private') {
+                        $this->cryptParams['type'] = $params['type'];
+                        break;
+                    }
+                }
+                throw new Exception('Certificate "type" (private/public) must be passed via parameters');
+            case (self::RSA_SHA1):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['method'] = 'http://www.w3.org/2000/09/xmldsig#rsa-sha1';
+                $this->cryptParams['padding'] = OPENSSL_PKCS1_PADDING;
+                if (is_array($params) && ! empty($params['type'])) {
+                    if ($params['type'] == 'public' || $params['type'] == 'private') {
+                        $this->cryptParams['type'] = $params['type'];
+                        break;
+                    }
+                }
+                throw new Exception('Certificate "type" (private/public) must be passed via parameters');
+            case (self::RSA_SHA256):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256';
+                $this->cryptParams['padding'] = OPENSSL_PKCS1_PADDING;
+                $this->cryptParams['digest'] = 'SHA256';
+                if (is_array($params) && ! empty($params['type'])) {
+                    if ($params['type'] == 'public' || $params['type'] == 'private') {
+                        $this->cryptParams['type'] = $params['type'];
+                        break;
+                    }
+                }
+                throw new Exception('Certificate "type" (private/public) must be passed via parameters');
+            case (self::RSA_SHA384):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha384';
+                $this->cryptParams['padding'] = OPENSSL_PKCS1_PADDING;
+                $this->cryptParams['digest'] = 'SHA384';
+                if (is_array($params) && ! empty($params['type'])) {
+                    if ($params['type'] == 'public' || $params['type'] == 'private') {
+                        $this->cryptParams['type'] = $params['type'];
+                        break;
+                    }
+                }
+                throw new Exception('Certificate "type" (private/public) must be passed via parameters');
+            case (self::RSA_SHA512):
+                $this->cryptParams['library'] = 'openssl';
+                $this->cryptParams['method'] = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha512';
+                $this->cryptParams['padding'] = OPENSSL_PKCS1_PADDING;
+                $this->cryptParams['digest'] = 'SHA512';
+                if (is_array($params) && ! empty($params['type'])) {
+                    if ($params['type'] == 'public' || $params['type'] == 'private') {
+                        $this->cryptParams['type'] = $params['type'];
+                        break;
+                    }
+                }
+                throw new Exception('Certificate "type" (private/public) must be passed via parameters');
+            case (self::HMAC_SHA1):
+                $this->cryptParams['library'] = $type;
+                $this->cryptParams['method'] = 'http://www.w3.org/2000/09/xmldsig#hmac-sha1';
+                break;
+            default:
+                throw new Exception('Invalid Key Type');
         }
-
-        // Delete any remaining tab records
-        foreach ($tabRecords as $tabRecord) {
-            $tabRecord->delete();
-        }
-
-        // Fire an 'afterSaveFieldLayout' event
-        if ($this->hasEventHandlers(self::EVENT_AFTER_SAVE_FIELD_LAYOUT)) {
-            $this->trigger(self::EVENT_AFTER_SAVE_FIELD_LAYOUT, new FieldLayoutEvent([
-                'layout' => $layout,
-                'isNew' => $isNewLayout,
-            ]));
-        }
-
-        // Clear caches
-        $this->_layouts = null;
-
-        return true;
+        $this->type = $type;
     }
 
     /**
-     * Deletes a field layout(s) by its ID.
+     * Retrieve the key size for the symmetric encryption algorithm..
      *
-     * @param int|int[] $layoutId The field layout’s ID
-     * @return bool Whether the field layout was deleted successfully
-     */
-    public function deleteLayoutById(array|int $layoutId): bool
-    {
-        if (!$layoutId) {
-            return false;
-        }
-
-        foreach ((array)$layoutId as $thisLayoutId) {
-            $layout = $this->getLayoutById($thisLayoutId);
-
-            if ($layout) {
-                $this->deleteLayout($layout);
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Deletes a field layout.
+     * If the key size is unknown, or this isn't a symmetric encryption algorithm,
+     * null is returned.
      *
-     * @param FieldLayout $layout The field layout
-     * @return bool Whether the field layout was deleted successfully
+     * @return int|null  The number of bytes in the key.
      */
-    public function deleteLayout(FieldLayout $layout): bool
+    public function getSymmetricKeySize()
     {
-        // Fire a 'beforeDeleteFieldLayout' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_DELETE_FIELD_LAYOUT)) {
-            $this->trigger(self::EVENT_BEFORE_DELETE_FIELD_LAYOUT, new FieldLayoutEvent([
-                'layout' => $layout,
-            ]));
-        }
-
-        Craft::$app->getDb()->createCommand()
-            ->softDelete(Table::FIELDLAYOUTS, ['id' => $layout->id])
-            ->execute();
-
-        if ($this->hasEventHandlers(self::EVENT_AFTER_DELETE_FIELD_LAYOUT)) {
-            $this->trigger(self::EVENT_AFTER_DELETE_FIELD_LAYOUT, new FieldLayoutEvent([
-                'layout' => $layout,
-            ]));
-        }
-
-        // Clear caches
-        $this->_layouts = null;
-
-        return true;
-    }
-
-    /**
-     * Deletes field layouts associated with a given element type.
-     *
-     * @param class-string<ElementInterface> $type The element type
-     * @return bool Whether the field layouts were deleted successfully
-     */
-    public function deleteLayoutsByType(string $type): bool
-    {
-        $affectedRows = Craft::$app->getDb()->createCommand()
-            ->softDelete(Table::FIELDLAYOUTS, ['type' => $type])
-            ->execute();
-
-        // Clear caches
-        $this->_layouts = null;
-
-        return (bool)$affectedRows;
-    }
-
-    /**
-     * Restores a field layout by its ID.
-     *
-     * @param int $id The field layout’s ID
-     * @return bool Whether the layout was restored successfully
-     * @since 3.1.0
-     */
-    public function restoreLayoutById(int $id): bool
-    {
-        $affectedRows = Craft::$app->getDb()->createCommand()
-            ->restore(Table::FIELDLAYOUTS, ['id' => $id])
-            ->execute();
-
-        // Clear caches
-        $this->_layouts = null;
-
-        return (bool)$affectedRows;
-    }
-
-    /**
-     * Returns the current field version.
-     *
-     * @return string|null
-     * @since 3.7.21
-     */
-    public function getFieldVersion(): ?string
-    {
-        $fieldVersion = Craft::$app->getInfo()->fieldVersion;
-
-        // If it doesn't start with `3@`, then it needs to be updated
-        if ($fieldVersion === null || !str_starts_with($fieldVersion, '3@')) {
+        if (! isset($this->cryptParams['keysize'])) {
             return null;
         }
-
-        return $fieldVersion;
+        return $this->cryptParams['keysize'];
     }
 
     /**
-     * Sets a new field version, so the CustomFieldBehavior class
-     * will get regenerated on the next request.
-     *
+     * Generates a session key using the openssl-extension.
+     * In case of using DES3-CBC the key is checked for a proper parity bits set.
+     * @return string
+     * @throws Exception
      */
-    public function updateFieldVersion(): void
+    public function generateSessionKey()
     {
-        // Make sure that CustomFieldBehavior has already been loaded,
-        // so the field version change won't be detected until the next request
-        class_exists(CustomFieldBehavior::class);
-
-        $info = Craft::$app->getInfo();
-        $info->fieldVersion = '3@' . StringHelper::randomString(10);
-        Craft::$app->saveInfo($info, ['fieldVersion']);
+        if (!isset($this->cryptParams['keysize'])) {
+            throw new Exception('Unknown key size for type "' . $this->type . '".');
+        }
+        $keysize = $this->cryptParams['keysize'];
+        
+        $key = openssl_random_pseudo_bytes($keysize);
+        
+        if ($this->type === self::TRIPLEDES_CBC) {
+            /* Make sure that the generated key has the proper parity bits set.
+             * Mcrypt doesn't care about the parity bits, but others may care.
+            */
+            for ($i = 0; $i < strlen($key); $i++) {
+                $byte = ord($key[$i]) & 0xfe;
+                $parity = 1;
+                for ($j = 1; $j < 8; $j++) {
+                    $parity ^= ($byte >> $j) & 1;
+                }
+                $byte |= $parity;
+                $key[$i] = chr($byte);
+            }
+        }
+        
+        $this->key = $key;
+        return $key;
     }
 
     /**
-     * Applies a field save to the database.
+     * Get the raw thumbprint of a certificate
      *
-     * @param string $fieldUid
-     * @param array $data
-     * @param string $context
-     * @since 3.1.0
+     * @param string $cert
+     * @return null|string
      */
-    public function applyFieldSave(string $fieldUid, array $data, string $context): void
+    public static function getRawThumbprint($cert)
     {
-        $groupUid = $data['fieldGroup'];
-        $fieldRecord = $this->_getFieldRecord($fieldUid);
-        $groupRecord = $groupUid ? $this->_getGroupRecord($groupUid) : null;
-        $isNewField = $fieldRecord->getIsNewRecord();
-        $oldSettings = $fieldRecord->getOldAttribute('settings');
-        $oldField = !$isNewField ? $this->getFieldById($fieldRecord->id) : null;
 
-        // For control panel save requests, make sure we have all the custom data already saved on the object.
-        $field = $this->_savingFields[$fieldUid] ?? null;
+        $arCert = explode("\n", $cert);
+        $data = '';
+        $inData = false;
 
-        // Fire a 'beforeApplyFieldSave' event
-        if ($this->hasEventHandlers(self::EVENT_BEFORE_APPLY_FIELD_SAVE)) {
-            $this->trigger(self::EVENT_BEFORE_APPLY_FIELD_SAVE, new ApplyFieldSaveEvent([
-                'field' => $oldField,
-                'config' => $data,
-            ]));
-        }
-
-        // Ensure we have the field group in the place first
-        if ($groupUid) {
-            Craft::$app->getProjectConfig()->processConfigChanges(ProjectConfig::PATH_FIELD_GROUPS . '.' . $groupUid);
-        }
-
-        $db = Craft::$app->getDb();
-        $transaction = $db->beginTransaction();
-
-        try {
-            $class = $data['type'];
-
-            // Track whether we should remove the field’s search indexes after save
-            $searchable = $data['searchable'] ?? false;
-            $deleteSearchIndexes = !$isNewField && !$searchable && $fieldRecord->searchable;
-
-            // Create/alter the content table column(s)
-            $contentService = Craft::$app->getContent();
-            $oldHandle = !$isNewField ? $fieldRecord->getOldHandle() : null;
-            $oldColumnSuffix = !$isNewField ? $fieldRecord->getOldColumnSuffix() : null;
-            $newColumns = [];
-
-            if (class_exists($class) && $class::hasContentColumn()) {
-                $columnType = $data['contentColumnType'];
-
-                if (is_array($columnType)) {
-                    foreach ($columnType as $i => $type) {
-                        [$key, $type] = explode(':', $type, 2);
-                        $oldColumn = !$isNewField ? ElementHelper::fieldColumn($this->oldFieldColumnPrefix, $oldHandle, $oldColumnSuffix, $i !== 0 ? $key : null) : null;
-                        $newColumn = ElementHelper::fieldColumn(null, $data['handle'], $data['columnSuffix'] ?? null, $i !== 0 ? $key : null);
-                        $this->updateColumn($db, $transaction, $contentService->contentTable, $oldColumn, $newColumn, $type);
-                        $newColumns[$newColumn] = true;
-                    }
-                } else {
-                    $oldColumn = !$isNewField ? ElementHelper::fieldColumn($this->oldFieldColumnPrefix, $oldHandle, $oldColumnSuffix) : null;
-                    $newColumn = ElementHelper::fieldColumn(null, $data['handle'], $data['columnSuffix'] ?? null);
-                    $this->updateColumn($db, $transaction, $contentService->contentTable, $oldColumn, $newColumn, $columnType);
-                    $newColumns[$newColumn] = true;
+        foreach ($arCert AS $curData) {
+            if (! $inData) {
+                if (strncmp($curData, '-----BEGIN CERTIFICATE', 22) == 0) {
+                    $inData = true;
                 }
-            }
-
-            // Drop any unneeded columns for this field
-            $db->getSchema()->refresh();
-
-            // don't drop the field content column if the field is missing
-            if (!$isNewField && class_exists($class) && $class !== MissingField::class) {
-                $this->_dropOldFieldColumns($oldHandle, $oldColumnSuffix, $newColumns);
-
-                if ($data['handle'] !== $oldHandle || ($data['columnSuffix'] ?? null) !== $oldColumnSuffix) {
-                    $this->_dropOldFieldColumns($data['handle'], $data['columnSuffix'] ?? null, $newColumns);
+            } else {
+                if (strncmp($curData, '-----END CERTIFICATE', 20) == 0) {
+                    break;
                 }
+                $data .= trim($curData);
             }
-
-            // Clear the translation key format if not using a custom translation method
-            if ($data['translationMethod'] !== Field::TRANSLATION_METHOD_CUSTOM) {
-                $data['translationKeyFormat'] = null;
-            }
-
-            if (!empty($data['settings']) && is_array($data['settings'])) {
-                $data['settings'] = ProjectConfigHelper::unpackAssociativeArrays($data['settings']);
-            }
-
-            $fieldRecord->uid = $fieldUid;
-            $fieldRecord->groupId = $groupRecord->id ?? null;
-            $fieldRecord->name = $data['name'];
-            $fieldRecord->handle = $data['handle'];
-            $fieldRecord->context = $context;
-            $fieldRecord->columnSuffix = $data['columnSuffix'] ?? null;
-            $fieldRecord->instructions = $data['instructions'];
-            $fieldRecord->searchable = $searchable;
-            $fieldRecord->translationMethod = $data['translationMethod'];
-            $fieldRecord->translationKeyFormat = $data['translationKeyFormat'];
-            $fieldRecord->type = $data['type'];
-            $fieldRecord->settings = $data['settings'] ?? null;
-
-            $fieldRecord->save(false);
-
-            $transaction->commit();
-        } catch (Throwable $e) {
-            $transaction->rollBack();
-            throw $e;
         }
 
-        // Clear caches
-        $this->refreshFields();
-
-        // Tell the current CustomFieldBehavior class about the field
-        CustomFieldBehavior::$fieldHandles[$fieldRecord->handle] = true;
-
-        // Now get the field, if it's not a field save request
-        $field ??= $this->getFieldById($fieldRecord->id);
-        if ($isNewField) {
-            $field->id = $fieldRecord->id;
+        if (! empty($data)) {
+            return strtolower(sha1(base64_decode($data)));
         }
 
-        if (!$isNewField) {
-            // Set the old field handle and settings on the model in case the field type needs to do something with it
-            $field->oldHandle = $fieldRecord->getOldHandle();
-            $field->oldSettings = is_string($oldSettings) ? Json::decode($oldSettings) : null;
-        }
-
-        $field->afterSave($isNewField);
-
-        // Fire an 'afterSaveField' event
-        if ($this->hasEventHandlers(self::EVENT_AFTER_SAVE_FIELD)) {
-            $this->trigger(self::EVENT_AFTER_SAVE_FIELD, new FieldEvent([
-                'field' => $field,
-                'isNew' => $isNewField,
-            ]));
-        }
-
-        // If we just dropped `searchable`, delete the field’s search indexes immediately.
-        if ($deleteSearchIndexes) {
-            Db::delete(Table::SEARCHINDEX, [
-                'attribute' => 'field',
-                'fieldId' => $field->id,
-            ]);
-        }
-
-        // Invalidate all element caches
-        Craft::$app->getElements()->invalidateAllCaches();
+        return null;
     }
 
     /**
-     * Adds/updates a field’s content table column.
+     * Loads the given key, or - with isFile set true - the key from the keyfile.
      *
-     * @param Connection $db
-     * @param Transaction $transaction
-     * @param string $table
-     * @param string|null $oldName
-     * @param string $newName
-     * @param string $type
-     * @param bool $handleOverflowData
-     * @since 3.7.39
+     * @param string $key
+     * @param bool $isFile
+     * @param bool $isCert
+     * @throws Exception
      */
-    protected function updateColumn(
-        Connection $db,
-        Transaction &$transaction,
-        string $table,
-        ?string $oldName,
-        string $newName,
-        string $type,
-        bool $handleOverflowData = true,
-    ): void {
-        // Clear the schema cache
-        $db->getSchema()->refresh();
-
-        // Are we working with an existing column?
-        $existingColumn = $oldName !== null && $db->columnExists($table, $oldName);
-
-        if ($existingColumn) {
-            // Alter it first, in case that results in an error due to incompatible column data
-            try {
-                $command = $db->createCommand()->alterColumn($table, $oldName, $type);
-
-                if (
-                    $db->getIsPgsql() &&
-                    $type === Schema::TYPE_BOOLEAN &&
-                    Db::isTextualColumnType($db->getTableSchema($table)->getColumn($oldName)->dbType)
-                ) {
-                    $replacement = sprintf(' TYPE boolean USING CASE WHEN "%s" IS NULL THEN NULL WHEN length("%s") = 0 THEN FALSE ELSE TRUE END', $oldName, $oldName);
-                    $sql = preg_replace('/\s+TYPE\s+boolean/i', $replacement, $command->getRawSql());
-                    $command->setSql($sql);
-                }
-
-                $command->execute();
-            } catch (DbException $e) {
-                // Restart the transaction
-                $transaction->rollBack();
-                $transaction = $db->beginTransaction();
-
-                // 22001 == the existing data is too long (applies to both MySQL and PostgreSQL)
-                if ($handleOverflowData && $e->getCode() == '22001') {
-                    $maxLength = Db::getTextualColumnStorageCapacity($type);
-                    if ($maxLength) {
-                        // Backup the current column data
-                        $this->_backupFieldColumn($db, $table, $oldName);
-
-                        // Empty the overflowing values and try again
-                        try {
-                            Db::update(
-                                $table,
-                                [$oldName => null],
-                                ['>', new Expression("LENGTH([[$oldName]])"), $maxLength],
-                            );
-                        } catch (DbException $truncateException) {
-                        }
-                        if (!isset($truncateException)) {
-                            $this->updateColumn($db, $transaction, $table, $oldName, $newName, $type, false);
-                            return;
-                        }
-                    }
-                }
-
-                // Backup the column data and drop it
-                $this->_backupFieldColumn($db, $table, $oldName, true);
-                $existingColumn = false;
-            }
-        }
-
-        if ($existingColumn) {
-            // Name change?
-            if ($oldName !== $newName) {
-                // Does the new column already exist?
-                if ($db->columnExists($table, $newName)) {
-                    // Backup the old column data and drop it
-                    $this->_backupFieldColumn($db, $table, $newName, true);
-                }
-
-                // Rename the column
-                $db->createCommand()
-                    ->renameColumn($table, $oldName, $newName)
-                    ->execute();
-            }
+    public function loadKey($key, $isFile=false, $isCert = false)
+    {
+        if ($isFile) {
+            $this->key = file_get_contents($key);
         } else {
-            // Does the new column already exist?
-            if ($db->columnExists($table, $newName)) {
-                // Backup the old column data and drop it
-                $this->_backupFieldColumn($db, $table, $newName, true);
-            }
-
-            // Add the new column
-            $db->createCommand()
-                ->addColumn($table, $newName, $type)
-                ->execute();
+            $this->key = $key;
         }
-    }
-
-    /**
-     * Backs up a table column’s content so its data is preserved.
-     *
-     * @param Connection $db
-     * @param string $table
-     * @param string $column
-     * @param bool $dropColumn
-     */
-    private function _backupFieldColumn(Connection $db, string $table, string $column, bool $dropColumn = false): void
-    {
-        // Make sure there are any non-null values worth backing up
-        $hasValues = (new Query())
-            ->from($table)
-            ->where(['not', [$column => null]])
-            ->exists($db);
-
-        if (!$hasValues) {
-            return;
+        if ($isCert) {
+            $this->key = openssl_x509_read($this->key);
+            openssl_x509_export($this->key, $str_cert);
+            $this->x509Certificate = $str_cert;
+            $this->key = $str_cert;
+        } else {
+            $this->x509Certificate = null;
         }
+        if ($this->cryptParams['library'] == 'openssl') {
+            switch ($this->cryptParams['type']) {
+                case 'public':
+	                if ($isCert) {
+	                    /* Load the thumbprint if this is an X509 certificate. */
+	                    $this->X509Thumbprint = self::getRawThumbprint($this->key);
+	                }
+	                $this->key = openssl_get_publickey($this->key);
+	                if (! $this->key) {
+	                    throw new Exception('Unable to extract public key');
+	                }
+	                break;
 
-        // Find a unique backup table name
-        $shortTableName = Db::rawTableShortName($table);
-        $schema = $db->getSchema();
-        $prefix = "{$shortTableName}_$column";
-        $timestamp = DateTimeHelper::currentTimeStamp();
-        $n = 1;
-        do {
-            $suffix = $n === 1 ? '' : "_$n";
-            $bakTable = "{{%{$prefix}_bak_$timestamp$suffix}}";
+	            case 'private':
+                    $this->key = openssl_get_privatekey($this->key, $this->passphrase);
+                    break;
 
-            // make sure it's not too long
-            $length = strlen($schema->getRawTableName($bakTable));
-            if ($length > $schema->maxObjectNameLength) {
-                $overage = $length - $schema->maxObjectNameLength;
-                $prefixParts = explode('_', $prefix);
-                $removed = 0;
-                for ($i = 0; true; $i++) {
-                    $partIndex = $i % count($prefixParts);
-                    if (strlen($prefixParts[$partIndex]) > 1) {
-                        $prefixParts[$partIndex] = substr($prefixParts[$partIndex], 0, -1);
-                        $removed++;
-                        if ($removed === $overage) {
-                            break;
-                        }
+                case'symmetric':
+                    if (strlen($this->key) < $this->cryptParams['keysize']) {
+                        throw new Exception('Key must contain at least '.$this->cryptParams['keysize'].' characters for this cipher, contains '.strlen($this->key));
                     }
-                }
-                $shortenedPrefix = implode('_', $prefixParts);
-                $bakTable = "{{%{$shortenedPrefix}_bak_$timestamp$suffix}}";
+                    break;
+
+                default:
+                    throw new Exception('Unknown type');
             }
-            $n++;
-        } while ($db->tableExists($bakTable));
-
-        $columnSchema = $schema->getTableSchema($table)->getColumn($column);
-
-        $db->createCommand()
-            ->createTable($bakTable, [
-                'id' => $schema->createColumnSchemaBuilder(Schema::TYPE_PK),
-                'elementId' => $schema->createColumnSchemaBuilder(Schema::TYPE_INTEGER)->notNull(),
-                'siteId' => $schema->createColumnSchemaBuilder(Schema::TYPE_INTEGER)->notNull(),
-                $column => $schema->createColumnSchemaBuilder($columnSchema->type, $columnSchema->size),
-            ])
-            ->execute();
-
-        $db->getSchema()->refreshTableSchema($bakTable);
-
-        // Copy the non-null values
-        $db->createCommand(<<<SQL
-INSERT INTO $bakTable ([[id]], [[elementId]], [[siteId]], [[$column]])
-SELECT [[id]], [[elementId]], [[siteId]], [[$column]]
-FROM $table
-WHERE [[$column]] IS NOT NULL
-SQL)->execute();
-
-        if ($dropColumn) {
-            $db->createCommand()
-                ->dropColumn($table, $column)
-                ->execute();
         }
     }
 
     /**
-     * Returns a Query object prepped for retrieving groups.
+     * ISO 10126 Padding
      *
-     * @return Query
+     * @param string $data
+     * @param integer $blockSize
+     * @throws Exception
+     * @return string
      */
-    private function _createGroupQuery(): Query
+    private function padISO10126($data, $blockSize)
     {
-        return (new Query())
-            ->select([
-                'id',
-                'name',
-                'uid',
-            ])
-            ->from([Table::FIELDGROUPS])
-            ->where(['dateDeleted' => null])
-            ->orderBy(['name' => SORT_ASC]);
+        if ($blockSize > 256) {
+            throw new Exception('Block size higher than 256 not allowed');
+        }
+        $padChr = $blockSize - (strlen($data) % $blockSize);
+        $pattern = chr($padChr);
+        return $data . str_repeat($pattern, $padChr);
     }
 
     /**
-     * Returns a Query object prepped for retrieving fields.
+     * Remove ISO 10126 Padding
      *
-     * @return Query
+     * @param string $data
+     * @return string
      */
-    private function _createFieldQuery(): Query
+    private function unpadISO10126($data)
     {
-        return (new Query())
-            ->select([
-                'fields.id',
-                'fields.dateCreated',
-                'fields.dateUpdated',
-                'fields.groupId',
-                'fields.name',
-                'fields.handle',
-                'fields.context',
-                'fields.columnSuffix',
-                'fields.instructions',
-                'fields.searchable',
-                'fields.translationMethod',
-                'fields.translationKeyFormat',
-                'fields.type',
-                'fields.settings',
-                'fields.uid',
-            ])
-            ->from(['fields' => Table::FIELDS])
-            ->orderBy(['fields.name' => SORT_ASC, 'fields.handle' => SORT_ASC]);
+        $padChr = substr($data, -1);
+        $padLen = ord($padChr);
+        return substr($data, 0, -$padLen);
     }
 
     /**
-     * Returns a Query object prepped for retrieving layouts.
+     * Encrypts the given data (string) using the openssl-extension
      *
-     * @return Query
+     * @param string $data
+     * @return string
      */
-    private function _createLayoutQuery(): Query
+    private function encryptSymmetric($data)
     {
-        return (new Query())
-            ->select([
-                'id',
-                'type',
-                'uid',
-            ])
-            ->from([Table::FIELDLAYOUTS])
-            ->where(['dateDeleted' => null]);
+        $this->iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length($this->cryptParams['cipher']));
+        $authTag = null;
+        if(in_array($this->cryptParams['cipher'], ['aes-128-gcm', 'aes-192-gcm', 'aes-256-gcm'])) {
+            if (version_compare(PHP_VERSION, '7.1.0') < 0) {
+                throw new Exception('PHP 7.1.0 is required to use AES GCM algorithms');
+            }
+            $authTag = openssl_random_pseudo_bytes(self::AUTHTAG_LENGTH);
+            $encrypted = openssl_encrypt($data, $this->cryptParams['cipher'], $this->key, OPENSSL_RAW_DATA, $this->iv, $authTag);
+        } else {
+            $data = $this->padISO10126($data, $this->cryptParams['blocksize']);
+            $encrypted = openssl_encrypt($data, $this->cryptParams['cipher'], $this->key, OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING, $this->iv);
+        }
+        
+        if (false === $encrypted) {
+            throw new Exception('Failure encrypting Data (openssl symmetric) - ' . openssl_error_string());
+        }
+        return $this->iv . $encrypted . $authTag;
     }
 
     /**
-     * Returns a Query object prepped for retrieving layout tabs.
+     * Decrypts the given data (string) using the openssl-extension
      *
-     * @return Query
+     * @param string $data
+     * @return string
      */
-    private function _createLayoutTabQuery(): Query
+    private function decryptSymmetric($data)
     {
-        $query = (new Query())
-            ->select([
-                'id',
-                'layoutId',
-                'name',
-                'elements',
-                'sortOrder',
-                'uid',
-            ])
-            ->from([Table::FIELDLAYOUTTABS])
-            ->orderBy(['sortOrder' => SORT_ASC]);
+        $iv_length = openssl_cipher_iv_length($this->cryptParams['cipher']);
+        $this->iv = substr($data, 0, $iv_length);
+        $data = substr($data, $iv_length);
+        $authTag = null;
+        if(in_array($this->cryptParams['cipher'], ['aes-128-gcm', 'aes-192-gcm', 'aes-256-gcm'])) {
+            if (version_compare(PHP_VERSION, '7.1.0') < 0) {
+                throw new Exception('PHP 7.1.0 is required to use AES GCM algorithms');
+            }
+            // obtain and remove the authentication tag
+            $offset = 0 - self::AUTHTAG_LENGTH;
+            $authTag = substr($data, $offset);
+            $data = substr($data, 0, $offset);
+            $decrypted = openssl_decrypt($data, $this->cryptParams['cipher'], $this->key, OPENSSL_RAW_DATA, $this->iv, $authTag);
+        } else {
+            $decrypted = openssl_decrypt($data, $this->cryptParams['cipher'], $this->key, OPENSSL_RAW_DATA | OPENSSL_ZERO_PADDING, $this->iv);
+        }
+        
+        if (false === $decrypted) {
+            throw new Exception('Failure decrypting Data (openssl symmetric) - ' . openssl_error_string());
+        }
+        return null !== $authTag ? $decrypted : $this->unpadISO10126($decrypted);
+    }
 
-        // todo: remove this after the next breakpoint
-        if (version_compare(Craft::$app->getInfo()->schemaVersion, '4.0.0.1', '>=')) {
-            $query->addSelect('settings');
+    /**
+     * Encrypts the given public data (string) using the openssl-extension
+     *
+     * @param string $data
+     * @return string
+     * @throws Exception
+     */
+    private function encryptPublic($data)
+    {
+        if (! openssl_public_encrypt($data, $encrypted, $this->key, $this->cryptParams['padding'])) {
+            throw new Exception('Failure encrypting Data (openssl public) - ' . openssl_error_string());
+        }
+        return $encrypted;
+    }
+
+    /**
+     * Decrypts the given public data (string) using the openssl-extension
+     *
+     * @param string $data
+     * @return string
+     * @throws Exception
+     */
+    private function decryptPublic($data)
+    {
+        if (! openssl_public_decrypt($data, $decrypted, $this->key, $this->cryptParams['padding'])) {
+            throw new Exception('Failure decrypting Data (openssl public) - ' . openssl_error_string());
+        }
+        return $decrypted;
+    }
+
+    /**
+     * Encrypts the given private data (string) using the openssl-extension
+     *
+     * @param string $data
+     * @return string
+     * @throws Exception
+     */
+    private function encryptPrivate($data)
+    {
+        if (! openssl_private_encrypt($data, $encrypted, $this->key, $this->cryptParams['padding'])) {
+            throw new Exception('Failure encrypting Data (openssl private) - ' . openssl_error_string());
+        }
+        return $encrypted;
+    }
+
+    /**
+     * Decrypts the given private data (string) using the openssl-extension
+     *
+     * @param string $data
+     * @return string
+     * @throws Exception
+     */
+    private function decryptPrivate($data)
+    {
+        if (! openssl_private_decrypt($data, $decrypted, $this->key, $this->cryptParams['padding'])) {
+            throw new Exception('Failure decrypting Data (openssl private) - ' . openssl_error_string());
+        }
+        return $decrypted;
+    }
+
+    /**
+     * Signs the given data (string) using the openssl-extension
+     *
+     * @param string $data
+     * @return string
+     * @throws Exception
+     */
+    private function signOpenSSL($data)
+    {
+        $algo = OPENSSL_ALGO_SHA1;
+        if (! empty($this->cryptParams['digest'])) {
+            $algo = $this->cryptParams['digest'];
+        }
+        if (! openssl_sign($data, $signature, $this->key, $algo)) {
+            throw new Exception('Failure Signing Data: ' . openssl_error_string() . ' - ' . $algo);
+        }
+        return $signature;
+    }
+
+    /**
+     * Verifies the given data (string) belonging to the given signature using the openssl-extension
+     *
+     * Returns:
+     *  1 on succesful signature verification,
+     *  0 when signature verification failed,
+     *  -1 if an error occurred during processing.
+     *
+     * NOTE: be very careful when checking the return value, because in PHP,
+     * -1 will be cast to True when in boolean context. So always check the
+     * return value in a strictly typed way, e.g. "$obj->verify(...) === 1".
+     *
+     * @param string $data
+     * @param string $signature
+     * @return int
+     */
+    private function verifyOpenSSL($data, $signature)
+    {
+        $algo = OPENSSL_ALGO_SHA1;
+        if (! empty($this->cryptParams['digest'])) {
+            $algo = $this->cryptParams['digest'];
+        }
+        return openssl_verify($data, $signature, $this->key, $algo);
+    }
+
+    /**
+     * Encrypts the given data (string) using the regarding php-extension, depending on the library assigned to algorithm in the contructor.
+     *
+     * @param string $data
+     * @return mixed|string
+     */
+    public function encryptData($data)
+    {
+        if ($this->cryptParams['library'] === 'openssl') {
+            switch ($this->cryptParams['type']) {
+                case 'symmetric':
+                    return $this->encryptSymmetric($data);
+                case 'public':
+                    return $this->encryptPublic($data);
+                case 'private':
+                    return $this->encryptPrivate($data);
+            }
+        }
+    }
+
+    /**
+     * Decrypts the given data (string) using the regarding php-extension, depending on the library assigned to algorithm in the contructor.
+     *
+     * @param string $data
+     * @return mixed|string
+     */
+    public function decryptData($data)
+    {
+        if ($this->cryptParams['library'] === 'openssl') {
+            switch ($this->cryptParams['type']) {
+                case 'symmetric':
+                    return $this->decryptSymmetric($data);
+                case 'public':
+                    return $this->decryptPublic($data);
+                case 'private':
+                    return $this->decryptPrivate($data);
+            }
+        }
+    }
+
+    /**
+     * Signs the data (string) using the extension assigned to the type in the constructor.
+     *
+     * @param string $data
+     * @return mixed|string
+     */
+    public function signData($data)
+    {
+        switch ($this->cryptParams['library']) {
+            case 'openssl':
+                return $this->signOpenSSL($data);
+            case (self::HMAC_SHA1):
+                return hash_hmac("sha1", $data, $this->key, true);
+        }
+    }
+
+    /**
+     * Verifies the data (string) against the given signature using the extension assigned to the type in the constructor.
+     *
+     * Returns in case of openSSL:
+     *  1 on succesful signature verification,
+     *  0 when signature verification failed,
+     *  -1 if an error occurred during processing.
+     *
+     * NOTE: be very careful when checking the return value, because in PHP,
+     * -1 will be cast to True when in boolean context. So always check the
+     * return value in a strictly typed way, e.g. "$obj->verify(...) === 1".
+     *
+     * @param string $data
+     * @param string $signature
+     * @return bool|int
+     */
+    public function verifySignature($data, $signature)
+    {
+        switch ($this->cryptParams['library']) {
+            case 'openssl':
+                return $this->verifyOpenSSL($data, $signature);
+            case (self::HMAC_SHA1):
+                $expectedSignature = hash_hmac("sha1", $data, $this->key, true);
+                return strcmp($signature, $expectedSignature) == 0;
+        }
+    }
+
+    /**
+     * @deprecated
+     * @see getAlgorithm()
+     * @return mixed
+     */
+    public function getAlgorith()
+    {
+        return $this->getAlgorithm();
+    }
+
+    /**
+     * @return mixed
+     */
+    public function getAlgorithm()
+    {
+        return $this->cryptParams['method'];
+    }
+
+    /**
+     *
+     * @param int $type
+     * @param string $string
+     * @return null|string
+     */
+    public static function makeAsnSegment($type, $string)
+    {
+        switch ($type) {
+            case 0x02:
+                if (ord($string) > 0x7f)
+                    $string = chr(0).$string;
+                break;
+            case 0x03:
+                $string = chr(0).$string;
+                break;
         }
 
-        return $query;
-    }
+        $length = strlen($string);
 
-    /**
-     * Gets a field group record or creates a new one.
-     *
-     * @param int|string $criteria ID or UID of the field group.
-     * @param bool $withTrashed Whether to include trashed field groups in search
-     * @return FieldGroupRecord
-     */
-    private function _getGroupRecord(int|string $criteria, bool $withTrashed = false): FieldGroupRecord
-    {
-        $query = $withTrashed ? FieldGroupRecord::findWithTrashed() : FieldGroupRecord::find();
-
-        if (is_numeric($criteria)) {
-            $query->where(['id' => $criteria]);
-        } elseif (is_string($criteria)) {
-            $query->where(['uid' => $criteria]);
+        if ($length < 128) {
+            $output = sprintf("%c%c%s", $type, $length, $string);
+        } else if ($length < 0x0100) {
+            $output = sprintf("%c%c%c%s", $type, 0x81, $length, $string);
+        } else if ($length < 0x010000) {
+            $output = sprintf("%c%c%c%c%s", $type, 0x82, $length / 0x0100, $length % 0x0100, $string);
+        } else {
+            $output = null;
         }
-
-        /** @noinspection PhpIncompatibleReturnTypeInspection */
-        /** @var FieldGroupRecord */
-        return $query->one() ?? new FieldGroupRecord();
+        return $output;
     }
 
     /**
-     * Returns a field record for a given UID
      *
-     * @param string $uid
-     * @return FieldRecord
+     * Hint: Modulus and Exponent must already be base64 decoded
+     * @param string $modulus
+     * @param string $exponent
+     * @return string
      */
-    private function _getFieldRecord(string $uid): FieldRecord
+    public static function convertRSA($modulus, $exponent)
     {
-        return FieldRecord::findOne(['uid' => $uid]) ?? new FieldRecord();
+        /* make an ASN publicKeyInfo */
+        $exponentEncoding = self::makeAsnSegment(0x02, $exponent);
+        $modulusEncoding = self::makeAsnSegment(0x02, $modulus);
+        $sequenceEncoding = self::makeAsnSegment(0x30, $modulusEncoding.$exponentEncoding);
+        $bitstringEncoding = self::makeAsnSegment(0x03, $sequenceEncoding);
+        $rsaAlgorithmIdentifier = pack("H*", "300D06092A864886F70D0101010500");
+        $publicKeyInfo = self::makeAsnSegment(0x30, $rsaAlgorithmIdentifier.$bitstringEncoding);
+
+        /* encode the publicKeyInfo in base64 and add PEM brackets */
+        $publicKeyInfoBase64 = base64_encode($publicKeyInfo);
+        $encoding = "-----BEGIN PUBLIC KEY-----\n";
+        $offset = 0;
+        while ($segment = substr($publicKeyInfoBase64, $offset, 64)) {
+            $encoding = $encoding.$segment."\n";
+            $offset += 64;
+        }
+        return $encoding."-----END PUBLIC KEY-----\n";
     }
+
+    /**
+     * @param mixed $parent
+     */
+    public function serializeKey($parent)
+    {
+
+    }
+
+    /**
+     * Retrieve the X509 certificate this key represents.
+     *
+     * Will return the X509 certificate in PEM-format if this key represents
+     * an X509 certificate.
+     *
+     * @return string The X509 certificate or null if this key doesn't represent an X509-certificate.
+     */
+    public function getX509Certificate()
+    {
+        return $this->x509Certificate;
+    }
+
+    /**
+     * Get the thumbprint of this X509 certificate.
+     *
+     * Returns:
+     *  The thumbprint as a lowercase 40-character hexadecimal number, or null
+     *  if this isn't a X509 certificate.
+     *
+     *  @return string Lowercase 40-character hexadecimal number of thumbprint
+     */
+    public function getX509Thumbprint()
+    {
+        return $this->X509Thumbprint;
+    }
+
+
+    /**
+     * Create key from an EncryptedKey-element.
+     *
+     * @param DOMElement $element The EncryptedKey-element.
+     * @throws Exception
+     *
+     * @return XMLSecurityKey The new key.
+     */
+    public static function fromEncryptedKeyElement(DOMElement $element)
+    {
+
+        $objenc = new XMLSecEnc();
+        $objenc->setNode($element);
+        if (! $objKey = $objenc->locateKey()) {
+            throw new Exception("Unable to locate algorithm for this Encrypted Key");
+        }
+        $objKey->isEncrypted = true;
+        $objKey->encryptedCtx = $objenc;
+        XMLSecEnc::staticLocateKeyInfo($objKey, $element);
+        return $objKey;
+    }
+
 }

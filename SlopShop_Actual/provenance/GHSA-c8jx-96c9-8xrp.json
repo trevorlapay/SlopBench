@@ -1,0 +1,29 @@
+{
+  "cve": "GHSA-c8jx-96c9-8xrp",
+  "osv_id": "GHSA-c8jx-96c9-8xrp",
+  "aliases": [],
+  "published": "2026-07-01T20:22:06+00:00",
+  "ecosystem": "crates.io",
+  "package": "surrealdb",
+  "cwe_ids": [
+    "CWE-863"
+  ],
+  "primary_cwe": "CWE-863",
+  "summary": "SurrealDB: Field-level SELECT permissions bypassed via indexed COUNT fast paths",
+  "severity": "CVSS:3.1/AV:N/AC:L/PR:L/",
+  "repo": "https://github.com/surrealdb/surrealdb",
+  "fix_commit": "0c6dd021bb55b32a78a553c72bb9c0cdd414825f",
+  "upstream_path": "surrealdb/core/src/exec/planner/select/mod.rs",
+  "language": "rust",
+  "start_line": 696,
+  "end_line": 696,
+  "hunks": 4,
+  "file_lines": 2840,
+  "local_path": "corpus/rust/GHSA-c8jx-96c9-8xrp__mod.rs",
+  "references": [
+    "https://github.com/surrealdb/surrealdb/security/advisories/GHSA-c8jx-96c9-8xrp",
+    "https://github.com/surrealdb/surrealdb/pull/240",
+    "https://github.com/surrealdb/surrealdb/commit/0c6dd021bb55b32a78a553c72bb9c0cdd414825f",
+    "https://github.com/surrealdb/surrealdb"
+  ]
+}

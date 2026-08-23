@@ -1,638 +1,1208 @@
-/*
-Copyright IBM Corp. All Rights Reserved.
-
-SPDX-License-Identifier: Apache-2.0
-*/
-
-package ldap
+package terminal
 
 import (
 	"fmt"
-	"net"
-	"net/url"
-	"strconv"
+	"os"
+	"slices"
 	"strings"
+	"unicode/utf8"
 
-	"github.com/Knetic/govaluate"
-	"github.com/cloudflare/cfssl/log"
-	ldap "github.com/go-ldap/ldap/v3"
-	"github.com/hyperledger/fabric-ca/api"
-	causer "github.com/hyperledger/fabric-ca/lib/server/user"
-	"github.com/hyperledger/fabric-ca/lib/spi"
-	ctls "github.com/hyperledger/fabric-ca/lib/tls"
-	"github.com/hyperledger/fabric-ca/util"
-	"github.com/hyperledger/fabric-lib-go/bccsp"
-	"github.com/jmoiron/sqlx"
-	"github.com/pkg/errors"
+	"github.com/jandedobbeleer/oh-my-posh/src/color"
+	"github.com/jandedobbeleer/oh-my-posh/src/log"
+	"github.com/jandedobbeleer/oh-my-posh/src/regex"
+	"github.com/jandedobbeleer/oh-my-posh/src/shell"
+	"github.com/jandedobbeleer/oh-my-posh/src/text"
+	"github.com/mattn/go-runewidth"
 )
+
+func init() {
+	runewidth.DefaultCondition.EastAsianWidth = false
+}
+
+type style struct {
+	AnchorStart string
+	AnchorEnd   string
+	Start       string
+	End         string
+}
 
 var (
-	errNotSupported = errors.New("Not supported")
+	knownStyles = []*style{
+		{AnchorStart: `<b>`, AnchorEnd: `</b>`, Start: "\x1b[1m", End: "\x1b[22m"},
+		{AnchorStart: `<u>`, AnchorEnd: `</u>`, Start: "\x1b[4m", End: "\x1b[24m"},
+		{AnchorStart: `<o>`, AnchorEnd: `</o>`, Start: "\x1b[53m", End: "\x1b[55m"},
+		{AnchorStart: `<i>`, AnchorEnd: `</i>`, Start: "\x1b[3m", End: "\x1b[23m"},
+		{AnchorStart: `<s>`, AnchorEnd: `</s>`, Start: "\x1b[9m", End: "\x1b[29m"},
+		{AnchorStart: `<d>`, AnchorEnd: `</d>`, Start: "\x1b[2m", End: "\x1b[22m"},
+		{AnchorStart: `<f>`, AnchorEnd: `</f>`, Start: "\x1b[5m", End: "\x1b[25m"},
+		{AnchorStart: `<r>`, AnchorEnd: `</r>`, Start: "\x1b[7m", End: "\x1b[27m"},
+	}
+
+	resetStyle      = &style{AnchorStart: "RESET", AnchorEnd: `</>`, End: "\x1b[0m"}
+	backgroundStyle = &style{AnchorStart: "BACKGROUND", AnchorEnd: `</>`, End: "\x1b[49m"}
+
+	BackgroundColor color.Ansi
+	CurrentColors   *color.Set
+	ParentColors    []*color.Set
+	Colors          color.String
+
+	Plain       bool
+	Interactive bool
+
+	builder strings.Builder
+	length  int
+
+	foregroundColor color.Ansi
+	backgroundColor color.Ansi
+	currentColor    color.History
+	textLen         int
+
+	// bgGradientCells/fgGradientCells hold one ready-to-print ANSI code per visible
+	// cell of the segment being written, populated by color.GradientCells when the
+	// corresponding channel is a gradient. cellIndex is the shared cursor into both
+	// slices, advanced once per visible rune regardless of which channel(s) stamp.
+	// See stampGradient/writeVisibleRune.
+	bgGradientCells []color.Ansi
+	fgGradientCells []color.Ansi
+	cellIndex       int
+
+	isTransparent bool
+	isInvisible   bool
+	isHyperlink   bool
+
+	Shell   string
+	Program string
+
+	progressTerminals []string
+
+	formats *shell.Formats
+
+	// escapePrefix/escapeSuffix are formats.Escape ("...%s...") split around its
+	// single %s placeholder, precomputed once so writeEscapedAnsiString can
+	// concatenate via the builder instead of allocating through fmt.Sprintf.
+	escapePrefix string
+	escapeSuffix string
 )
 
-// Config is the configuration object for this LDAP client
-type Config struct {
-	Enabled     bool   `def:"false" help:"Enable the LDAP client for authentication and attributes"`
-	URL         string `help:"LDAP client URL of form ldap://adminDN:adminPassword@host[:port]/base" mask:"url"`
-	UserFilter  string `def:"(uid=%s)" help:"The LDAP user filter to use when searching for users"`
-	GroupFilter string `def:"(memberUid=%s)" help:"The LDAP group filter for a single affiliation group"`
-	Attribute   AttrConfig
-	TLS         ctls.ClientTLSConfig
+const (
+	AnchorRegex = `^(?P<ANCHOR><(?P<FG>[^,<>]+)?,?(?P<BG>[^<>]+)?>)`
+
+	// colorisePrefix/coloriseSuffix and transparentStartPrefix/transparentStartSuffix
+	// are the fixed parts of the colorise ("\x1b[%sm") and transparentStart
+	// ("\x1b[0m\x1b[%s;49m\x1b[7m") formats, split around their single %s
+	// placeholder so callers can write them directly via the builder instead
+	// of allocating through fmt.Sprintf.
+	colorisePrefix = "\x1b["
+	coloriseSuffix = "m"
+
+	transparentStartPrefix = "\x1b[0m\x1b["
+	transparentStartSuffix = ";49m\x1b[7m"
+
+	transparentEnd = "\x1b[27m"
+	backgroundEnd  = "\x1b[49m"
+
+	AnsiRegex = "[\u001B\u009B][[\\]()#;?]*(?:(?:(?:[a-zA-Z\\d]*(?:;[a-zA-Z\\d]*)*)?\u0007)|(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PRZcf-ntqry=><~]))"
+
+	OSC99 = "osc99"
+	OSC7  = "osc7"
+	OSC51 = "osc51"
+
+	ANCHOR = "ANCHOR"
+	BG     = "BG"
+	FG     = "FG"
+
+	hyperLinkStart   = "<LINK>"
+	hyperLinkEnd     = "</LINK>"
+	hyperLinkText    = "<TEXT>"
+	hyperLinkTextEnd = "</TEXT>"
+
+	empty = "<>"
+
+	startProgress = "\x1b]9;4;3;0\x07"
+	setProgress   = "\x1b]9;4;4;%d\x07"
+	endProgress   = "\x1b]9;4;0;0\x07"
+
+	WindowsTerminal = "Windows Terminal"
+	Warp            = "WarpTerminal"
+	ITerm           = "iTerm.app"
+	AppleTerminal   = "Apple_Terminal"
+	Unknown         = "Unknown"
+)
+
+// anchorMatch describes a single `<...>` anchor token found while scanning
+// segment text, mirroring the named groups of AnchorRegex without allocating
+// a map or invoking the regexp engine.
+type anchorMatch struct {
+	Anchor string
+	FG     string
+	BG     string
+	ok     bool
 }
 
-// AttrConfig is attribute configuration information
-type AttrConfig struct {
-	Names      []string             `help:"The names of LDAP attributes to request on an LDAP search"`
-	Converters []NameVal            // Used to convert an LDAP entry into a fabric-ca-server attribute
-	Maps       map[string][]NameVal // Use to map an LDAP response to fabric-ca-server names
-}
-
-// NameVal is a name and value pair
-type NameVal struct {
-	Name  string
-	Value string
-}
-
-// Implements Stringer interface for ldap.Config
-// Calls util.StructToString to convert the Config struct to
-// string.
-func (c Config) String() string {
-	return util.StructToString(&c)
-}
-
-// NewClient creates an LDAP client
-func NewClient(cfg *Config, csp bccsp.BCCSP) (*Client, error) {
-	log.Debugf("Creating new LDAP client for %+v", cfg)
-	if cfg == nil {
-		return nil, errors.New("LDAP configuration is nil")
+// scanAnchor looks for an AnchorRegex-shaped token at the start of txt, i.e.
+// `<` + zero or more non `<>` characters + `>`, with the inner text optionally
+// split on the first comma into FG (before) and BG (after, which may itself
+// contain further commas). It operates on the zero-copy slice txt[i:] and
+// performs no allocations.
+func scanAnchor(txt string) anchorMatch {
+	if len(txt) == 0 || txt[0] != '<' {
+		return anchorMatch{}
 	}
-	if cfg.URL == "" {
-		return nil, errors.New("LDAP configuration requires a 'URL'")
+
+	end := strings.IndexByte(txt, '>')
+	if end < 0 {
+		return anchorMatch{}
 	}
-	u, err := url.Parse(cfg.URL)
-	if err != nil {
-		return nil, err
+
+	inner := txt[1:end]
+	if strings.IndexByte(inner, '<') >= 0 {
+		return anchorMatch{}
 	}
-	var defaultPort string
-	switch u.Scheme {
-	case "ldap":
-		defaultPort = "389"
-	case "ldaps":
-		defaultPort = "636"
+
+	fg := inner
+	bg := ""
+
+	if before, after, ok := strings.Cut(inner, ","); ok {
+		fg = before
+		bg = after
+	}
+
+	return anchorMatch{
+		Anchor: txt[:end+1],
+		FG:     fg,
+		BG:     bg,
+		ok:     true,
+	}
+}
+
+func Init(sh string) {
+	Shell = sh
+	Program = getTerminalName()
+
+	log.Debug("terminal program:", Program)
+	log.Debug("terminal shell:", Shell)
+
+	color.TrueColor = Program != AppleTerminal
+
+	progressTerminals = []string{WindowsTerminal}
+	formats = shell.GetFormats(Shell)
+
+	escapePrefix, escapeSuffix = "", ""
+	if before, after, found := strings.Cut(formats.Escape, "%s"); found {
+		// formats.Escape is a fmt.Sprintf format string, so any literal "%"
+		// in the surrounding text is escaped as "%%" (e.g. zsh's "%%{%s%%}").
+		// Unescape it now since we no longer route through fmt.Sprintf.
+		escapePrefix = strings.ReplaceAll(before, "%%", "%")
+		escapeSuffix = strings.ReplaceAll(after, "%%", "%")
+	}
+}
+
+func getTerminalName() string {
+	Program = os.Getenv("TERM_PROGRAM")
+	if len(Program) != 0 {
+		return Program
+	}
+
+	wtSession := os.Getenv("WT_SESSION")
+	if len(wtSession) != 0 {
+		return WindowsTerminal
+	}
+
+	return Unknown
+}
+
+func SetColors(background, foreground color.Ansi) {
+	CurrentColors = &color.Set{
+		Background: background,
+		Foreground: foreground,
+	}
+}
+
+func SetParentColors(background, foreground color.Ansi) {
+	if ParentColors == nil {
+		ParentColors = make([]*color.Set, 0)
+	}
+
+	ParentColors = append([]*color.Set{{
+		Background: background,
+		Foreground: foreground,
+	}}, ParentColors...)
+}
+
+func ChangeLine(numberOfLines int) string {
+	if Plain {
+		return ""
+	}
+
+	position := "B"
+
+	if numberOfLines < 0 {
+		position = "F"
+		numberOfLines = -numberOfLines
+	}
+
+	return fmt.Sprintf(formats.Linechange, numberOfLines, position)
+}
+
+func Pwd(pwdType, userName, hostName, pwd string) string {
+	if Plain {
+		return ""
+	}
+
+	switch pwdType {
+	case OSC7:
+		return fmt.Sprintf(formats.Osc7, hostName, pwd)
+	case OSC51:
+		return fmt.Sprintf(formats.Osc51, userName, hostName, pwd)
+	case OSC99:
+		fallthrough
 	default:
-		return nil, errors.Errorf("Invalid LDAP scheme: %s", u.Scheme)
+		return fmt.Sprintf(formats.Osc99, pwd)
 	}
-	var host, port string
-	if !strings.Contains(u.Host, ":") {
-		host = u.Host
-		port = defaultPort
+}
+
+func ClearAfter() string {
+	if Plain {
+		return ""
+	}
+
+	return formats.ClearLine + formats.ClearBelow
+}
+
+func FormatTitle(title string) string {
+	switch Shell {
+	// These shells don't support setting the console title.
+	case shell.ELVISH, shell.XONSH:
+		return ""
+	case shell.BASH, shell.ZSH, shell.YASH:
+		title = trimAnsi(title)
+
+		sb := text.NewBuilder()
+
+		// We have to do this to prevent the shell from misidentifying escape sequences.
+		for _, char := range title {
+			escaped, shouldEscape := formats.EscapeSequences[char]
+			if shouldEscape {
+				sb.WriteString(escaped)
+				continue
+			}
+
+			sb.WriteRune(char)
+		}
+
+		return fmt.Sprintf(formats.Title, sb.String())
+	default:
+		return fmt.Sprintf(formats.Title, trimAnsi(title))
+	}
+}
+
+func EscapeText(txt string) string {
+	return fmt.Sprintf(formats.Escape, txt)
+}
+
+func SaveCursorPosition() string {
+	return formats.SaveCursorPosition
+}
+
+func RestoreCursorPosition() string {
+	return formats.RestoreCursorPosition
+}
+
+func PromptStart() string {
+	return fmt.Sprintf(formats.Escape, "\x1b]133;A\007")
+}
+
+func CommandStart() string {
+	return fmt.Sprintf(formats.Escape, "\x1b]133;B\007")
+}
+
+func CommandFinished(code int, ignore bool) string {
+	if ignore {
+		return fmt.Sprintf(formats.Escape, "\x1b]133;D\007")
+	}
+
+	mark := fmt.Sprintf("\x1b]133;D;%d\007", code)
+
+	return fmt.Sprintf(formats.Escape, mark)
+}
+
+func LineBreak() string {
+	cr := fmt.Sprintf(formats.Left, 1000)
+	lf := fmt.Sprintf(formats.Linechange, 1, "B")
+	return cr + lf
+}
+
+func progressSupported() bool {
+	return slices.ContainsFunc(progressTerminals, func(program string) bool {
+		return strings.EqualFold(program, Program)
+	})
+}
+
+func StartProgress() string {
+	if !progressSupported() {
+		return ""
+	}
+
+	return startProgress
+}
+
+func SetProgress(percentage int) string {
+	if !progressSupported() {
+		return ""
+	}
+
+	return fmt.Sprintf(setProgress, percentage)
+}
+
+func StopProgress() string {
+	if !progressSupported() {
+		return ""
+	}
+
+	return endProgress
+}
+
+func Write(background, foreground color.Ansi, txt string) {
+	if txt == "" {
+		return
+	}
+
+	backgroundColor, foregroundColor = asAnsiColors(background, foreground)
+
+	// default to white foreground
+	if foregroundColor.IsEmpty() {
+		foregroundColor = Colors.ToAnsi("white", false)
+	}
+
+	// reset gradient state left over from a previous Write call
+	bgGradientCells, fgGradientCells = nil, nil
+	cellIndex = 0
+
+	// isTransparent is per-segment state: a previous Write's transparent rendering
+	// must not suppress gradient stamping (or trigger a spurious transparentEnd in
+	// endColorOverride) for this one.
+	isTransparent = false
+
+	// asAnsiColors resolves an inverted background (transparent foreground) with a
+	// foreground code for writeTransparentStart; a gradient bypasses that conversion,
+	// so collapse it here and take the regular transparent path: a valid gradient
+	// shows its first stop (this glyph is the segment's left edge), an invalid one
+	// its last stop, matching the solid color the body falls back to.
+	if foregroundColor.IsTransparent() && backgroundColor.IsGradient() {
+		if color.GradientCells(backgroundColor, 1, Colors, false, CurrentColors, ParentColors) != nil {
+			backgroundColor = collapseGradientFirst(backgroundColor, false)
+		} else {
+			backgroundColor = collapseGradientLast(backgroundColor, false)
+		}
+	}
+
+	bgGradient := backgroundColor.IsGradient()
+	fgGradient := foregroundColor.IsGradient()
+
+	// validate if we start with a color override
+	match := scanAnchor(txt)
+	body := txt[len(match.Anchor):]
+
+	if match.ok && match.Anchor != hyperLinkStart {
+		colorOverride := true
+		for _, style := range knownStyles {
+			if match.Anchor != style.AnchorStart {
+				continue
+			}
+
+			writeEscapedAnsiString(style.Start)
+			colorOverride = false
+		}
+
+		if colorOverride {
+			currentColor.Add(asAnsiColors(color.Ansi(match.BG), color.Ansi(match.FG)))
+		}
+	}
+
+	// a gradient needs the segment's visible cell count before anything streams,
+	// so GradientCells can hand back one color per cell up front.
+	if bgGradient || fgGradient {
+		cells := countVisibleCells(body, match.Anchor == hyperLinkStart)
+
+		if bgGradient {
+			bgGradientCells = color.GradientCells(backgroundColor, cells, Colors, true, CurrentColors, ParentColors)
+			if bgGradientCells == nil {
+				// invalid gradient (e.g. a single resolvable stop): collapse to the
+				// LAST stop so the body matches the engine's width collapse and the
+				// last-stop edges separators and parent keywords already render.
+				backgroundColor = collapseGradientLast(backgroundColor, true)
+				bgGradient = false
+			}
+		}
+
+		if fgGradient {
+			fgGradientCells = color.GradientCells(foregroundColor, cells, Colors, false, CurrentColors, ParentColors)
+			if fgGradientCells == nil {
+				foregroundColor = collapseGradientLast(foregroundColor, false)
+				fgGradient = false
+			}
+		}
+	}
+
+	writeSegmentColors()
+
+	// print the hyperlink part AFTER the coloring
+	if match.ok && match.Anchor == hyperLinkStart {
+		isHyperlink = true
+		builder.WriteString(formats.HyperlinkStart)
+	}
+
+	txt = body
+	textLen = len(txt)
+
+	if bgGradient || fgGradient {
+		writeBodyGradient(txt, background)
 	} else {
-		host, port, err = net.SplitHostPort(u.Host)
-		if err != nil {
-			return nil, errors.Wrapf(err, "Invalid LDAP host:port (%s)", u.Host)
-		}
-	}
-	portVal, err := strconv.Atoi(port)
-	if err != nil {
-		return nil, errors.Wrapf(err, "Invalid LDAP port (%s)", port)
-	}
-	c := new(Client)
-	c.Host = host
-	c.Port = portVal
-	c.UseSSL = u.Scheme == "ldaps"
-	if u.User != nil {
-		c.AdminDN = u.User.Username()
-		c.AdminPassword, _ = u.User.Password()
-	}
-	c.Base = u.Path
-	if c.Base != "" && strings.HasPrefix(c.Base, "/") {
-		c.Base = c.Base[1:]
-	}
-	c.UserFilter = cfgVal(cfg.UserFilter, "(uid=%s)")
-	c.GroupFilter = cfgVal(cfg.GroupFilter, "(memberUid=%s)")
-	c.attrNames = cfg.Attribute.Names
-	c.attrExprs = map[string]*userExpr{}
-	for _, ele := range cfg.Attribute.Converters {
-		ue, err := newUserExpr(c, ele.Name, ele.Value)
-		if err != nil {
-			return nil, err
-		}
-		c.attrExprs[ele.Name] = ue
-		log.Debugf("Added LDAP mapping expression for attribute '%s'", ele.Name)
-	}
-	c.attrMaps = map[string]map[string]string{}
-	for mapName, value := range cfg.Attribute.Maps {
-		c.attrMaps[mapName] = map[string]string{}
-		for _, ele := range value {
-			c.attrMaps[mapName][ele.Name] = ele.Value
-			log.Debugf("Added '%s' -> '%s' to LDAP map '%s'", ele.Name, ele.Value, mapName)
-		}
-	}
-	c.TLS = &cfg.TLS
-	c.CSP = csp
-	log.Debug("LDAP client was successfully created")
-	return c, nil
-}
-
-func cfgVal(val1, val2 string) string {
-	if val1 != "" {
-		return val1
-	}
-	return val2
-}
-
-// Client is an LDAP client
-type Client struct {
-	Host          string
-	Port          int
-	UseSSL        bool
-	AdminDN       string
-	AdminPassword string
-	Base          string
-	UserFilter    string               // e.g. "(uid=%s)"
-	GroupFilter   string               // e.g. "(memberUid=%s)"
-	attrNames     []string             // Names of attributes to request on an LDAP search
-	attrExprs     map[string]*userExpr // Expressions to evaluate to get attribute value
-	attrMaps      map[string]map[string]string
-	AdminConn     *ldap.Conn
-	TLS           *ctls.ClientTLSConfig
-	CSP           bccsp.BCCSP
-}
-
-// GetUser returns a user object for username and attribute values
-// for the requested attribute names
-func (lc *Client) GetUser(username string, attrNames []string) (causer.User, error) {
-
-	var sresp *ldap.SearchResult
-	var err error
-
-	log.Debugf("Getting user '%s'", username)
-
-	// Search for the given username
-	sreq := ldap.NewSearchRequest(
-		lc.Base, ldap.ScopeWholeSubtree,
-		ldap.NeverDerefAliases, 0, 0, false,
-		fmt.Sprintf(lc.UserFilter, username),
-		lc.attrNames,
-		nil,
-	)
-
-	// Try to search using the cached connection, if there is one
-	conn := lc.AdminConn
-	if conn != nil {
-		log.Debugf("Searching for user '%s' using cached connection", username)
-		sresp, err = conn.Search(sreq)
-		if err != nil {
-			log.Debugf("LDAP search failed but will close connection and try again; error was: %s", err)
-			conn.Close()
-			lc.AdminConn = nil
-		}
+		writeBody(txt, background)
 	}
 
-	// If there was no cached connection or the search failed for any reason
-	// (including because the server may have closed the cached connection),
-	// try with a new connection.
-	if sresp == nil {
-		log.Debugf("Searching for user '%s' using new connection", username)
-		conn, err = lc.newConnection()
-		if err != nil {
-			return nil, err
-		}
-		sresp, err = conn.Search(sreq)
-		if err != nil {
-			conn.Close()
-			return nil, errors.Wrapf(err, "LDAP search failure; search request: %+v", sreq)
-		}
-		// Cache the connection
-		lc.AdminConn = conn
-	}
+	// reset colors
+	writeEscapedAnsiString(resetStyle.End)
 
-	// Make sure there was exactly one match found
-	if len(sresp.Entries) < 1 {
-		return nil, errors.Errorf("User '%s' does not exist in LDAP directory", username)
-	}
-	if len(sresp.Entries) > 1 {
-		return nil, errors.Errorf("Multiple users with name '%s' exist in LDAP directory", username)
-	}
-
-	entry := sresp.Entries[0]
-	if entry == nil {
-		return nil, errors.Errorf("No entry was returned for user '%s'", username)
-	}
-
-	// Construct the user object
-	user := &user{
-		name:   username,
-		entry:  entry,
-		client: lc,
-	}
-
-	log.Debugf("Successfully retrieved user '%s', DN: %s", username, entry.DN)
-
-	return user, nil
+	// pop last color from the stack
+	currentColor.Pop()
 }
 
-// InsertUser inserts a user
-func (lc *Client) InsertUser(user *causer.Info) error {
-	return errNotSupported
-}
+// writeBody streams txt's visible runes, style/color overrides and hyperlink
+// tokens to the builder. It is the fast path used whenever neither channel of
+// the segment being written is a gradient: no per-rune branching beyond what
+// existed before gradients were added.
+func writeBody(txt string, background color.Ansi) {
+	hyperlinkTextPosition := 0
 
-// UpdateUser updates a user
-func (lc *Client) UpdateUser(user *causer.Info, updatePass bool) error {
-	return errNotSupported
-}
+	for i := 0; i < len(txt); {
+		s, size := utf8.DecodeRuneInString(txt[i:])
 
-// DeleteUser deletes a user
-func (lc *Client) DeleteUser(id string) (causer.User, error) {
-	return nil, errNotSupported
-}
-
-// GetAffiliation returns an affiliation group
-func (lc *Client) GetAffiliation(name string) (spi.Affiliation, error) {
-	return nil, errNotSupported
-}
-
-// GetAllAffiliations gets affiliation and any sub affiliation from the database
-func (lc *Client) GetAllAffiliations(name string) (*sqlx.Rows, error) {
-	return nil, errNotSupported
-}
-
-// GetRootAffiliation returns the root affiliation group
-func (lc *Client) GetRootAffiliation() (spi.Affiliation, error) {
-	return nil, errNotSupported
-}
-
-// InsertAffiliation adds an affiliation group
-func (lc *Client) InsertAffiliation(name string, prekey string, version int) error {
-	return errNotSupported
-}
-
-// DeleteAffiliation deletes an affiliation group
-func (lc *Client) DeleteAffiliation(name string, force, identityRemoval, isRegistrar bool) (*causer.DbTxResult, error) {
-	return nil, errNotSupported
-}
-
-// ModifyAffiliation renames the affiliation and updates all identities to use the new affiliation
-func (lc *Client) ModifyAffiliation(oldAffiliation, newAffiliation string, force, isRegistrar bool) (*causer.DbTxResult, error) {
-	return nil, errNotSupported
-}
-
-// GetUserLessThanLevel returns all identities that are less than the level specified
-func (lc *Client) GetUserLessThanLevel(version int) ([]causer.User, error) {
-	return nil, errNotSupported
-}
-
-// GetFilteredUsers returns all identities that fall under the affiliation and types
-func (lc *Client) GetFilteredUsers(affiliation, types string) (*sqlx.Rows, error) {
-	return nil, errNotSupported
-}
-
-// GetAffiliationTree returns the requested affiliations and all affiliations below it
-func (lc *Client) GetAffiliationTree(name string) (*causer.DbTxResult, error) {
-	return nil, errNotSupported
-}
-
-// Connect to the LDAP server and bind as user as admin user as specified in LDAP URL
-func (lc *Client) newConnection() (conn *ldap.Conn, err error) {
-	address := fmt.Sprintf("%s:%d", lc.Host, lc.Port)
-	if !lc.UseSSL {
-		log.Debug("Connecting to LDAP server over TCP")
-		conn, err = ldap.Dial("tcp", address)
-		if err != nil {
-			return conn, errors.Wrapf(err, "Failed to connect to LDAP server over TCP at %s", address)
-		}
-	} else {
-		log.Debug("Connecting to LDAP server over TLS")
-		tlsConfig, err2 := ctls.GetClientTLSConfig(lc.TLS, lc.CSP)
-		if err2 != nil {
-			return nil, errors.WithMessage(err2, "Failed to get client TLS config")
+		// ignore everything which isn't overriding
+		if s != '<' {
+			write(s)
+			i += size
+			continue
 		}
 
-		tlsConfig.ServerName = lc.Host
+		// color/end overrides first
+		match := scanAnchor(txt[i:])
+		if match.ok {
+			// check for hyperlinks first
+			switch match.Anchor {
+			case hyperLinkStart:
+				isHyperlink = true
+				i += len(match.Anchor)
+				builder.WriteString(formats.HyperlinkStart)
+				continue
+			case hyperLinkText:
+				isHyperlink = false
+				i += len(match.Anchor)
+				hyperlinkTextPosition = i
+				builder.WriteString(formats.HyperlinkCenter)
+				continue
+			case hyperLinkTextEnd:
+				// this implies there's no text in the hyperlink
+				if hyperlinkTextPosition == i {
+					builder.WriteString("link")
+					length += 4
+				}
+				i += len(match.Anchor)
+				continue
+			case hyperLinkEnd:
+				i += len(match.Anchor)
+				builder.WriteString(formats.HyperlinkEnd)
+				continue
+			case empty:
+				i += len(match.Anchor)
+				continue
+			}
 
-		conn, err = ldap.DialTLS("tcp", address, tlsConfig)
-		if err != nil {
-			return conn, errors.Wrapf(err, "Failed to connect to LDAP server over TLS at %s", address)
+			i = writeAnchorOverride(match, background, i)
+			continue
+		}
+
+		write(s)
+		i += size
+	}
+}
+
+// writeBodyGradient is writeBody's counterpart for when at least one channel is
+// a gradient. It stamps the interpolated color for the active, non-overridden
+// channel(s) before every visible rune (and the hyperlink no-text fallback),
+// advancing cellIndex in lockstep with countVisibleCells's pre-pass count.
+func writeBodyGradient(txt string, background color.Ansi) {
+	hyperlinkTextPosition := 0
+
+	for i := 0; i < len(txt); {
+		s, size := utf8.DecodeRuneInString(txt[i:])
+
+		// ignore everything which isn't overriding
+		if s != '<' {
+			writeVisibleRune(s)
+			i += size
+			continue
+		}
+
+		// color/end overrides first
+		match := scanAnchor(txt[i:])
+		if match.ok {
+			// check for hyperlinks first
+			switch match.Anchor {
+			case hyperLinkStart:
+				isHyperlink = true
+				i += len(match.Anchor)
+				builder.WriteString(formats.HyperlinkStart)
+				continue
+			case hyperLinkText:
+				isHyperlink = false
+				i += len(match.Anchor)
+				hyperlinkTextPosition = i
+				builder.WriteString(formats.HyperlinkCenter)
+				continue
+			case hyperLinkTextEnd:
+				// this implies there's no text in the hyperlink
+				if hyperlinkTextPosition == i {
+					stampGradient()
+					builder.WriteString("link")
+					length += 4
+					cellIndex += 4
+				}
+				i += len(match.Anchor)
+				continue
+			case hyperLinkEnd:
+				i += len(match.Anchor)
+				builder.WriteString(formats.HyperlinkEnd)
+				continue
+			case empty:
+				i += len(match.Anchor)
+				continue
+			}
+
+			i = writeAnchorOverride(match, background, i)
+			continue
+		}
+
+		writeVisibleRune(s)
+		i += size
+	}
+}
+
+func Len() int {
+	return length
+}
+
+func String() (string, int) {
+	defer func() {
+		length = 0
+		builder.Reset()
+
+		isTransparent = false
+		isInvisible = false
+
+		bgGradientCells, fgGradientCells = nil, nil
+		cellIndex = 0
+	}()
+
+	return builder.String(), length
+}
+
+func writeEscapedAnsiString(txt string) {
+	if Plain {
+		return
+	}
+
+	if len(escapePrefix) != 0 {
+		builder.WriteString(escapePrefix)
+	}
+
+	builder.WriteString(txt)
+
+	if len(escapeSuffix) != 0 {
+		builder.WriteString(escapeSuffix)
+	}
+}
+
+// writeEscapedAnsiParts writes prefix+payload+suffix wrapped in the shell escape
+// sequence, avoiding the intermediate string concatenation that a
+// fmt.Sprintf(colorise/transparentStart, ...) call would otherwise require.
+func writeEscapedAnsiParts(prefix string, payload color.Ansi, suffix string) {
+	if Plain {
+		return
+	}
+
+	if len(escapePrefix) != 0 {
+		builder.WriteString(escapePrefix)
+	}
+
+	builder.WriteString(prefix)
+	builder.WriteString(payload.String())
+	builder.WriteString(suffix)
+
+	if len(escapeSuffix) != 0 {
+		builder.WriteString(escapeSuffix)
+	}
+}
+
+// writeColorise writes the equivalent of fmt.Sprintf(colorise, c) wrapped in
+// the shell escape sequence, without allocating an intermediate string.
+// An empty payload would emit a bare \x1b[m (a full SGR reset) and a raw
+// gradient string would emit garbage; both degrade to writing nothing so a
+// missed guard upstream costs a color, never corrupted output.
+func writeColorise(c color.Ansi) {
+	if c.IsEmpty() || c.IsGradient() {
+		return
+	}
+
+	writeEscapedAnsiParts(colorisePrefix, c, coloriseSuffix)
+}
+
+// writeTransparentStart writes the equivalent of fmt.Sprintf(transparentStart, c)
+// wrapped in the shell escape sequence, without allocating an intermediate string.
+// The empty/gradient guard mirrors writeColorise: \x1b[;49m\x1b[7m would run
+// reverse video against default colors instead of the intended payload.
+func writeTransparentStart(c color.Ansi) {
+	if c.IsEmpty() || c.IsGradient() {
+		return
+	}
+
+	writeEscapedAnsiParts(transparentStartPrefix, c, transparentStartSuffix)
+}
+
+func write(s rune) {
+	if isInvisible {
+		return
+	}
+
+	if isHyperlink {
+		builder.WriteRune(s)
+		return
+	}
+
+	// UNSOLVABLE: When "Interactive" is true, the prompt length calculation in Bash/Zsh can be wrong, since the final string expansion is done by shells.
+	length += runewidth.RuneWidth(s)
+	// length += utf8.RuneCountInString(string(s))
+
+	if !Interactive && !Plain {
+		escaped, shouldEscape := formats.EscapeSequences[s]
+		if shouldEscape {
+			builder.WriteString(escaped)
+			return
 		}
 	}
-	// Bind with a read only user
-	if lc.AdminDN != "" && lc.AdminPassword != "" {
-		log.Debugf("Binding to the LDAP server as admin user %s", lc.AdminDN)
-		err := conn.Bind(lc.AdminDN, lc.AdminPassword)
-		if err != nil {
-			return nil, errors.Wrapf(err, "LDAP bind failure as %s", lc.AdminDN)
+
+	builder.WriteRune(s)
+}
+
+// writeVisibleRune stamps the active gradient color(s) for the current cell
+// before writing s, then advances cellIndex by s's rune width. It is only
+// called from writeBodyGradient, so isInvisible/isHyperlink runes are
+// excluded from stamping and the index exactly like write() excludes them
+// from length.
+func writeVisibleRune(s rune) {
+	visible := !isInvisible && !isHyperlink
+
+	if visible {
+		stampGradient()
+	}
+
+	write(s)
+
+	if visible {
+		cellIndex += runewidth.RuneWidth(s)
+	}
+}
+
+// stampGradient writes the truecolor/256-color escape for the current cell of
+// each channel that has a gradient AND is not currently suppressed by an
+// inline override. A channel counts as overridden when the color history's
+// top entry (or the segment base, when the history is empty) no longer
+// matches the channel's original gradient value; endColorOverride restores
+// that match on `</>`, which is what makes stamping resume automatically.
+func stampGradient() {
+	// transparent (reverse video) rendering collapses a gradient to a single edge
+	// color; stamping a background escape here would corrupt the inverted state.
+	if isTransparent {
+		return
+	}
+
+	if len(bgGradientCells) != 0 && activeBackground() == backgroundColor {
+		writeColorise(bgGradientCells[clampCellIndex(len(bgGradientCells))])
+	}
+
+	if len(fgGradientCells) != 0 && activeForeground() == foregroundColor {
+		writeColorise(fgGradientCells[clampCellIndex(len(fgGradientCells))])
+	}
+}
+
+// clampCellIndex guards against cellIndex reaching n on a trailing zero-width
+// rune (e.g. a newline after the last printable cell), which would otherwise
+// index one past the end of a gradient's cell slice.
+func clampCellIndex(n int) int {
+	if cellIndex >= n {
+		return n - 1
+	}
+
+	return cellIndex
+}
+
+// activeBackground/activeForeground return the color currently in effect for
+// each channel: the top of the override history, or the segment base color
+// when no override is active.
+func activeBackground() color.Ansi {
+	if bg := currentColor.Background(); !bg.IsEmpty() {
+		return bg
+	}
+
+	return backgroundColor
+}
+
+func activeForeground() color.Ansi {
+	if fg := currentColor.Foreground(); !fg.IsEmpty() {
+		return fg
+	}
+
+	return foregroundColor
+}
+
+// gradientCell resolves c to the stamped gradient color at the current cell when c
+// is the segment's own gradient for either channel (a `background`/`foreground`
+// keyword override resolves to exactly that string), converting the code to the
+// requested channel. This is what makes a trailing `<background,transparent>` cap
+// follow the gradient to its last stop instead of collapsing to the first.
+func gradientCell(c color.Ansi, isBackground bool) (color.Ansi, bool) {
+	var cell color.Ansi
+
+	switch {
+	case c == backgroundColor && len(bgGradientCells) != 0:
+		cell = bgGradientCells[clampCellIndex(len(bgGradientCells))]
+	case c == foregroundColor && len(fgGradientCells) != 0:
+		cell = fgGradientCells[clampCellIndex(len(fgGradientCells))]
+	default:
+		return "", false
+	}
+
+	return cell.ToChannel(isBackground), true
+}
+
+// collapseGradientEdge resolves a gradient override to the stamped color at the
+// current cell when it matches the segment's own gradient, and to its first stop
+// otherwise (foreign gradients, invalid context).
+func collapseGradientEdge(c color.Ansi, isBackground bool) color.Ansi {
+	if cell, ok := gradientCell(c, isBackground); ok {
+		return cell
+	}
+
+	return collapseGradientFirst(c, isBackground)
+}
+
+// collapseGradientFirst resolves a gradient's first stop through the same
+// Colors.Resolve/ToAnsi pipeline asAnsiColors applies to a literal color,
+// producing a ready-to-print ANSI code. Used wherever a gradient must
+// collapse to a single edge color instead of per-cell rendering: an invalid
+// gradient (color.GradientCells returned nil) and the transparent-foreground
+// paths, which never render gradients per cell.
+func collapseGradientFirst(c color.Ansi, isBackground bool) color.Ansi {
+	return collapseGradientStop(c.GradientFirst(), isBackground)
+}
+
+// collapseGradientLast is collapseGradientFirst's right-edge counterpart, used for
+// the invalid-gradient fallback so the body matches the last-stop color the engine's
+// width collapse and every edge consumer (separators, parent keywords) already use.
+func collapseGradientLast(c color.Ansi, isBackground bool) color.Ansi {
+	return collapseGradientStop(c.GradientLast(), isBackground)
+}
+
+func collapseGradientStop(stop color.Ansi, isBackground bool) color.Ansi {
+	// a syntactically invalid gradient has no stop to fall back to; return
+	// an empty color rather than letting the raw string reach an escape sequence.
+	if stop.IsGradient() {
+		return ""
+	}
+
+	// a keyword stop (parentBackground, ...) resolves against the segment context,
+	// like GradientCells does for per-cell rendering; without this the keyword string
+	// reaches ToAnsi, fails, and the glyph renders colorless.
+	stop = stop.Resolve(CurrentColors, ParentColors)
+	if stop.IsTransparent() {
+		return ""
+	}
+
+	if resolved, err := Colors.Resolve(stop); err == nil {
+		stop = resolved
+	}
+
+	resolved := Colors.ToAnsi(stop, isBackground)
+
+	// a stop that RESOLVED to a gradient (palette entry or keyword whose target is
+	// itself a gradient) must never leave as a raw string; degrade to no color.
+	if resolved.IsGradient() {
+		return ""
+	}
+
+	return resolved
+}
+
+// countVisibleCells is the pre-pass a gradient channel needs before streaming
+// starts: it walks txt with the exact same tokenization rules as
+// writeBody/writeBodyGradient (scanAnchor, the hyperlink tokens, the "link"
+// no-text fallback) and sums runewidth.RuneWidth over every rune write()
+// would count toward length, so color.GradientCells gets the right cell
+// count and the streaming loop's cellIndex never drifts from it.
+// startHyperlink mirrors the loop having already consumed a leading
+// hyperLinkStart anchor before txt begins.
+func countVisibleCells(txt string, startHyperlink bool) int {
+	cells := 0
+	hyperlink := startHyperlink
+	invisible := false
+	hyperlinkTextPosition := 0
+
+	// isStyleOrReset reports whether the anchor is a style tag or reset, which
+	// never change the invisible state in writeAnchorOverride.
+	isStyleOrReset := func(anchor string) bool {
+		if anchor == resetStyle.AnchorEnd {
+			return true
+		}
+
+		for _, style := range knownStyles {
+			if anchor == style.AnchorStart || anchor == style.AnchorEnd {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	for i := 0; i < len(txt); {
+		s, size := utf8.DecodeRuneInString(txt[i:])
+
+		if s != '<' {
+			if !hyperlink && !invisible {
+				cells += runewidth.RuneWidth(s)
+			}
+			i += size
+			continue
+		}
+
+		match := scanAnchor(txt[i:])
+		if !match.ok {
+			if !hyperlink && !invisible {
+				cells += runewidth.RuneWidth(s)
+			}
+			i += size
+			continue
+		}
+
+		switch match.Anchor {
+		case hyperLinkStart:
+			hyperlink = true
+		case hyperLinkText:
+			hyperlink = false
+			hyperlinkTextPosition = i + len(match.Anchor)
+		case hyperLinkTextEnd:
+			if hyperlinkTextPosition == i {
+				cells += 4
+			}
+		case empty:
+			// no state change
+		default:
+			// a color override anchor sets the invisible state exactly like
+			// writeAnchorOverride's isInvisible: both channels transparent hide the
+			// runes from write() and from cellIndex, so they must not be counted.
+			// This models the literal `<transparent,transparent>` form; a keyword
+			// that RESOLVES to transparent is not visible to this pre-pass.
+			if !isStyleOrReset(match.Anchor) {
+				invisible = match.FG == string(color.Transparent) && match.BG == string(color.Transparent)
+			}
+		}
+
+		i += len(match.Anchor)
+	}
+
+	return cells
+}
+
+// VisibleCells returns the number of visible cells txt would render, using the exact same
+// tokenization rules as Write's own pre-pass (scanAnchor, hyperlink tokens, the "link" no-text
+// fallback): it strips a leading hyperlink anchor the same way Write does before delegating to
+// countVisibleCells, so a caller that needs a segment's width before Write runs (e.g. the prompt
+// engine's gradient minimum-width collapse) gets the identical count Write itself would use.
+func VisibleCells(txt string) int {
+	match := scanAnchor(txt)
+	body := txt[len(match.Anchor):]
+
+	return countVisibleCells(body, match.Anchor == hyperLinkStart)
+}
+
+func writeSegmentColors() {
+	// use correct starting colors
+	bg := backgroundColor
+	fg := foregroundColor
+	if !currentColor.Background().IsEmpty() {
+		bg = currentColor.Background()
+	}
+	if !currentColor.Foreground().IsEmpty() {
+		fg = currentColor.Foreground()
+	}
+
+	// ignore processing fully transparent colors
+	isInvisible = fg.IsTransparent() && bg.IsTransparent()
+	if isInvisible {
+		return
+	}
+
+	switch {
+	case fg.IsTransparent() && len(BackgroundColor) != 0:
+		background := Colors.ToAnsi(BackgroundColor, false)
+		writeColorise(background)
+
+		invertBg := bg
+		if invertBg.IsGradient() {
+			invertBg = collapseGradientEdge(invertBg, false)
+		}
+		writeColorise(invertBg.ToForeground())
+	case fg.IsTransparent() && !bg.IsEmpty():
+		isTransparent = true
+
+		transparentBg := bg
+		if transparentBg.IsGradient() {
+			// the transparentStart format takes a foreground code, matching how
+			// asAnsiColors resolves an inverted (transparent foreground) background.
+			transparentBg = collapseGradientEdge(transparentBg, false)
+		}
+		writeTransparentStart(transparentBg)
+	default:
+		// the segment's own gradient channel is stamped per cell by
+		// writeBodyGradient/stampGradient instead of once here; any other gradient
+		// (e.g. a <background,...> anchor override) collapses to its first stop so
+		// the raw "linear-gradient(...)" value never reaches an escape sequence.
+		if !bg.IsEmpty() && !bg.IsTransparent() {
+			switch {
+			case !bg.IsGradient():
+				writeColorise(bg)
+			case len(bgGradientCells) == 0 || bg != backgroundColor:
+				writeColorise(collapseGradientEdge(bg, true))
+			}
+		}
+
+		if !fg.IsEmpty() && !fg.IsTransparent() {
+			switch {
+			case !fg.IsGradient():
+				writeColorise(fg)
+			case len(fgGradientCells) == 0 || fg != foregroundColor:
+				writeColorise(collapseGradientEdge(fg, false))
+			}
 		}
 	}
-	return conn, nil
+
+	// set current colors
+	currentColor.Add(bg, fg)
 }
 
-// A user represents a single user or identity from LDAP
-type user struct {
-	name   string
-	entry  *ldap.Entry
-	client *Client
-}
-
-// GetName returns the user's enrollment ID, which is the DN (Distinquished Name)
-func (u *user) GetName() string {
-	return u.entry.DN
-}
-
-// GetType returns the type of the user
-func (u *user) GetType() string {
-	return "client"
-}
-
-// GetMaxEnrollments returns the max enrollments of the user
-func (u *user) GetMaxEnrollments() int {
-	return 0
-}
-
-// GetLevel returns the level of the user
-func (u *user) GetLevel() int {
-	return 0
-}
-
-// SetLevel sets the level of the user
-func (u *user) SetLevel(level int) error {
-	return errNotSupported
-}
-
-// Login logs a user in using password
-func (u *user) Login(password string, caMaxEnrollment int) error {
-
-	// Get a connection to use to bind over as the user to check the password
-	conn, err := u.client.newConnection()
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	// Bind calls the LDAP server to check the user's password
-	err = conn.Bind(u.entry.DN, password)
-	if err != nil {
-		return errors.Wrapf(err, "LDAP authentication failure for user '%s' (DN=%s)", u.name, u.entry.DN)
+func writeAnchorOverride(match anchorMatch, background color.Ansi, i int) int {
+	position := i
+	// check color reset first
+	if match.Anchor == resetStyle.AnchorEnd {
+		return endColorOverride(position)
 	}
 
-	return nil
+	position += len(match.Anchor)
 
-}
-
-// LoginComplete requires no action on LDAP
-func (u *user) LoginComplete() error {
-	return nil
-}
-
-// GetAffiliationPath returns the affiliation path for this user.
-// We convert the OU hierarchy to an array of strings, orderered
-// from top-to-bottom.
-func (u *user) GetAffiliationPath() []string {
-	dn := u.entry.DN
-	path := []string{}
-	parts := strings.Split(dn, ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		p := parts[i]
-		if strings.HasPrefix(strings.ToUpper(p), "OU=") {
-			path = append(path, strings.Trim(p[3:], " "))
+	for _, style := range knownStyles {
+		if style.AnchorEnd == match.Anchor {
+			writeEscapedAnsiString(style.End)
+			return position
+		}
+		if style.AnchorStart == match.Anchor {
+			writeEscapedAnsiString(style.Start)
+			return position
 		}
 	}
-	log.Debugf("Affiliation path for DN '%s' is '%+v'", dn, path)
-	return path
-}
 
-// GetAttribute returns the value of an attribute, or "" if not found
-func (u *user) GetAttribute(name string) (*api.Attribute, error) {
-	expr := u.client.attrExprs[name]
-	if expr == nil {
-		log.Debugf("Getting attribute '%s' from LDAP user '%s'", name, u.name)
-		vals := u.entry.GetAttributeValues(name)
-		if len(vals) == 0 {
-			vals = make([]string, 0)
+	bgColor := color.Ansi(match.BG)
+	fgColor := color.Ansi(match.FG)
+
+	if fgColor.IsTransparent() && bgColor.IsEmpty() {
+		bgColor = background
+	}
+
+	bg, fg := asAnsiColors(bgColor, fgColor)
+
+	// ignore processing fully transparent colors
+	isInvisible = fg.IsTransparent() && bg.IsTransparent()
+	if isInvisible {
+		return position
+	}
+
+	// make sure we have colors
+	if fg.IsEmpty() {
+		fg = foregroundColor
+	}
+	if bg.IsEmpty() {
+		bg = backgroundColor
+	}
+
+	currentColor.Add(bg, fg)
+
+	if currentColor.Foreground().IsTransparent() && len(BackgroundColor) != 0 {
+		background := Colors.ToAnsi(BackgroundColor, false)
+		writeColorise(background)
+
+		invertBg := currentColor.Background()
+		if invertBg.IsGradient() {
+			invertBg = collapseGradientEdge(invertBg, false)
 		}
-		return &api.Attribute{Name: name, Value: strings.Join(vals, ",")}, nil
+		writeColorise(invertBg.ToForeground())
+		return position
 	}
-	log.Debugf("Evaluating expression for attribute '%s' from LDAP user '%s'", name, u.name)
-	value, err := expr.evaluate(u)
-	if err != nil {
-		return nil, errors.Wrap(err, "Failed to evaluate LDAP expression")
-	}
-	return &api.Attribute{Name: name, Value: fmt.Sprintf("%v", value)}, nil
-}
 
-// GetAttributes returns the requested attributes
-func (u *user) GetAttributes(attrNames []string) ([]api.Attribute, error) {
-	attrs := []api.Attribute{}
-	if attrNames == nil {
-		attrNames = u.client.attrNames
-	}
-	for _, name := range attrNames {
-		attr, err := u.GetAttribute(name)
-		if err != nil {
-			return nil, err
+	if currentColor.Foreground().IsTransparent() && !currentColor.Background().IsTransparent() {
+		isTransparent = true
+
+		transparentBg := currentColor.Background()
+		if transparentBg.IsGradient() {
+			// the transparentStart format takes a foreground code, matching how
+			// asAnsiColors resolves an inverted (transparent foreground) background.
+			transparentBg = collapseGradientEdge(transparentBg, false)
 		}
-		attrs = append(attrs, *attr)
+		writeTransparentStart(transparentBg)
+		return position
 	}
-	for name := range u.client.attrExprs {
-		attr, err := u.GetAttribute(name)
-		if err != nil {
-			return nil, err
-		}
-		attrs = append(attrs, *attr)
-	}
-	return attrs, nil
-}
 
-// Revoke is not supported for LDAP
-func (u *user) Revoke() error {
-	return errNotSupported
-}
-
-// IsRevoked is not supported for LDAP
-func (u *user) IsRevoked() bool {
-	return false
-}
-
-// ModifyAttributes adds a new attribute or modifies existing attribute
-func (u *user) ModifyAttributes(attrs []api.Attribute) error {
-	return errNotSupported
-}
-
-// IncrementIncorrectPasswordAttempts is not supported for LDAP
-func (u *user) IncrementIncorrectPasswordAttempts() error {
-	return errNotSupported
-}
-
-func (u *user) GetFailedLoginAttempts() int {
-	return 0
-}
-
-func newUserExpr(client *Client, attr, expr string) (*userExpr, error) {
-	ue := &userExpr{client: client, attr: attr, expr: expr}
-	err := ue.parse()
-	if err != nil {
-		return nil, err
-	}
-	return ue, nil
-}
-
-type userExpr struct {
-	client     *Client
-	attr, expr string
-	eval       *govaluate.EvaluableExpression
-	user       *user
-}
-
-func (ue *userExpr) parse() error {
-	eval, err := govaluate.NewEvaluableExpression(ue.expr)
-	if err == nil {
-		// We were able to parse 'expr' without reference to any defined
-		// functions, so we can reuse this evaluator across multiple users.
-		ue.eval = eval
-		return nil
-	}
-	// Try to parse 'expr' with defined functions
-	_, err = govaluate.NewEvaluableExpressionWithFunctions(ue.expr, ue.functions())
-	if err != nil {
-		return errors.Wrapf(err, "Invalid expression for attribute '%s'", ue.attr)
-	}
-	return nil
-}
-
-func (ue *userExpr) evaluate(user *user) (interface{}, error) {
-	var err error
-	parms := map[string]interface{}{
-		"DN":          user.entry.DN,
-		"affiliation": user.GetAffiliationPath(),
-	}
-	eval := ue.eval
-	if eval == nil {
-		ue2 := &userExpr{
-			client: ue.client,
-			attr:   ue.attr,
-			expr:   ue.expr,
-			user:   user,
-		}
-		eval, err = govaluate.NewEvaluableExpressionWithFunctions(ue2.expr, ue2.functions())
-		if err != nil {
-			return nil, errors.Wrapf(err, "Invalid expression for attribute '%s'", ue.attr)
+	if currentColor.Background() != backgroundColor {
+		// end the colors in case we have a transparent background
+		switch {
+		case currentColor.Background().IsTransparent():
+			writeEscapedAnsiString(backgroundEnd)
+		case currentColor.Background().IsGradient():
+			// an override resolving to a gradient (e.g. a <background,...> anchor in a
+			// gradient segment) collapses to its first stop; a matching gradient is
+			// handled by stamping and never reaches this branch.
+			writeColorise(collapseGradientEdge(currentColor.Background(), true))
+		default:
+			writeColorise(currentColor.Background())
 		}
 	}
-	result, err := eval.Evaluate(parms)
-	if err != nil {
-		log.Debugf("Error evaluating expression for attribute '%s'; parms: %+v; error: %+v", ue.attr, parms, err)
-		return nil, err
-	}
-	log.Debugf("Evaluated expression for attribute '%s'; parms: %+v; result: %+v", ue.attr, parms, result)
-	return result, nil
-}
 
-func (ue *userExpr) functions() map[string]govaluate.ExpressionFunction {
-	return map[string]govaluate.ExpressionFunction{
-		"attr": ue.attrFunction,
-		"map":  ue.mapFunction,
-		"if":   ue.ifFunction,
-	}
-}
-
-// Get an LDAP attribute's value.
-// The usage is:
-//
-// attrFunction <attrName> [<separator>]
-//
-// If attribute <attrName> has multiple values, return the values in a single
-// string separated by the <separator> string, which is a comma by default.
-// Example:
-//
-// Assume attribute "foo" has two values "bar1" and "bar2".
-// attrFunction("foo") returns "bar1,bar2"
-// attrFunction("foo",":") returns "bar1:bar2"
-func (ue *userExpr) attrFunction(args ...interface{}) (interface{}, error) {
-	if len(args) < 1 || len(args) > 2 {
-		return nil, fmt.Errorf("Expecting 1 or 2 arguments for 'attr' but found %d", len(args))
-	}
-	attrName, ok := args[0].(string)
-	if !ok {
-		return nil, errors.Errorf("First argument to 'attr' must be a string; '%s' is not a string", args[0])
-	}
-	sep := ","
-	if len(args) == 2 {
-		sep, ok = args[1].(string)
-		if !ok {
-			return nil, errors.Errorf("Second argument to 'attr' must be a string; '%s' is not a string", args[1])
+	if currentColor.Foreground() != foregroundColor {
+		fg := currentColor.Foreground()
+		if fg.IsGradient() {
+			fg = collapseGradientEdge(fg, false)
 		}
+
+		writeColorise(fg)
 	}
-	vals := ue.user.entry.GetAttributeValues(attrName)
-	log.Debugf("Values for LDAP attribute '%s' are '%+v'", attrName, vals)
-	if len(vals) == 0 {
-		vals = make([]string, 0)
-	}
-	return strings.Join(vals, sep), nil
+
+	return position
 }
 
-// Map function performs string substitutions on the 1st argument for each
-// entry in the map referenced by the 2nd argument.
-//
-// For example, assume that a user's LDAP attribute named 'myLDAPAttr' has
-// three values: "foo1", "foo2", and "foo3".  Further assume the following
-// LDAP configuration.
-//
-//	converters:
-//	   - name: myAttr
-//	     value: map(attr("myLDAPAttr"), myMap)
-//	maps:
-//	   myMap:
-//	      foo1: bar1
-//	      foo2: bar2
-//
-// The value of the user's "myAttr" attribute is then "bar1,bar2,foo3".
-// This value is computed as follows:
-//  1. The value of 'attr("myLDAPAttr")' is "foo1,foo2,foo3" by joining
-//     the values using the default separator character ",".
-//  2. The value of 'map("foo1,foo2,foo3", "myMap")' is "foo1,foo2,foo3"
-//     because it maps or substitutes "bar1" for "foo1" and "bar2" for "foo2"
-//     according to the entries in the "myMap" map.
-func (ue *userExpr) mapFunction(args ...interface{}) (interface{}, error) {
-	if len(args) != 2 {
-		return nil, errors.Errorf("Expecting two arguments but found %d", len(args))
+func endColorOverride(position int) int {
+	// make sure to reset the colors if needed
+	position += len(resetStyle.AnchorEnd)
+
+	// do not restore colors at the end of the string, we print it anyways
+	if position == textLen {
+		currentColor.Pop()
+		return position
 	}
-	str, ok := args[0].(string)
-	if !ok {
-		return nil, errors.Errorf("First argument to 'map' must be a string; '%s' is not a string", args[0])
+
+	// reset colors to previous when we have more than 1 in stack
+	// as soon as we have  more than 1, we can pop the last one
+	// and print the previous override as it wasn't ended yet
+	if currentColor.Len() > 1 {
+		fg := currentColor.Foreground()
+		bg := currentColor.Background()
+
+		currentColor.Pop()
+
+		previousBg := currentColor.Background()
+		previousFg := currentColor.Foreground()
+
+		if isTransparent {
+			writeEscapedAnsiString(transparentEnd)
+			// the transparent override has ended; without this reset stampGradient
+			// stays suppressed and a gradient background never resumes stamping.
+			isTransparent = false
+		}
+
+		// a gradient previousBg/previousFg is restored by stamping resuming on the
+		// next visible rune, never by printing its raw "linear-gradient(...)" value.
+		if previousBg != bg && !previousBg.IsGradient() {
+			if previousBg.IsClear() {
+				writeEscapedAnsiString(backgroundStyle.End)
+			} else {
+				writeColorise(previousBg)
+			}
+		}
+
+		if previousFg != fg && !previousFg.IsGradient() {
+			writeColorise(previousFg)
+		}
+
+		return position
 	}
-	mapName := args[1].(string)
-	if !ok {
-		return nil, errors.Errorf("Second argument to 'map' must be a string; '%s' is not a string", args[1])
+
+	// pop the last colors from the stack
+	defer currentColor.Pop()
+
+	// do not reset when colors are identical
+	if currentColor.Background() == backgroundColor && currentColor.Foreground() == foregroundColor {
+		return position
 	}
-	mapName = strings.ToLower(mapName)
-	// Get the map
-	maps := ue.client.attrMaps
-	if maps == nil {
-		return nil, errors.Errorf("No maps are defined; unknown map name: '%s'", mapName)
+
+	if isTransparent {
+		writeEscapedAnsiString(transparentEnd)
 	}
-	myMap := maps[mapName]
-	if myMap == nil {
-		return nil, errors.Errorf("Unknown map name: '%s'", mapName)
+
+	if backgroundColor.IsClear() {
+		writeEscapedAnsiString(backgroundStyle.End)
 	}
-	// Iterate through all of the entries in the map and perform string substitution
-	// from the name to the value.
-	for name, val := range myMap {
-		str = strings.Replace(str, name, val, -1)
+
+	// a gradient backgroundColor/foregroundColor is restored by stamping resuming
+	// on the next visible rune, never printed here directly.
+	if currentColor.Background() != backgroundColor && !backgroundColor.IsClear() && !backgroundColor.IsGradient() {
+		writeColorise(backgroundColor)
 	}
-	return str, nil
+
+	if (currentColor.Foreground() != foregroundColor || isTransparent) && !foregroundColor.IsClear() && !foregroundColor.IsGradient() {
+		writeColorise(foregroundColor)
+	}
+
+	isTransparent = false
+	return position
 }
 
-// The "ifFunction" returns the 2nd arg if the 1st boolean arg is true; otherwise it
-// returns the 3rd arg.
-func (ue *userExpr) ifFunction(args ...interface{}) (interface{}, error) {
-	if len(args) != 3 {
-		return nil, fmt.Errorf("Expecting 3 arguments for 'if' but found %d", len(args))
+func asAnsiColors(background, foreground color.Ansi) (color.Ansi, color.Ansi) {
+	if background == "" {
+		background = color.Background
 	}
-	cond, ok := args[0].(bool)
-	if !ok {
-		return nil, errors.New("Expecting first argument to 'if' to be a boolean")
+
+	if foreground == "" {
+		foreground = color.Foreground
 	}
-	if cond {
-		return args[1], nil
+
+	background = background.Resolve(CurrentColors, ParentColors)
+	foreground = foreground.Resolve(CurrentColors, ParentColors)
+
+	if bg, err := Colors.Resolve(background); err == nil {
+		background = bg
 	}
-	return args[2], nil
+
+	if fg, err := Colors.Resolve(foreground); err == nil {
+		foreground = fg
+	}
+
+	inverted := foreground == color.Transparent && len(background) != 0
+
+	background = Colors.ToAnsi(background, !inverted)
+	foreground = Colors.ToAnsi(foreground, false)
+
+	return background, foreground
+}
+
+func trimAnsi(txt string) string {
+	if txt == "" || !strings.Contains(txt, "\x1b") {
+		return txt
+	}
+	return regex.ReplaceAllString(AnsiRegex, txt, "")
 }

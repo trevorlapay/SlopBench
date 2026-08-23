@@ -1,467 +1,730 @@
+import type { CacheFs } from '../../../shared/lib/utils'
+import type { PrerenderManifest } from '../../../build'
 import {
-  DEFAULT_SAFE_BINS,
-  analyzeShellCommand,
-  isWindowsPlatform,
-  matchAllowlist,
-  resolveAllowlistCandidatePath,
-  splitCommandChain,
-  type ExecCommandAnalysis,
-  type CommandResolution,
-  type ExecCommandSegment,
-} from "./exec-approvals-analysis.js";
-import type { ExecAllowlistEntry } from "./exec-approvals.js";
+  type IncrementalCacheValue,
+  type IncrementalCacheEntry,
+  type IncrementalCache as IncrementalCacheType,
+  IncrementalCacheKind,
+  CachedRouteKind,
+  type IncrementalResponseCacheEntry,
+  type IncrementalFetchCacheEntry,
+  type GetIncrementalFetchCacheContext,
+  type GetIncrementalResponseCacheContext,
+  type CachedFetchValue,
+  type SetIncrementalFetchCacheContext,
+  type SetIncrementalResponseCacheContext,
+} from '../../response-cache'
+import type { DeepReadonly } from '../../../shared/lib/deep-readonly'
+import FileSystemCache from './file-system-cache'
+import { normalizePagePath } from '../../../shared/lib/page-path/normalize-page-path'
+
 import {
-  SAFE_BIN_PROFILES,
-  type SafeBinProfile,
-  validateSafeBinArgv,
-} from "./exec-safe-bin-policy.js";
-import { isTrustedSafeBinPath } from "./exec-safe-bin-trust.js";
+  CACHE_ONE_YEAR_SECONDS,
+  NEXT_CACHE_TAGS_HEADER,
+  PRERENDER_REVALIDATE_HEADER,
+} from '../../../lib/constants'
+import { toRoute } from '../to-route'
+import { SharedCacheControls } from './shared-cache-controls.external'
+import {
+  getResumeDataCache,
+  workUnitAsyncStorage,
+} from '../../app-render/work-unit-async-storage.external'
+import { InvariantError } from '../../../shared/lib/invariant-error'
+import type { Revalidate } from '../cache-control'
+import { getPreviouslyRevalidatedTags } from '../../server-utils'
+import { workAsyncStorage } from '../../app-render/work-async-storage.external'
+import { DetachedPromise } from '../../../lib/detached-promise'
+import { areTagsExpired, areTagsStale } from './tags-manifest.external'
 
-function hasShellLineContinuation(command: string): boolean {
-  return /\\(?:\r\n|\n|\r)/.test(command);
+export interface CacheHandlerContext {
+  fs?: CacheFs
+  dev?: boolean
+  flushToDisk?: boolean
+  serverDistDir?: string
+  maxMemoryCacheSize?: number
+  fetchCacheKeyPrefix?: string
+  prerenderManifest?: PrerenderManifest
+  revalidatedTags: string[]
+  _requestHeaders: IncrementalCache['requestHeaders']
 }
 
-export function normalizeSafeBins(entries?: string[]): Set<string> {
-  if (!Array.isArray(entries)) {
-    return new Set();
-  }
-  const normalized = entries
-    .map((entry) => entry.trim().toLowerCase())
-    .filter((entry) => entry.length > 0);
-  return new Set(normalized);
+export interface CacheHandlerValue {
+  lastModified: number
+  age?: number
+  cacheState?: string
+  value: IncrementalCacheValue | null
 }
 
-export function resolveSafeBins(entries?: string[] | null): Set<string> {
-  if (entries === undefined) {
-    return normalizeSafeBins(DEFAULT_SAFE_BINS);
+export class CacheHandler {
+  // eslint-disable-next-line
+  constructor(_ctx: CacheHandlerContext) {}
+
+  public async get(
+    _cacheKey: string,
+    _ctx: GetIncrementalFetchCacheContext | GetIncrementalResponseCacheContext
+  ): Promise<CacheHandlerValue | null> {
+    return {} as any
   }
-  return normalizeSafeBins(entries ?? []);
+
+  public async set(
+    _cacheKey: string,
+    _data: IncrementalCacheValue | null,
+    _ctx: SetIncrementalFetchCacheContext | SetIncrementalResponseCacheContext
+  ): Promise<void> {}
+
+  public async revalidateTag(
+    _tags: string | string[],
+    _durations?: { expire?: number }
+  ): Promise<void> {}
+
+  public resetRequestCache(): void {}
 }
 
-export function isSafeBinUsage(params: {
-  argv: string[];
-  resolution: CommandResolution | null;
-  safeBins: Set<string>;
-  platform?: string | null;
-  trustedSafeBinDirs?: ReadonlySet<string>;
-  safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
-  isTrustedSafeBinPathFn?: typeof isTrustedSafeBinPath;
-}): boolean {
-  // Windows host exec uses PowerShell, which has different parsing/expansion rules.
-  // Keep safeBins conservative there (require explicit allowlist entries).
-  if (isWindowsPlatform(params.platform ?? process.platform)) {
-    return false;
-  }
-  if (params.safeBins.size === 0) {
-    return false;
-  }
-  const resolution = params.resolution;
-  const execName = resolution?.executableName?.toLowerCase();
-  if (!execName) {
-    return false;
-  }
-  const matchesSafeBin = params.safeBins.has(execName);
-  if (!matchesSafeBin) {
-    return false;
-  }
-  if (!resolution?.resolvedPath) {
-    return false;
-  }
-  const isTrustedPath = params.isTrustedSafeBinPathFn ?? isTrustedSafeBinPath;
-  if (
-    !isTrustedPath({
-      resolvedPath: resolution.resolvedPath,
-      trustedDirs: params.trustedSafeBinDirs,
-    })
-  ) {
-    return false;
-  }
-  const argv = params.argv.slice(1);
-  const safeBinProfiles = params.safeBinProfiles ?? SAFE_BIN_PROFILES;
-  const profile = safeBinProfiles[execName];
-  if (!profile) {
-    return false;
-  }
-  return validateSafeBinArgv(argv, profile);
-}
+export class IncrementalCache implements IncrementalCacheType {
+  readonly dev?: boolean
+  readonly disableForTestmode?: boolean
+  readonly cacheHandler?: CacheHandler
+  readonly hasCustomCacheHandler: boolean
+  readonly prerenderManifest: DeepReadonly<PrerenderManifest>
+  readonly requestHeaders: Record<string, undefined | string | string[]>
+  readonly allowedRevalidateHeaderKeys?: string[]
+  readonly minimalMode?: boolean
+  readonly fetchCacheKeyPrefix?: string
+  readonly isOnDemandRevalidate?: boolean
+  readonly revalidatedTags?: readonly string[]
 
-export type ExecAllowlistEvaluation = {
-  allowlistSatisfied: boolean;
-  allowlistMatches: ExecAllowlistEntry[];
-  segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
-};
+  private static readonly debug: boolean =
+    !!process.env.NEXT_PRIVATE_DEBUG_CACHE
+  private readonly locks = new Map<string, Promise<void>>()
 
-export type ExecSegmentSatisfiedBy = "allowlist" | "safeBins" | "skills" | null;
+  /**
+   * The cache controls for routes. This will source the values from the
+   * prerender manifest until the in-memory cache is updated with new values.
+   */
+  private readonly cacheControls: SharedCacheControls
 
-function evaluateSegments(
-  segments: ExecCommandSegment[],
-  params: {
-    allowlist: ExecAllowlistEntry[];
-    safeBins: Set<string>;
-    safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
-    cwd?: string;
-    platform?: string | null;
-    trustedSafeBinDirs?: ReadonlySet<string>;
-    skillBins?: Set<string>;
-    autoAllowSkills?: boolean;
-  },
-): {
-  satisfied: boolean;
-  matches: ExecAllowlistEntry[];
-  segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
-} {
-  const matches: ExecAllowlistEntry[] = [];
-  const allowSkills = params.autoAllowSkills === true && (params.skillBins?.size ?? 0) > 0;
-  const segmentSatisfiedBy: ExecSegmentSatisfiedBy[] = [];
+  constructor({
+    fs,
+    dev,
+    flushToDisk,
+    minimalMode,
+    serverDistDir,
+    requestHeaders,
+    maxMemoryCacheSize,
+    getPrerenderManifest,
+    fetchCacheKeyPrefix,
+    CurCacheHandler,
+    allowedRevalidateHeaderKeys,
+  }: {
+    fs?: CacheFs
+    dev: boolean
+    minimalMode?: boolean
+    serverDistDir?: string
+    flushToDisk?: boolean
+    allowedRevalidateHeaderKeys?: string[]
+    requestHeaders: IncrementalCache['requestHeaders']
+    maxMemoryCacheSize?: number
+    getPrerenderManifest: () => DeepReadonly<PrerenderManifest>
+    fetchCacheKeyPrefix?: string
+    CurCacheHandler?: typeof CacheHandler
+  }) {
+    this.hasCustomCacheHandler = Boolean(CurCacheHandler)
 
-  const satisfied = segments.every((segment) => {
-    const candidatePath = resolveAllowlistCandidatePath(segment.resolution, params.cwd);
-    const candidateResolution =
-      candidatePath && segment.resolution
-        ? { ...segment.resolution, resolvedPath: candidatePath }
-        : segment.resolution;
-    const match = matchAllowlist(params.allowlist, candidateResolution);
-    if (match) {
-      matches.push(match);
-    }
-    const safe = isSafeBinUsage({
-      argv: segment.argv,
-      resolution: segment.resolution,
-      safeBins: params.safeBins,
-      safeBinProfiles: params.safeBinProfiles,
-      platform: params.platform,
-      trustedSafeBinDirs: params.trustedSafeBinDirs,
-    });
-    const skillAllow =
-      allowSkills && segment.resolution?.executableName
-        ? params.skillBins?.has(segment.resolution.executableName)
-        : false;
-    const by: ExecSegmentSatisfiedBy = match
-      ? "allowlist"
-      : safe
-        ? "safeBins"
-        : skillAllow
-          ? "skills"
-          : null;
-    segmentSatisfiedBy.push(by);
-    return Boolean(by);
-  });
-
-  return { satisfied, matches, segmentSatisfiedBy };
-}
-
-export function evaluateExecAllowlist(params: {
-  analysis: ExecCommandAnalysis;
-  allowlist: ExecAllowlistEntry[];
-  safeBins: Set<string>;
-  safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
-  cwd?: string;
-  platform?: string | null;
-  trustedSafeBinDirs?: ReadonlySet<string>;
-  skillBins?: Set<string>;
-  autoAllowSkills?: boolean;
-}): ExecAllowlistEvaluation {
-  const allowlistMatches: ExecAllowlistEntry[] = [];
-  const segmentSatisfiedBy: ExecSegmentSatisfiedBy[] = [];
-  if (!params.analysis.ok || params.analysis.segments.length === 0) {
-    return { allowlistSatisfied: false, allowlistMatches, segmentSatisfiedBy };
-  }
-
-  // If the analysis contains chains, evaluate each chain part separately
-  if (params.analysis.chains) {
-    for (const chainSegments of params.analysis.chains) {
-      const result = evaluateSegments(chainSegments, {
-        allowlist: params.allowlist,
-        safeBins: params.safeBins,
-        safeBinProfiles: params.safeBinProfiles,
-        cwd: params.cwd,
-        platform: params.platform,
-        trustedSafeBinDirs: params.trustedSafeBinDirs,
-        skillBins: params.skillBins,
-        autoAllowSkills: params.autoAllowSkills,
-      });
-      if (!result.satisfied) {
-        return { allowlistSatisfied: false, allowlistMatches: [], segmentSatisfiedBy: [] };
+    const cacheHandlersSymbol = Symbol.for('@next/cache-handlers')
+    const _globalThis: typeof globalThis & {
+      [cacheHandlersSymbol]?: {
+        FetchCache?: typeof CacheHandler
       }
-      allowlistMatches.push(...result.matches);
-      segmentSatisfiedBy.push(...result.segmentSatisfiedBy);
-    }
-    return { allowlistSatisfied: true, allowlistMatches, segmentSatisfiedBy };
-  }
+    } = globalThis
 
-  // No chains, evaluate all segments together
-  const result = evaluateSegments(params.analysis.segments, {
-    allowlist: params.allowlist,
-    safeBins: params.safeBins,
-    safeBinProfiles: params.safeBinProfiles,
-    cwd: params.cwd,
-    platform: params.platform,
-    trustedSafeBinDirs: params.trustedSafeBinDirs,
-    skillBins: params.skillBins,
-    autoAllowSkills: params.autoAllowSkills,
-  });
-  return {
-    allowlistSatisfied: result.satisfied,
-    allowlistMatches: result.matches,
-    segmentSatisfiedBy: result.segmentSatisfiedBy,
-  };
-}
+    if (!CurCacheHandler) {
+      // if we have a global cache handler available leverage it
+      const globalCacheHandler = _globalThis[cacheHandlersSymbol]
 
-export type ExecAllowlistAnalysis = {
-  analysisOk: boolean;
-  allowlistSatisfied: boolean;
-  allowlistMatches: ExecAllowlistEntry[];
-  segments: ExecCommandSegment[];
-  segmentSatisfiedBy: ExecSegmentSatisfiedBy[];
-};
+      if (globalCacheHandler?.FetchCache) {
+        CurCacheHandler = globalCacheHandler.FetchCache
+        if (IncrementalCache.debug) {
+          console.log('IncrementalCache: using global FetchCache cache handler')
+        }
+      } else {
+        if (fs && serverDistDir) {
+          if (IncrementalCache.debug) {
+            console.log('IncrementalCache: using filesystem cache handler')
+          }
+          CurCacheHandler = FileSystemCache
+        }
+      }
+    } else if (IncrementalCache.debug) {
+      console.log(
+        'IncrementalCache: using custom cache handler',
+        CurCacheHandler.name
+      )
+    }
 
-const SHELL_WRAPPER_EXECUTABLES = new Set([
-  "ash",
-  "bash",
-  "cmd",
-  "cmd.exe",
-  "dash",
-  "fish",
-  "ksh",
-  "powershell",
-  "powershell.exe",
-  "pwsh",
-  "pwsh.exe",
-  "sh",
-  "zsh",
-]);
+    if (process.env.__NEXT_TEST_MAX_ISR_CACHE) {
+      // Allow cache size to be overridden for testing purposes
+      maxMemoryCacheSize = parseInt(process.env.__NEXT_TEST_MAX_ISR_CACHE, 10)
+    }
+    this.dev = dev
+    this.disableForTestmode = process.env.NEXT_PRIVATE_TEST_PROXY === 'true'
+    // this is a hack to avoid Webpack knowing this is equal to this.minimalMode
+    // because we replace this.minimalMode to true in production bundles.
+    const minimalModeKey = 'minimalMode'
+    this[minimalModeKey] = minimalMode
+    this.requestHeaders = requestHeaders
+    this.allowedRevalidateHeaderKeys = allowedRevalidateHeaderKeys
+    this.prerenderManifest = getPrerenderManifest()
+    this.cacheControls = new SharedCacheControls(this.prerenderManifest)
+    this.fetchCacheKeyPrefix = fetchCacheKeyPrefix
+    let revalidatedTags: string[] = []
 
-function normalizeExecutableName(name: string | undefined): string {
-  return (name ?? "").trim().toLowerCase();
-}
-
-function isShellWrapperSegment(segment: ExecCommandSegment): boolean {
-  const candidates = [
-    normalizeExecutableName(segment.resolution?.executableName),
-    normalizeExecutableName(segment.resolution?.rawExecutable),
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue;
-    }
-    if (SHELL_WRAPPER_EXECUTABLES.has(candidate)) {
-      return true;
-    }
-    const base = candidate.split(/[\\/]/).pop();
-    if (base && SHELL_WRAPPER_EXECUTABLES.has(base)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function extractShellInlineCommand(argv: string[]): string | null {
-  for (let i = 1; i < argv.length; i += 1) {
-    const token = argv[i];
-    if (!token) {
-      continue;
-    }
-    const lower = token.toLowerCase();
-    if (lower === "--") {
-      break;
-    }
     if (
-      lower === "-c" ||
-      lower === "--command" ||
-      lower === "-command" ||
-      lower === "/c" ||
-      lower === "/k"
+      requestHeaders[PRERENDER_REVALIDATE_HEADER] ===
+      this.prerenderManifest?.preview?.previewModeId
     ) {
-      const next = argv[i + 1]?.trim();
-      return next ? next : null;
+      this.isOnDemandRevalidate = true
     }
-    if (/^-[^-]*c[^-]*$/i.test(token)) {
-      const commandIndex = lower.indexOf("c");
-      const inline = token.slice(commandIndex + 1).trim();
-      if (inline) {
-        return inline;
+
+    if (minimalMode) {
+      revalidatedTags = this.revalidatedTags = getPreviouslyRevalidatedTags(
+        requestHeaders,
+        this.prerenderManifest?.preview?.previewModeId
+      )
+    }
+
+    if (CurCacheHandler) {
+      this.cacheHandler = new CurCacheHandler({
+        dev,
+        fs,
+        flushToDisk,
+        serverDistDir,
+        revalidatedTags,
+        maxMemoryCacheSize,
+        _requestHeaders: requestHeaders,
+        fetchCacheKeyPrefix,
+      })
+    }
+  }
+
+  private calculateRevalidate(
+    pathname: string,
+    fromTime: number,
+    dev: boolean,
+    isFallback: boolean | undefined
+  ): Revalidate {
+    // in development we don't have a prerender-manifest
+    // and default to always revalidating to allow easier debugging
+    if (dev)
+      return Math.floor(performance.timeOrigin + performance.now() - 1000)
+
+    const cacheControl = this.cacheControls.get(toRoute(pathname))
+
+    // if an entry isn't present in routes we fallback to a default
+    // of revalidating after 1 second unless it's a fallback request.
+    const initialRevalidateSeconds = cacheControl
+      ? cacheControl.revalidate
+      : isFallback
+        ? false
+        : 1
+
+    const revalidateAfter =
+      typeof initialRevalidateSeconds === 'number'
+        ? initialRevalidateSeconds * 1000 + fromTime
+        : initialRevalidateSeconds
+
+    return revalidateAfter
+  }
+
+  _getPathname(pathname: string, fetchCache?: boolean) {
+    return fetchCache ? pathname : normalizePagePath(pathname)
+  }
+
+  resetRequestCache() {
+    this.cacheHandler?.resetRequestCache?.()
+  }
+
+  async lock(cacheKey: string): Promise<() => Promise<void> | void> {
+    // Wait for any existing lock on this cache key to be released
+    // This implements a simple queue-based locking mechanism
+    while (true) {
+      const lock = this.locks.get(cacheKey)
+
+      if (IncrementalCache.debug) {
+        console.log('IncrementalCache: lock get', cacheKey, !!lock)
       }
-      const next = argv[i + 1]?.trim();
-      return next ? next : null;
-    }
-  }
-  return null;
-}
 
-function collectAllowAlwaysPatterns(params: {
-  segment: ExecCommandSegment;
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  platform?: string | null;
-  depth: number;
-  out: Set<string>;
-}) {
-  const candidatePath = resolveAllowlistCandidatePath(params.segment.resolution, params.cwd);
-  if (!candidatePath) {
-    return;
-  }
-  if (!isShellWrapperSegment(params.segment)) {
-    params.out.add(candidatePath);
-    return;
-  }
-  if (params.depth >= 3) {
-    return;
-  }
-  const inlineCommand = extractShellInlineCommand(params.segment.argv);
-  if (!inlineCommand) {
-    return;
-  }
-  const nested = analyzeShellCommand({
-    command: inlineCommand,
-    cwd: params.cwd,
-    env: params.env,
-    platform: params.platform,
-  });
-  if (!nested.ok) {
-    return;
-  }
-  for (const nestedSegment of nested.segments) {
-    collectAllowAlwaysPatterns({
-      segment: nestedSegment,
-      cwd: params.cwd,
-      env: params.env,
-      platform: params.platform,
-      depth: params.depth + 1,
-      out: params.out,
-    });
-  }
-}
+      // If no lock exists, we can proceed to acquire it
+      if (!lock) break
 
-/**
- * Derive persisted allowlist patterns for an "allow always" decision.
- * When a command is wrapped in a shell (for example `zsh -lc "<cmd>"`),
- * persist the inner executable(s) rather than the shell binary.
- */
-export function resolveAllowAlwaysPatterns(params: {
-  segments: ExecCommandSegment[];
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  platform?: string | null;
-}): string[] {
-  const patterns = new Set<string>();
-  for (const segment of params.segments) {
-    collectAllowAlwaysPatterns({
-      segment,
-      cwd: params.cwd,
-      env: params.env,
-      platform: params.platform,
-      depth: 0,
-      out: patterns,
-    });
-  }
-  return Array.from(patterns);
-}
-
-/**
- * Evaluates allowlist for shell commands (including &&, ||, ;) and returns analysis metadata.
- */
-export function evaluateShellAllowlist(params: {
-  command: string;
-  allowlist: ExecAllowlistEntry[];
-  safeBins: Set<string>;
-  safeBinProfiles?: Readonly<Record<string, SafeBinProfile>>;
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  trustedSafeBinDirs?: ReadonlySet<string>;
-  skillBins?: Set<string>;
-  autoAllowSkills?: boolean;
-  platform?: string | null;
-}): ExecAllowlistAnalysis {
-  const analysisFailure = (): ExecAllowlistAnalysis => ({
-    analysisOk: false,
-    allowlistSatisfied: false,
-    allowlistMatches: [],
-    segments: [],
-    segmentSatisfiedBy: [],
-  });
-
-  // Keep allowlist analysis conservative: line-continuation semantics are shell-dependent
-  // and can rewrite token boundaries at runtime.
-  if (hasShellLineContinuation(params.command)) {
-    return analysisFailure();
-  }
-
-  const chainParts = isWindowsPlatform(params.platform) ? null : splitCommandChain(params.command);
-  if (!chainParts) {
-    const analysis = analyzeShellCommand({
-      command: params.command,
-      cwd: params.cwd,
-      env: params.env,
-      platform: params.platform,
-    });
-    if (!analysis.ok) {
-      return analysisFailure();
-    }
-    const evaluation = evaluateExecAllowlist({
-      analysis,
-      allowlist: params.allowlist,
-      safeBins: params.safeBins,
-      safeBinProfiles: params.safeBinProfiles,
-      cwd: params.cwd,
-      platform: params.platform,
-      trustedSafeBinDirs: params.trustedSafeBinDirs,
-      skillBins: params.skillBins,
-      autoAllowSkills: params.autoAllowSkills,
-    });
-    return {
-      analysisOk: true,
-      allowlistSatisfied: evaluation.allowlistSatisfied,
-      allowlistMatches: evaluation.allowlistMatches,
-      segments: analysis.segments,
-      segmentSatisfiedBy: evaluation.segmentSatisfiedBy,
-    };
-  }
-
-  const allowlistMatches: ExecAllowlistEntry[] = [];
-  const segments: ExecCommandSegment[] = [];
-  const segmentSatisfiedBy: ExecSegmentSatisfiedBy[] = [];
-
-  for (const part of chainParts) {
-    const analysis = analyzeShellCommand({
-      command: part,
-      cwd: params.cwd,
-      env: params.env,
-      platform: params.platform,
-    });
-    if (!analysis.ok) {
-      return analysisFailure();
+      // Wait for the existing lock to be released before trying again
+      await lock
     }
 
-    segments.push(...analysis.segments);
-    const evaluation = evaluateExecAllowlist({
-      analysis,
-      allowlist: params.allowlist,
-      safeBins: params.safeBins,
-      safeBinProfiles: params.safeBinProfiles,
-      cwd: params.cwd,
-      platform: params.platform,
-      trustedSafeBinDirs: params.trustedSafeBinDirs,
-      skillBins: params.skillBins,
-      autoAllowSkills: params.autoAllowSkills,
-    });
-    allowlistMatches.push(...evaluation.allowlistMatches);
-    segmentSatisfiedBy.push(...evaluation.segmentSatisfiedBy);
-    if (!evaluation.allowlistSatisfied) {
+    // Create a new detached promise that will represent this lock
+    // The resolve function (unlock) will be returned to the caller
+    const { resolve, promise } = new DetachedPromise<void>()
+
+    if (IncrementalCache.debug) {
+      console.log('IncrementalCache: successfully locked', cacheKey)
+    }
+
+    // Store the lock promise in the locks map
+    this.locks.set(cacheKey, promise)
+
+    return () => {
+      // Resolve the promise to release the lock.
+      resolve()
+
+      // Remove the lock from the map once it's released so that future gets
+      // can acquire the lock.
+      this.locks.delete(cacheKey)
+    }
+  }
+
+  async revalidateTag(
+    tags: string | string[],
+    durations?: { expire?: number }
+  ): Promise<void> {
+    return this.cacheHandler?.revalidateTag(tags, durations)
+  }
+
+  // x-ref: https://github.com/facebook/react/blob/2655c9354d8e1c54ba888444220f63e836925caa/packages/react/src/ReactFetch.js#L23
+  async generateCacheKey(
+    url: string,
+    init: RequestInit | Request = {}
+  ): Promise<string> {
+    // this should be bumped anytime a fix is made to cache entries
+    // that should bust the cache
+    const MAIN_KEY_PREFIX = 'v3'
+
+    const bodyChunks: string[] = []
+
+    const encoder = new TextEncoder()
+    const decoder = new TextDecoder()
+
+    if (init.body) {
+      // handle Uint8Array body
+      if (init.body instanceof Uint8Array) {
+        bodyChunks.push(decoder.decode(init.body))
+        ;(init as any)._ogBody = init.body
+      } // handle ReadableStream body
+      else if (typeof (init.body as any).getReader === 'function') {
+        const readableBody = init.body as ReadableStream<Uint8Array | string>
+
+        const chunks: Uint8Array[] = []
+
+        try {
+          await readableBody.pipeTo(
+            new WritableStream({
+              write(chunk) {
+                if (typeof chunk === 'string') {
+                  chunks.push(encoder.encode(chunk))
+                  bodyChunks.push(chunk)
+                } else {
+                  chunks.push(chunk)
+                  bodyChunks.push(decoder.decode(chunk, { stream: true }))
+                }
+              },
+            })
+          )
+
+          // Flush the decoder.
+          bodyChunks.push(decoder.decode())
+
+          // Create a new buffer with all the chunks.
+          const length = chunks.reduce((total, arr) => total + arr.length, 0)
+          const arrayBuffer = new Uint8Array(length)
+
+          // Push each of the chunks into the new array buffer.
+          let offset = 0
+          for (const chunk of chunks) {
+            arrayBuffer.set(chunk, offset)
+            offset += chunk.length
+          }
+
+          ;(init as any)._ogBody = arrayBuffer
+        } catch (err) {
+          console.error('Problem reading body', err)
+        }
+      } // handle FormData or URLSearchParams bodies
+      else if (typeof (init.body as any).keys === 'function') {
+        const formData = init.body as FormData
+        ;(init as any)._ogBody = init.body
+        for (const key of new Set([...formData.keys()])) {
+          const values = formData.getAll(key)
+          bodyChunks.push(
+            `${key}=${(
+              await Promise.all(
+                values.map(async (val) => {
+                  if (typeof val === 'string') {
+                    return val
+                  } else {
+                    return await val.text()
+                  }
+                })
+              )
+            ).join(',')}`
+          )
+        }
+        // handle blob body
+      } else if (typeof (init.body as any).arrayBuffer === 'function') {
+        const blob = init.body as Blob
+        const arrayBuffer = await blob.arrayBuffer()
+        bodyChunks.push(await blob.text())
+        ;(init as any)._ogBody = new Blob([arrayBuffer], { type: blob.type })
+      } else if (typeof init.body === 'string') {
+        bodyChunks.push(init.body)
+        ;(init as any)._ogBody = init.body
+      }
+    }
+
+    const headers =
+      typeof (init.headers || {}).keys === 'function'
+        ? Object.fromEntries(init.headers as Headers)
+        : Object.assign({}, init.headers)
+
+    // w3c trace context headers can break request caching and deduplication
+    // so we remove them from the cache key
+    if ('traceparent' in headers) delete headers['traceparent']
+    if ('tracestate' in headers) delete headers['tracestate']
+
+    const cacheString = JSON.stringify([
+      MAIN_KEY_PREFIX,
+      this.fetchCacheKeyPrefix || '',
+      url,
+      init.method,
+      headers,
+      init.mode,
+      init.redirect,
+      init.credentials,
+      init.referrer,
+      init.referrerPolicy,
+      init.integrity,
+      init.cache,
+      bodyChunks,
+    ])
+
+    if (process.env.NEXT_RUNTIME === 'edge') {
+      function bufferToHex(buffer: ArrayBuffer): string {
+        return Array.prototype.map
+          .call(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, '0'))
+          .join('')
+      }
+      const buffer = encoder.encode(cacheString)
+      return bufferToHex(await crypto.subtle.digest('SHA-256', buffer))
+    } else {
+      const crypto = require('crypto') as typeof import('crypto')
+      return crypto.createHash('sha256').update(cacheString).digest('hex')
+    }
+  }
+
+  async get(
+    cacheKey: string,
+    ctx: GetIncrementalFetchCacheContext
+  ): Promise<IncrementalFetchCacheEntry | null>
+  async get(
+    cacheKey: string,
+    ctx: GetIncrementalResponseCacheContext
+  ): Promise<IncrementalResponseCacheEntry | null>
+  async get(
+    cacheKey: string,
+    ctx: GetIncrementalFetchCacheContext | GetIncrementalResponseCacheContext
+  ): Promise<IncrementalCacheEntry | null> {
+    // Unlike other caches if we have a resume data cache, we use it even if
+    // testmode would normally disable it or if requestHeaders say 'no-cache'.
+    if (ctx.kind === IncrementalCacheKind.FETCH) {
+      const workUnitStore = workUnitAsyncStorage.getStore()
+      const resumeDataCache = workUnitStore
+        ? getResumeDataCache(workUnitStore)
+        : null
+      if (resumeDataCache) {
+        const memoryCacheData = resumeDataCache.fetch.get(cacheKey)
+        if (memoryCacheData?.kind === CachedRouteKind.FETCH) {
+          // Check if any tags were recently revalidated before returning RDC entry.
+          // When a server action calls updateTag(), the re-render should see fresh
+          // data instead of stale RDC data.
+          const workStore = workAsyncStorage.getStore()
+          const combinedTags = [...(ctx.tags || []), ...(ctx.softTags || [])]
+          const hasRevalidatedTag = combinedTags.some(
+            (tag) =>
+              this.revalidatedTags?.includes(tag) ||
+              workStore?.pendingRevalidatedTags?.some(
+                (item) => item.tag === tag
+              )
+          )
+
+          if (hasRevalidatedTag) {
+            if (IncrementalCache.debug) {
+              console.log('IncrementalCache: rdc:revalidated-tag', cacheKey)
+            }
+            // Fall through to cacheHandler lookup
+          } else {
+            if (IncrementalCache.debug) {
+              console.log('IncrementalCache: rdc:hit', cacheKey)
+            }
+
+            return { isStale: false, value: memoryCacheData }
+          }
+        } else if (IncrementalCache.debug) {
+          console.log('IncrementalCache: rdc:miss', cacheKey)
+        }
+      } else {
+        if (IncrementalCache.debug) {
+          console.log('IncrementalCache: rdc:no-resume-data')
+        }
+      }
+    }
+
+    // we don't leverage the prerender cache in dev mode
+    // so that getStaticProps is always called for easier debugging
+    if (
+      this.disableForTestmode ||
+      (this.dev &&
+        (ctx.kind !== IncrementalCacheKind.FETCH ||
+          this.requestHeaders['cache-control'] === 'no-cache'))
+    ) {
+      return null
+    }
+
+    cacheKey = this._getPathname(
+      cacheKey,
+      ctx.kind === IncrementalCacheKind.FETCH
+    )
+
+    const cacheData = await this.cacheHandler?.get(cacheKey, ctx)
+
+    if (ctx.kind === IncrementalCacheKind.FETCH) {
+      if (!cacheData) {
+        return null
+      }
+
+      if (cacheData.value?.kind !== CachedRouteKind.FETCH) {
+        throw new InvariantError(
+          `Expected cached value for cache key ${JSON.stringify(cacheKey)} to be a "FETCH" kind, got ${JSON.stringify(cacheData.value?.kind)} instead.`
+        )
+      }
+
+      const workStore = workAsyncStorage.getStore()
+      const combinedTags = [...(ctx.tags || []), ...(ctx.softTags || [])]
+      // if a tag was revalidated we don't return stale data
+      if (
+        combinedTags.some(
+          (tag) =>
+            this.revalidatedTags?.includes(tag) ||
+            workStore?.pendingRevalidatedTags?.some((item) => item.tag === tag)
+        )
+      ) {
+        if (IncrementalCache.debug) {
+          console.log('IncrementalCache: expired tag', cacheKey)
+        }
+
+        return null
+      }
+
+      // As we're able to get the cache entry for this fetch, and the prerender
+      // resume data cache (RDC) is available, it must have been populated by a
+      // previous fetch, but was not yet present in the in-memory cache. This
+      // could be the case when performing multiple renders in parallel during
+      // build time where we de-duplicate the fetch calls.
+      //
+      // We add it to the RDC so that the next fetch call will be able to use it
+      // and it won't have to reach into the fetch cache implementation.
+      const workUnitStore = workUnitAsyncStorage.getStore()
+      if (workUnitStore) {
+        const resumeDataCache = getResumeDataCache(workUnitStore)
+        if (resumeDataCache?.mutable) {
+          if (IncrementalCache.debug) {
+            console.log('IncrementalCache: rdc:set', cacheKey)
+          }
+
+          resumeDataCache.fetch.set(cacheKey, cacheData.value)
+        }
+      }
+
+      const revalidate = ctx.revalidate || cacheData.value.revalidate
+      const age =
+        (performance.timeOrigin +
+          performance.now() -
+          (cacheData.lastModified || 0)) /
+        1000
+
+      let isStale = age > revalidate
+      const data = cacheData.value.data
+
+      if (areTagsExpired(combinedTags, cacheData.lastModified)) {
+        return null
+      } else if (areTagsStale(combinedTags, cacheData.lastModified)) {
+        isStale = true
+      }
+
       return {
-        analysisOk: true,
-        allowlistSatisfied: false,
-        allowlistMatches,
-        segments,
-        segmentSatisfiedBy,
-      };
+        isStale,
+        value: { kind: CachedRouteKind.FETCH, data, revalidate },
+      }
+    } else if (cacheData?.value?.kind === CachedRouteKind.FETCH) {
+      throw new InvariantError(
+        `Expected cached value for cache key ${JSON.stringify(cacheKey)} not to be a ${JSON.stringify(ctx.kind)} kind, got "FETCH" instead.`
+      )
     }
+
+    let entry: IncrementalResponseCacheEntry | null = null
+    const { isFallback } = ctx
+    const cacheControl = this.cacheControls.get(toRoute(cacheKey))
+
+    let isStale: boolean | -1 | undefined
+    let revalidateAfter: Revalidate
+
+    if (cacheData?.lastModified === -1) {
+      isStale = -1
+      revalidateAfter = -1 * CACHE_ONE_YEAR_SECONDS * 1000
+    } else {
+      const now = performance.timeOrigin + performance.now()
+      const lastModified = cacheData?.lastModified || now
+
+      revalidateAfter = this.calculateRevalidate(
+        cacheKey,
+        lastModified,
+        this.dev ?? false,
+        ctx.isFallback
+      )
+
+      // If the route's `expire` time has passed, force a blocking revalidation
+      // by signalling `isStale = -1`. The response cache treats `-1` as "skip
+      // the early SWR resolve" and awaits a fresh render before the user sees a
+      // response.
+      const expireAfter =
+        typeof cacheControl?.expire === 'number'
+          ? cacheControl.expire * 1000 + lastModified
+          : undefined
+
+      if (expireAfter !== undefined && expireAfter < now) {
+        isStale = -1
+      } else {
+        isStale =
+          revalidateAfter !== false && revalidateAfter < now ? true : undefined
+
+        // If the stale time couldn't be determined based on the revalidation
+        // time, we check if the tags are expired or stale.
+        if (
+          isStale === undefined &&
+          (cacheData?.value?.kind === CachedRouteKind.APP_PAGE ||
+            cacheData?.value?.kind === CachedRouteKind.APP_ROUTE)
+        ) {
+          const tagsHeader = cacheData.value.headers?.[NEXT_CACHE_TAGS_HEADER]
+
+          if (typeof tagsHeader === 'string') {
+            const cacheTags = tagsHeader.split(',')
+
+            if (cacheTags.length > 0) {
+              if (areTagsExpired(cacheTags, lastModified)) {
+                isStale = -1
+              } else if (areTagsStale(cacheTags, lastModified)) {
+                isStale = true
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (cacheData) {
+      entry = {
+        isStale,
+        cacheControl,
+        revalidateAfter,
+        value: cacheData.value,
+        isFallback,
+      }
+    }
+
+    if (
+      !cacheData &&
+      this.prerenderManifest.notFoundRoutes.includes(cacheKey)
+    ) {
+      // for the first hit after starting the server the cache
+      // may not have a way to save notFound: true so if
+      // the prerender-manifest marks this as notFound then we
+      // return that entry and trigger a cache set to give it a
+      // chance to update in-memory entries
+      entry = {
+        isStale,
+        value: null,
+        cacheControl,
+        revalidateAfter,
+        isFallback,
+      }
+      this.set(cacheKey, entry.value, { ...ctx, cacheControl })
+    }
+    return entry
   }
 
-  return {
-    analysisOk: true,
-    allowlistSatisfied: true,
-    allowlistMatches,
-    segments,
-    segmentSatisfiedBy,
-  };
+  async set(
+    pathname: string,
+    data: CachedFetchValue | null,
+    ctx: SetIncrementalFetchCacheContext
+  ): Promise<void>
+  async set(
+    pathname: string,
+    data: Exclude<IncrementalCacheValue, CachedFetchValue> | null,
+    ctx: SetIncrementalResponseCacheContext
+  ): Promise<void>
+  async set(
+    pathname: string,
+    data: IncrementalCacheValue | null,
+    ctx: SetIncrementalFetchCacheContext | SetIncrementalResponseCacheContext
+  ): Promise<void> {
+    // Even if we otherwise disable caching for testMode or if no fetchCache is
+    // configured we still always stash results in the resume data cache if one
+    // exists. This is because this is a transient in memory cache that
+    // populates caches ahead of a dynamic render in dev mode to allow the RSC
+    // debug info to have the right environment associated to it.
+    if (data?.kind === CachedRouteKind.FETCH) {
+      const workUnitStore = workUnitAsyncStorage.getStore()
+      const resumeDataCache = workUnitStore
+        ? getResumeDataCache(workUnitStore)
+        : null
+      if (resumeDataCache?.mutable) {
+        if (IncrementalCache.debug) {
+          console.log('IncrementalCache: rdc:set', pathname)
+        }
+
+        resumeDataCache.fetch.set(pathname, data)
+      }
+    }
+
+    if (this.disableForTestmode || (this.dev && !ctx.fetchCache)) return
+
+    pathname = this._getPathname(pathname, ctx.fetchCache)
+
+    // FetchCache has upper limit of 2MB per-entry currently
+    const itemSize = JSON.stringify(data).length
+    if (
+      ctx.fetchCache &&
+      itemSize > 2 * 1024 * 1024 &&
+      // We ignore the size limit when custom cache handler is being used, as it
+      // might not have this limit
+      !this.hasCustomCacheHandler &&
+      // We also ignore the size limit when it's an implicit build-time-only
+      // caching that the user isn't even aware of.
+      !ctx.isImplicitBuildTimeCache
+    ) {
+      const warningText = `Failed to set Next.js data cache for ${ctx.fetchUrl || pathname}, items over 2MB can not be cached (${itemSize} bytes)`
+
+      if (this.dev) {
+        throw new Error(warningText)
+      }
+      console.warn(warningText)
+      return
+    }
+
+    try {
+      if (!ctx.fetchCache && ctx.cacheControl) {
+        this.cacheControls.set(toRoute(pathname), ctx.cacheControl)
+      }
+
+      await this.cacheHandler?.set(pathname, data, ctx)
+    } catch (error) {
+      console.warn('Failed to update prerender cache for', pathname, error)
+    }
+  }
 }

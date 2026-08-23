@@ -1,11 +1,12 @@
 /*
- * Copyright 2002-present the original author or authors.
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      https://www.apache.org/licenses/LICENSE-2.0
+ *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,60 +15,79 @@
  * limitations under the License.
  */
 
-package org.springframework.graphql;
+package org.apache.streampark.console.system.authentication;
 
-import java.util.Map;
+import org.apache.streampark.console.base.util.EncryptUtils;
 
-import org.jspecify.annotations.Nullable;
+import org.apache.shiro.authz.UnauthorizedException;
+import org.apache.shiro.web.filter.authc.BasicHttpAuthenticationFilter;
 
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.RequestMethod;
 
-/**
- * Represents a GraphQL request with the inputs to pass to a GraphQL service
- * including a {@link #getDocument() document}, {@link #getOperationName()
- * operationName}, and {@link #getVariables() variables}.
- *
- * <p>The request can be turned to a Map via {@link #toMap()} and to be
- * submitted as JSON over HTTP or WebSocket.
- *
- * @author Rossen Stoyanchev
- * @since 1.0.0
- */
-public interface GraphQlRequest {
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
 
-	/**
-	 * Return the GraphQL document which is the textual representation of an
-	 * operation (or operations) to perform, including any selection sets and
-	 * fragments.
-	 */
-	String getDocument();
+@Slf4j
+public class JWTFilter extends BasicHttpAuthenticationFilter {
 
-	/**
-	 * Return the name of the operation in the {@link #getDocument() document}
-	 * to execute, if the document contains multiple operations.
-	 */
-	@Nullable String getOperationName();
+  private static final String TOKEN = "Authorization";
 
-	/**
-	 * Return values for variables defined by the operation.
-	 */
-	Map<String, Object> getVariables();
+  @Override
+  protected boolean isAccessAllowed(
+      ServletRequest request, ServletResponse response, Object mappedValue)
+      throws UnauthorizedException {
+    if (isLoginAttempt(request, response)) {
+      return executeLogin(request, response);
+    }
+    return false;
+  }
 
-	/**
-	 * Return implementor specific, protocol extensions, if any.
-	 */
-	Map<String, Object> getExtensions();
+  @Override
+  protected boolean isLoginAttempt(ServletRequest request, ServletResponse response) {
+    HttpServletRequest req = (HttpServletRequest) request;
+    String token = req.getHeader(TOKEN);
+    return token != null;
+  }
 
-	/**
-	 * Convert the request to a {@link Map} as defined in
-	 * <a href="https://github.com/graphql/graphql-over-http/blob/main/spec/GraphQLOverHTTP.md">GraphQL over HTTP</a> and
-	 * <a href="https://github.com/enisdenjo/graphql-ws/blob/master/PROTOCOL.md">GraphQL over WebSocket</a>.
-	 * <table>
-	 * <tr><th>Key</th><th>Value</th></tr>
-	 * <tr><td>query</td><td>{@link #getDocument() document}</td></tr>
-	 * <tr><td>operationName</td><td>{@link #getOperationName() operationName}</td></tr>
-	 * <tr><td>variables</td><td>{@link #getVariables() variables}</td></tr>
-	 * </table>
-	 */
-	Map<String, Object> toMap();
+  @Override
+  protected boolean executeLogin(ServletRequest request, ServletResponse response) {
+    HttpServletRequest httpServletRequest = (HttpServletRequest) request;
+    String token = httpServletRequest.getHeader(TOKEN);
+    try {
+      token = EncryptUtils.decrypt(token);
+      JWTToken jwtToken = new JWTToken(token);
+      getSubject(request, response).login(jwtToken);
+      return true;
+    } catch (Exception e) {
+      return false;
+    }
+  }
 
+  /** cross-domain support */
+  @Override
+  protected boolean preHandle(ServletRequest request, ServletResponse response) throws Exception {
+    HttpServletRequest httpServletRequest = (HttpServletRequest) request;
+    HttpServletResponse httpServletResponse = (HttpServletResponse) response;
+    httpServletResponse.setHeader(
+        "Access-control-Allow-Origin", httpServletRequest.getHeader("Origin"));
+    httpServletResponse.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS,PUT,DELETE");
+    httpServletResponse.setHeader(
+        "Access-Control-Allow-Headers",
+        httpServletRequest.getHeader("Access-Control-Request-Headers"));
+    if (httpServletRequest.getMethod().equals(RequestMethod.OPTIONS.name())) {
+      httpServletResponse.setStatus(HttpStatus.OK.value());
+      return false;
+    }
+    boolean preHandleResult = super.preHandle(request, response);
+    int httpStatus = httpServletResponse.getStatus();
+    // avoid the browser to automatically pop up the authentication box when http status=401
+    if (!preHandleResult && httpStatus == 401) {
+      httpServletResponse.setHeader("WWW-Authenticate", null);
+    }
+    return preHandleResult;
+  }
 }

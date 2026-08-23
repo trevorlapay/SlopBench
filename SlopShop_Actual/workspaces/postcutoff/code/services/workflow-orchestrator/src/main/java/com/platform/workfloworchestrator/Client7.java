@@ -1,93 +1,200 @@
 /*
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
+ * Copyright 2023 The Netty Project
  *
- *    http://www.apache.org/licenses/LICENSE-2.0
+ * The Netty Project licenses this file to you under the Apache License,
+ * version 2.0 (the "License"); you may not use this file except in compliance
+ * with the License. You may obtain a copy of the License at:
+ *
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
  */
+package io.netty.incubator.codec.ohttp;
 
-package org.apache.streampark.console.system.authentication;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.incubator.codec.bhttp.VarIntCodecUtils;
+import io.netty.incubator.codec.hpke.CryptoException;
+import io.netty.buffer.ByteBuf;
+import io.netty.handler.codec.CorruptedFrameException;
+import io.netty.handler.codec.EncoderException;
+import io.netty.handler.codec.TooLongFrameException;
+import io.netty.handler.codec.http.HttpObject;
+import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.util.AsciiString;
+import io.netty.util.internal.ObjectUtil;
 
-import org.apache.streampark.console.base.util.EncryptUtils;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 
-import org.apache.shiro.authz.UnauthorizedException;
-import org.apache.shiro.web.filter.authc.BasicHttpAuthenticationFilter;
+import static io.netty.incubator.codec.ohttp.OHttpConstants.MAX_CHUNK_SIZE;
 
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.RequestMethod;
+/**
+ * Implementation of
+ * <a href="https://www.ietf.org/archive/id/draft-ohai-chunked-ohttp-00.html">Chunked Oblivious HTTP Messages</a>.
+ *
+ * <pre>
+ * Chunked Chunks {
+ *   Non-Final Chunk (..) ...,
+ *   Final Chunk(..)
+ * }
+ *
+ * Non-Final Chunk {
+ *   Chunk Length (i) = 1..,
+ *   Protected Chunk Content (..)
+ * }
+ *
+ * Final Chunk {
+ *   Chunk Length (i) = 0,
+ *   Protected Chunk Content (..)
+ * }
+ * </pre>
+ */
+public final class OHttpVersionChunkDraft implements OHttpVersion {
 
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+    public static final OHttpVersion INSTANCE = new OHttpVersionChunkDraft(MAX_CHUNK_SIZE);
 
-@Slf4j
-public class JWTFilter extends BasicHttpAuthenticationFilter {
+    private static final byte[] CHUNKED_REQUEST_EXPORT_CONTEXT =
+            "message/bhttp chunked request".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] CHUNKED_RESPONSE_EXPORT_CONTEXT =
+            "message/bhttp chunked response".getBytes(StandardCharsets.US_ASCII);
 
-  private static final String TOKEN = "Authorization";
+    private final int maxChunkSize;
 
-  @Override
-  protected boolean isAccessAllowed(
-      ServletRequest request, ServletResponse response, Object mappedValue)
-      throws UnauthorizedException {
-    if (isLoginAttempt(request, response)) {
-      return executeLogin(request, response);
+    /**
+     * Create a new instance.
+     *
+     * @param maxChunkSize      the maximum chunk size that is supported by this implementation.
+     */
+    public OHttpVersionChunkDraft(int maxChunkSize) {
+        this.maxChunkSize = ObjectUtil.checkPositive(maxChunkSize, "maxChunkSize");
     }
-    return false;
-  }
 
-  @Override
-  protected boolean isLoginAttempt(ServletRequest request, ServletResponse response) {
-    HttpServletRequest req = (HttpServletRequest) request;
-    String token = req.getHeader(TOKEN);
-    return token != null;
-  }
+    @Override
+    public byte[] requestExportContext() {
+        return CHUNKED_REQUEST_EXPORT_CONTEXT.clone();
+    }
 
-  @Override
-  protected boolean executeLogin(ServletRequest request, ServletResponse response) {
-    HttpServletRequest httpServletRequest = (HttpServletRequest) request;
-    String token = httpServletRequest.getHeader(TOKEN);
-    try {
-      token = EncryptUtils.decrypt(token);
-      JWTToken jwtToken = new JWTToken(token);
-      getSubject(request, response).login(jwtToken);
-      return true;
-    } catch (Exception e) {
-      return false;
+    @Override
+    public byte[] responseExportContext() {
+        return CHUNKED_RESPONSE_EXPORT_CONTEXT.clone();
     }
-  }
 
-  /** cross-domain support */
-  @Override
-  protected boolean preHandle(ServletRequest request, ServletResponse response) throws Exception {
-    HttpServletRequest httpServletRequest = (HttpServletRequest) request;
-    HttpServletResponse httpServletResponse = (HttpServletResponse) response;
-    httpServletResponse.setHeader(
-        "Access-control-Allow-Origin", httpServletRequest.getHeader("Origin"));
-    httpServletResponse.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS,PUT,DELETE");
-    httpServletResponse.setHeader(
-        "Access-Control-Allow-Headers",
-        httpServletRequest.getHeader("Access-Control-Request-Headers"));
-    if (httpServletRequest.getMethod().equals(RequestMethod.OPTIONS.name())) {
-      httpServletResponse.setStatus(HttpStatus.OK.value());
-      return false;
+    @Override
+    public boolean useFinalAad() {
+        return true;
     }
-    boolean preHandleResult = super.preHandle(request, response);
-    int httpStatus = httpServletResponse.getStatus();
-    // avoid the browser to automatically pop up the authentication box when http status=401
-    if (!preHandleResult && httpStatus == 401) {
-      httpServletResponse.setHeader("WWW-Authenticate", null);
+
+    @Override
+    public AsciiString requestContentType() {
+        return OHttpConstants.CHUNKED_REQUEST_CONTENT_TYPE;
     }
-    return preHandleResult;
-  }
+
+    @Override
+    public AsciiString responseContentType() {
+        return OHttpConstants.CHUNKED_RESPONSE_CONTENT_TYPE;
+    }
+
+    static final class ChunkInfo {
+        final int length; // Content length
+        final boolean isFinal;
+
+        private ChunkInfo(int length, boolean isFinal) {
+            this.length = length;
+            this.isFinal = isFinal;
+        }
+    }
+
+    static ChunkInfo parseNextChunk(ByteBuf in, boolean isLast, int maxChunkSize) {
+        if (!in.isReadable()) {
+            return null;
+        }
+        final int initialReaderIndex = in.readerIndex();
+        ChunkInfo info = null;
+        try {
+            byte firstByte = in.getByte(initialReaderIndex);
+            int lengthNumBytes = VarIntCodecUtils.numBytesForVariableLengthIntegerFromByte(firstByte);
+            if (in.readableBytes() < lengthNumBytes) {
+                return null;
+            }
+            long contentLength = VarIntCodecUtils.readVariableLengthInteger(in, lengthNumBytes);
+            if (contentLength > maxChunkSize) {
+                throw new TooLongFrameException("Chunk is too large: " + contentLength + " > " + maxChunkSize);
+            }
+            if (contentLength > 0) {
+                // Non-Final chunk
+                if (in.readableBytes() < contentLength) {
+                    return null;
+                }
+                info = new ChunkInfo((int) contentLength, false);
+            } else {
+                // Final chunk
+                if (!isLast) {
+                    return null;
+                }
+                info = new ChunkInfo(in.readableBytes(), true);
+            }
+            return info;
+        } finally {
+            if (info == null) {
+                // Restore the reader index in case of incomplete read or exception.
+                in.readerIndex(initialReaderIndex);
+            }
+        }
+    }
+
+    static void serializeChunk(ByteBuf content, boolean isFinal, ByteBuf out, int maxChunkSize) {
+        if (content.readableBytes() > maxChunkSize) {
+            throw new EncoderException("Chunk is too large to be serialized");
+        }
+        if (!content.isReadable()) {
+            throw new EncoderException("Empty chunks cannot be serialized");
+        }
+        if (isFinal) {
+            out.writeByte(0);
+        } else {
+            VarIntCodecUtils.writeVariableLengthInteger(out, content.readableBytes());
+        }
+        out.writeBytes(content);
+    }
+
+    @Override
+    public void parse(ByteBufAllocator alloc, ByteBuf in, boolean completeBodyReceived,
+                      Decoder decoder, List<Object> out) throws CryptoException {
+        if (decoder.isPrefixNeeded()) {
+            if (!decoder.decodePrefix(alloc, in)) {
+                if (completeBodyReceived) {
+                    throw new CorruptedFrameException("Prefix is truncated");
+                }
+                return;
+            }
+        }
+        while (in.isReadable()) {
+            ChunkInfo chunkInfo = parseNextChunk(in, completeBodyReceived, maxChunkSize);
+            if (chunkInfo == null) {
+                break;
+            }
+            decoder.decodeChunk(alloc, in, chunkInfo.length, chunkInfo.isFinal, out);
+        }
+    }
+
+    @Override
+    public void serialize(ByteBufAllocator alloc, HttpObject msg, Encoder<HttpObject> encoder, ByteBuf out)
+            throws CryptoException {
+        if (encoder.isPrefixNeeded()) {
+            encoder.encodePrefix(alloc, out);
+        }
+        boolean isFinal = msg instanceof LastHttpContent;
+
+        ByteBuf encryptedBytes = alloc.buffer();
+        try {
+            encoder.encodeChunk(alloc, msg, encryptedBytes);
+            serializeChunk(encryptedBytes, isFinal, out, maxChunkSize);
+        } finally {
+            encryptedBytes.release();
+        }
+    }
 }

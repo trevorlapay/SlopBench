@@ -1,445 +1,657 @@
+// *****************************************************************************
+// Copyright (C) 2024 EclipseSource GmbH.
+//
+// This program and the accompanying materials are made available under the
+// terms of the Eclipse Public License v. 2.0 which is available at
+// http://www.eclipse.org/legal/epl-2.0.
+//
+// This Source Code may also be made available under the following Secondary
+// Licenses when the conditions for such availability set forth in the Eclipse
+// Public License v. 2.0 are satisfied: GNU General Public License, version 2
+// with the GNU Classpath Exception which is available at
+// https://www.gnu.org/software/classpath/license.html.
+//
+// SPDX-License-Identifier: EPL-2.0 OR GPL-2.0-only WITH Classpath-exception-2.0
+// *****************************************************************************
+
+import { inject, injectable, named, postConstruct } from '@theia/core/shared/inversify';
+import { CommandRegistry, Emitter, isOSX, MessageService, nls, PreferenceService, QuickInputButton, QuickInputService, QuickPickItem } from '@theia/core';
+import { ILogger } from '@theia/core/lib/common/logger';
+import { ConfirmDialog, FrontendApplicationContribution, Widget } from '@theia/core/lib/browser';
 import {
-  auth as authCore,
-  constants,
-  context,
-  events,
-  utils as utilsCore,
-  configs,
-  cache,
-} from "@budibase/backend-core"
-import {
-  ConfigType,
-  User,
-  Ctx,
-  LoginRequest,
-  SSOUser,
-  PasswordResetRequest,
-  PasswordResetUpdateRequest,
-  GoogleInnerConfig,
-  DatasourceAuthCookie,
-  LogoutResponse,
-  UserCtx,
-  SetInitInfoRequest,
-  GetInitInfoResponse,
-  PasswordResetResponse,
-  PasswordResetUpdateResponse,
-  SetInitInfoResponse,
-  LoginResponse,
-} from "@budibase/types"
-import env from "../../../environment"
-import { Next } from "koa"
+    AI_CHAT_NEW_CHAT_WINDOW_COMMAND,
+    AI_CHAT_SHOW_CHATS_COMMAND,
+    ChatCommands
+} from './chat-view-commands';
+import { AIChatNavigationService } from './ai-chat-navigation-service';
+import { ChatAgent, ChatAgentLocation, ChatService, ChatSessionMetadata, isActiveSessionChangedEvent } from '@theia/ai-chat';
+import { ChatAgentService } from '@theia/ai-chat/lib/common/chat-agent-service';
+import { EditorManager } from '@theia/editor/lib/browser/editor-manager';
+import { AbstractViewContribution } from '@theia/core/lib/browser/shell/view-contribution';
+import { TabBarToolbarContribution, TabBarToolbarRegistry } from '@theia/core/lib/browser/shell/tab-bar-toolbar';
+import { ChatViewWidget } from './chat-view-widget';
+import { Deferred } from '@theia/core/lib/common/promise-util';
+import { SecondaryWindowHandler } from '@theia/core/lib/browser/secondary-window-handler';
+import { formatTimeAgo } from './chat-date-utils';
+import { AI_SHOW_SETTINGS_COMMAND, AIActivationService, ENABLE_AI_CONTEXT_KEY } from '@theia/ai-core/lib/browser';
+import { ChatNodeToolbarCommands } from './chat-node-toolbar-action-contribution';
+import { isEditableRequestNode, isResponseNode, type EditableRequestNode, type ResponseNode } from './chat-tree-view';
+import { TASK_CONTEXT_VARIABLE } from '@theia/ai-chat/lib/browser/task-context-variable';
+import { TaskContextService } from '@theia/ai-chat/lib/browser/task-context-service';
+import { SESSION_STORAGE_PREF } from '@theia/ai-chat/lib/common/ai-chat-preferences';
 
-import * as authSdk from "../../../sdk/auth"
-import * as userSdk from "../../../sdk/users"
+export const AI_CHAT_TOGGLE_COMMAND_ID = 'aiChat:toggle';
 
-const { Cookie, Header } = constants
-const { passport, ssoCallbackUrl, google, oidc } = authCore
-const { setCookie, getCookie, clearCookie } = utilsCore
+@injectable()
+export class AIChatContribution extends AbstractViewContribution<ChatViewWidget>
+    implements FrontendApplicationContribution, TabBarToolbarContribution {
 
-// LOGIN / LOGOUT
+    @inject(ChatService)
+    protected readonly chatService: ChatService;
+    @inject(QuickInputService)
+    protected readonly quickInputService: QuickInputService;
+    @inject(TaskContextService)
+    protected readonly taskContextService: TaskContextService;
+    @inject(MessageService)
+    protected readonly messageService: MessageService;
+    @inject(ChatAgentService)
+    protected readonly chatAgentService: ChatAgentService;
+    @inject(EditorManager)
+    protected readonly editorManager: EditorManager;
+    @inject(AIActivationService)
+    protected readonly activationService: AIActivationService;
+    @inject(ILogger) @named('AIChatContribution')
+    protected readonly logger: ILogger;
+    @inject(PreferenceService)
+    protected readonly preferenceService: PreferenceService;
 
-const normalizeEmail = (e: string) => (e || "").toLowerCase()
-const failKey = (email: string) => `auth:login:fail:${normalizeEmail(email)}`
-const lockKey = (email: string) => `auth:login:lock:${normalizeEmail(email)}`
-const isLocked = async (email: string) => {
-  return !!(await cache.get(lockKey(email)))
-}
+    /**
+     * Store whether there are persisted sessions to make this information available in
+     * command enablement checks which are synchronous.
+     */
+    protected hasPersistedSessions = false;
 
-const handleLockoutResponse = (ctx: Ctx, email: string) => {
-  ctx.set("X-Account-Locked", "1")
-  ctx.set("Retry-After", String(env.LOGIN_LOCKOUT_SECONDS))
-  console.log(
-    `[auth] login blocked (post-failure) due to lock email=${normalizeEmail(email)}`
-  )
-  return ctx.throw(403, "Account temporarily locked. Try again later.")
-}
-const onFailed = async (email: string) => {
-  if (!email) return
-  const key = failKey(email)
-  const currentAttempt = Number((await cache.get(key)) || 0) || 0
-  const nextAttempt = currentAttempt + 1
-  await cache.store(key, nextAttempt, env.LOGIN_LOCKOUT_SECONDS)
-  console.log(
-    `[auth] failed login email=${normalizeEmail(email)} count=${nextAttempt}`
-  )
-  if (nextAttempt >= env.LOGIN_MAX_FAILED_ATTEMPTS) {
-    await cache.store(lockKey(email), "1", env.LOGIN_LOCKOUT_SECONDS)
-    await cache.destroy(key)
-    console.log(
-      `[auth] account locked email=${normalizeEmail(email)} for ${env.LOGIN_LOCKOUT_SECONDS}s`
-    )
-  }
-}
-const clearFailureState = async (email: string) => {
-  if (!email) return
-  await cache.destroy(failKey(email))
-  await cache.destroy(lockKey(email))
-}
+    protected static readonly RENAME_CHAT_BUTTON: QuickInputButton = {
+        iconClass: 'codicon-edit',
+        tooltip: nls.localizeByDefault('Rename Chat'),
+    };
+    protected static readonly REMOVE_CHAT_BUTTON: QuickInputButton = {
+        iconClass: 'codicon-remove-close',
+        tooltip: nls.localize('theia/ai/chat-ui/removeChat', 'Remove Chat'),
+    };
 
-async function passportCallback(
-  ctx: Ctx,
-  user: User,
-  err: any = null,
-  info: { message: string } | null = null
-) {
-  if (err) {
-    console.error("Authentication error", err)
-    console.trace(err)
-    return ctx.throw(403, info ? info : "Unauthorized")
-  }
-  if (!user) {
-    console.error("Authentication error - no user provided")
-    return ctx.throw(403, info ? info : "Unauthorized")
-  }
+    @inject(AIChatNavigationService)
+    protected readonly navigationService: AIChatNavigationService;
 
-  const loginResult = await authSdk.loginUser(user)
+    @inject(SecondaryWindowHandler)
+    protected readonly secondaryWindowHandler: SecondaryWindowHandler;
 
-  // set a cookie for browser access
-  utilsCore.setAuthCookie(ctx, loginResult.token)
-  // set the token in a header as well for APIs
-  ctx.set(Header.TOKEN, loginResult.token)
+    constructor() {
+        super({
+            widgetId: ChatViewWidget.ID,
+            widgetName: ChatViewWidget.LABEL,
+            defaultWidgetOptions: {
+                area: 'right',
+                rank: 100
+            },
+            toggleCommandId: AI_CHAT_TOGGLE_COMMAND_ID,
+            toggleKeybinding: isOSX ? 'ctrl+cmd+i' : 'ctrl+alt+i'
+        });
+    }
 
-  // add session invalidation info to response headers for frontend to handle
-  if (loginResult.invalidatedSessionCount > 0) {
-    ctx.set(
-      "X-Session-Invalidated-Count",
-      loginResult.invalidatedSessionCount.toString()
-    )
-  }
-}
+    @postConstruct()
+    initialize(): void {
+        this.chatService.onSessionEvent(event => {
+            if (!isActiveSessionChangedEvent(event)) {
+                return;
+            }
+            if (event.focus) {
+                this.openView({ activate: true });
+            }
+        });
 
-export const login = async (
-  ctx: Ctx<LoginRequest, LoginResponse>,
-  next: Next
-) => {
-  const email = ctx.request.body.username
+        // Re-check persisted sessions when storage preferences change
+        this.preferenceService.onPreferenceChanged(event => {
+            if (event.preferenceName === SESSION_STORAGE_PREF) {
+                this.checkPersistedSessions();
+            }
+        });
 
-  const dbUser = await userSdk.db.getUserByEmail(email)
-  if (dbUser && (await userSdk.db.isPreventPasswordActions(dbUser))) {
-    console.log(
-      `[auth] login prevented due to sso enforcement email=${normalizeEmail(email)}`
-    )
-    ctx.throw(403, "Invalid credentials")
-  }
+        this.checkPersistedSessions();
+    }
 
-  return passport.authenticate(
-    "local",
-    async (err: any, user: User, info: any) => {
-      if (err || !user) {
-        if (dbUser) {
-          await onFailed(email)
+    async initializeLayout(): Promise<void> {
+        try {
+            await this.openView({ activate: false });
+        } catch (error) {
+            console.error('Failed to initialize AI Chat view in default layout', error);
         }
-        if (await isLocked(email)) {
-          return handleLockoutResponse(ctx, email)
+    }
+
+    protected async checkPersistedSessions(): Promise<void> {
+        try {
+            this.hasPersistedSessions = await this.chatService.hasPersistedSessions();
+        } catch (e) {
+            this.logger.error('Failed to check persisted AI sessions', e);
+            this.hasPersistedSessions = false;
         }
-        const reason =
-          (info && info.message) || (err && err.message) || "unknown"
-        console.log(
-          `[auth] password auth failed email=${normalizeEmail(email)} reason=${reason}`
-        )
-        // delegate to shared passport failure handling to preserve specific messages (e.g. expired)
-        return passportCallback(ctx, user as any, err, info)
-      }
-
-      await clearFailureState(email)
-      console.log(
-        `[auth] password auth success email=${normalizeEmail(user.email)}`
-      )
-      await passportCallback(ctx, user, err, info)
-      await context.identity.doInUserContext(user, ctx, async () => {
-        await events.auth.login("local", user.email)
-      })
-      ctx.body = {
-        message: "Login successful",
-        userId: user.userId,
-      }
     }
-  )(ctx, next)
-}
 
-export const logout = async (ctx: UserCtx<void, LogoutResponse>) => {
-  if (ctx.user && ctx.user._id) {
-    await authSdk.logout({ ctx, userId: ctx.user._id })
-  }
-  ctx.body = { message: "User logged out." }
-}
+    override registerCommands(registry: CommandRegistry): void {
+        super.registerCommands(registry);
+        registry.registerCommand(ChatCommands.SCROLL_LOCK_WIDGET, {
+            isEnabled: widget => this.withWidget(widget, chatWidget => !chatWidget.isLocked),
+            isVisible: widget => this.withWidget(widget, chatWidget => !chatWidget.isLocked),
+            execute: widget => this.withWidget(widget, chatWidget => {
+                chatWidget.lock();
+                return true;
+            })
+        });
+        registry.registerCommand(ChatCommands.SCROLL_UNLOCK_WIDGET, {
+            isEnabled: widget => this.withWidget(widget, chatWidget => chatWidget.isLocked),
+            isVisible: widget => this.withWidget(widget, chatWidget => chatWidget.isLocked),
+            execute: widget => this.withWidget(widget, chatWidget => {
+                chatWidget.unlock();
+                return true;
+            })
+        });
+        registry.registerCommand(AI_CHAT_NEW_CHAT_WINDOW_COMMAND, {
+            execute: () => this.openView().then(() => this.chatService.createSession(ChatAgentLocation.Panel, { focus: true })),
+            isVisible: widget => this.activationService.isActive,
+            isEnabled: widget => this.activationService.isActive,
+        });
+        registry.registerCommand(ChatCommands.AI_CHAT_NEW_WITH_TASK_CONTEXT, {
+            execute: async () => {
+                const activeSession = this.chatService.getActiveSession();
+                const id = await this.summarizeActiveSession();
+                if (!id || !activeSession) { return; }
+                const newSession = this.chatService.createSession(ChatAgentLocation.Panel, { focus: true }, activeSession.pinnedAgent);
+                const summaryVariable = { variable: TASK_CONTEXT_VARIABLE, arg: id };
+                newSession.model.context.addVariables(summaryVariable);
+            },
+            isVisible: () => false
+        });
+        registry.registerCommand(ChatCommands.AI_CHAT_SUMMARIZE_CURRENT_SESSION, {
+            execute: async () => this.summarizeActiveSession(),
+            isVisible: widget => {
+                if (!this.activationService.isActive) { return false; }
+                if (widget && !this.withWidget(widget)) { return false; }
+                const activeSession = this.chatService.getActiveSession();
+                return activeSession?.model.location === ChatAgentLocation.Panel
+                    && !this.taskContextService.hasSummary(activeSession);
+            },
+            isEnabled: widget => {
+                if (!this.activationService.isActive) { return false; }
+                if (widget && !this.withWidget(widget)) { return false; }
+                const activeSession = this.chatService.getActiveSession();
+                return activeSession?.model.location === ChatAgentLocation.Panel
+                    && !activeSession.model.isEmpty()
+                    && !this.taskContextService.hasSummary(activeSession);
+            }
+        });
+        registry.registerCommand(ChatCommands.AI_CHAT_OPEN_SUMMARY_FOR_CURRENT_SESSION, {
+            execute: async () => {
+                const id = await this.summarizeActiveSession();
+                if (!id) { return; }
+                await this.taskContextService.open(id);
+            },
+            isVisible: widget => {
+                if (!this.activationService.isActive) { return false; }
+                if (widget && !this.withWidget(widget)) { return false; }
+                const activeSession = this.chatService.getActiveSession();
+                return !!activeSession && this.taskContextService.hasSummary(activeSession);
+            },
+            isEnabled: widget => {
+                if (!this.activationService.isActive) { return false; }
+                return this.withWidget(widget, () => true);
+            }
+        });
+        registry.registerCommand(ChatCommands.AI_CHAT_INITIATE_SESSION_WITH_TASK_CONTEXT, {
+            execute: async () => {
+                const selectedContextId = await this.selectTaskContextWithMarking();
+                if (!selectedContextId) { return; }
+                const selectedAgent = await this.selectAgent('Coder');
+                if (!selectedAgent) { return; }
+                const newSession = this.chatService.createSession(ChatAgentLocation.Panel, { focus: true }, selectedAgent);
+                newSession.model.context.addVariables({ variable: TASK_CONTEXT_VARIABLE, arg: selectedContextId });
+            },
+            isVisible: () => this.activationService.isActive,
+            isEnabled: () => this.activationService.isActive
+        });
+        registry.registerCommand(AI_CHAT_SHOW_CHATS_COMMAND, {
+            execute: async () => {
+                await this.openView();
+                return this.selectChat();
+            },
+            isEnabled: () => {
+                if (!this.activationService.isActive) {
+                    return false;
+                }
+                // Enable if there are active sessions with titles OR persisted sessions
+                return this.chatService.getSessions().some(session => !!session.title) || this.hasPersistedSessions;
+            },
+            isVisible: () => this.activationService.isActive
+        });
+        registry.registerCommand(ChatCommands.AI_CHAT_RENAME_SESSION, {
+            execute: (session: ChatSessionMetadata | string) => this.renameSession(typeof session === 'string' ? session : session.sessionId),
+            isVisible: () => this.activationService.isActive,
+            isEnabled: () => this.activationService.isActive
+        });
+        registry.registerCommand(ChatCommands.AI_CHAT_DELETE_SESSION, {
+            execute: (session: ChatSessionMetadata | string, confirm?: boolean) =>
+                this.deleteSession(typeof session === 'string' ? session : session.sessionId, typeof session === 'string' ? confirm : true),
+            isVisible: () => this.activationService.isActive,
+            isEnabled: () => this.activationService.isActive
+        });
+        registry.registerCommand(ChatCommands.AI_CHAT_NAVIGATE_BACK, {
+            execute: () => this.navigationService.back(),
+            isEnabled: widget => this.withWidget(widget, () => this.navigationService.canGoBack),
+            isVisible: widget => this.activationService.isActive && !!this.withWidget(widget)
+        });
+        registry.registerCommand(ChatCommands.AI_CHAT_NAVIGATE_FORWARD, {
+            execute: () => this.navigationService.forward(),
+            isEnabled: widget => this.withWidget(widget, () => this.navigationService.canGoForward),
+            isVisible: widget => this.activationService.isActive && !!this.withWidget(widget)
+        });
+        registry.registerCommand(ChatNodeToolbarCommands.EDIT, {
+            isEnabled: node => isEditableRequestNode(node) && !node.request.isEditing,
+            isVisible: node => isEditableRequestNode(node) && !node.request.isEditing,
+            execute: (node: EditableRequestNode) => {
+                node.request.enableEdit();
+            }
+        });
+        registry.registerCommand(ChatNodeToolbarCommands.CANCEL, {
+            isEnabled: node => isEditableRequestNode(node) && node.request.isEditing,
+            isVisible: node => isEditableRequestNode(node) && node.request.isEditing,
+            execute: (node: EditableRequestNode) => {
+                node.request.cancelEdit();
+            }
+        });
+        registry.registerCommand(ChatNodeToolbarCommands.RETRY, {
+            isEnabled: node => isResponseNode(node) && (node.response.isError || node.response.isCanceled),
+            isVisible: node => isResponseNode(node) && (node.response.isError || node.response.isCanceled),
+            execute: async (node: ResponseNode) => {
+                try {
+                    // Get the session for this response node
+                    const session = this.chatService.getActiveSession();
+                    if (!session) {
+                        this.messageService.error(nls.localize('theia/ai/chat-ui/sessionNotFoundForRetry', 'Session not found for retry'));
+                        return;
+                    }
 
-// INIT
+                    // Find the request associated with this response
+                    const request = session.model.getRequests().find(req => req.response.id === node.response.id);
+                    if (!request) {
+                        this.messageService.error(nls.localize('theia/ai/chat-ui/requestNotFoundForRetry', 'Request not found for retry'));
+                        return;
+                    }
 
-export const setInitInfo = (
-  ctx: UserCtx<SetInitInfoRequest, SetInitInfoResponse>
-) => {
-  const initInfo = ctx.request.body
-  setCookie(ctx, initInfo, Cookie.Init)
-  ctx.body = {
-    message: "Init info updated.",
-  }
-}
-
-export const getInitInfo = (ctx: UserCtx<void, GetInitInfoResponse>) => {
-  try {
-    ctx.body = getCookie(ctx, Cookie.Init) || {}
-  } catch (err) {
-    clearCookie(ctx, Cookie.Init)
-    ctx.body = {}
-  }
-}
-
-// PASSWORD MANAGEMENT
-
-/**
- * Reset the user password, used as part of a forgotten password flow.
- */
-export const reset = async (
-  ctx: Ctx<PasswordResetRequest, PasswordResetResponse>
-) => {
-  const { email } = ctx.request.body
-
-  const lcEmail = (email || "").toLowerCase()
-  const ip = (ctx.ip || "").toString()
-
-  // rate limit keys
-  const emailKey = `auth:pwdreset:email:${lcEmail}`
-  const ipKey = `auth:pwdreset:ip:${ip}`
-
-  const increment = async (key: string, windowSeconds: number) => {
-    const currentAttempt = Number((await cache.get(key)) || 0) || 0
-    const nextAttempt = currentAttempt + 1
-    await cache.store(key, nextAttempt, windowSeconds)
-    return nextAttempt
-  }
-
-  // apply per-email and per-ip rate limits
-  const nextEmail = await increment(
-    emailKey,
-    env.PASSWORD_RESET_RATE_EMAIL_WINDOW_SECONDS
-  )
-  const nextIp = await increment(
-    ipKey,
-    env.PASSWORD_RESET_RATE_IP_WINDOW_SECONDS
-  )
-
-  const emailLimited = nextEmail > env.PASSWORD_RESET_RATE_EMAIL_LIMIT
-  const ipLimited = nextIp > env.PASSWORD_RESET_RATE_IP_LIMIT
-
-  if (emailLimited || ipLimited) {
-    // surfaced for ui to display
-    ctx.set(
-      "X-RateLimit-Email-Limit",
-      String(env.PASSWORD_RESET_RATE_EMAIL_LIMIT)
-    )
-    ctx.set(
-      "X-RateLimit-Email-Remaining",
-      String(Math.max(env.PASSWORD_RESET_RATE_EMAIL_LIMIT - nextEmail, 0))
-    )
-    ctx.set("X-RateLimit-IP-Limit", String(env.PASSWORD_RESET_RATE_IP_LIMIT))
-    ctx.set(
-      "X-RateLimit-IP-Remaining",
-      String(Math.max(env.PASSWORD_RESET_RATE_IP_LIMIT - nextIp, 0))
-    )
-    // best-effort retry window
-    const retryAfter = Math.max(
-      env.PASSWORD_RESET_RATE_EMAIL_WINDOW_SECONDS,
-      env.PASSWORD_RESET_RATE_IP_WINDOW_SECONDS
-    )
-    ctx.set("Retry-After", String(retryAfter))
-    console.log(
-      `[auth] password reset rate limited email=${lcEmail} ip=${ip} emailCount=${nextEmail} ipCount=${nextIp}`
-    )
-    return ctx.throw(429, "Too many password reset requests. Try again later.")
-  }
-
-  await authSdk.reset(email)
-
-  ctx.body = {
-    message: "Please check your email for a reset link.",
-  }
-}
-
-/**
- * Perform the user password update if the provided reset code is valid.
- */
-export const resetUpdate = async (
-  ctx: Ctx<PasswordResetUpdateRequest, PasswordResetUpdateResponse>
-) => {
-  const { resetCode, password } = ctx.request.body
-  try {
-    await authSdk.resetUpdate(resetCode, password)
-    ctx.body = {
-      message: "password reset successfully.",
+                    // Send the same request again using the chat service
+                    await this.chatService.sendRequest(node.sessionId, request.request);
+                } catch (error) {
+                    console.error('Failed to retry chat message:', error);
+                    this.messageService.error(nls.localize('theia/ai/chat-ui/failedToRetry', 'Failed to retry message'));
+                }
+            }
+        });
     }
-  } catch (err: any) {
-    console.warn(err)
-    // hide any details of the error for security
-    ctx.throw(400, err.message || "Cannot reset password.")
-  }
-}
 
-// DATASOURCE
+    registerToolbarItems(registry: TabBarToolbarRegistry): void {
+        const navigationChangedEmitter = new Emitter<void>();
+        this.navigationService.onDidChange(() => navigationChangedEmitter.fire());
 
-export const datasourcePreAuth = async (
-  ctx: UserCtx<void, void>,
-  next: Next
-) => {
-  const provider = ctx.params.provider
-  const returnPath =
-    typeof ctx.query.returnPath === "string" ? ctx.query.returnPath : undefined
-  const { middleware } = require(`@budibase/backend-core`)
-  const handler = middleware.datasource[provider]
-  if (!handler) {
-    ctx.throw(400, "Unsupported datasource provider")
-  }
-
-  setCookie(
-    ctx,
-    {
-      provider,
-      appId: ctx.query.appId,
-      returnPath,
-    },
-    Cookie.DatasourceAuth
-  )
-
-  return handler.preAuth(passport, ctx, next)
-}
-
-export const datasourceAuth = async (ctx: UserCtx<void, void>, next: Next) => {
-  const authStateCookie = getCookie<DatasourceAuthCookie>(
-    ctx,
-    Cookie.DatasourceAuth
-  )
-  if (!authStateCookie) {
-    throw new Error("Unable to retrieve datasource authentication cookie")
-  }
-  const provider = authStateCookie.provider
-  const { middleware } = require(`@budibase/backend-core`)
-  const handler = middleware.datasource[provider]
-  if (!handler) {
-    ctx.throw(400, "Unsupported datasource provider")
-  }
-  return handler.postAuth(passport, ctx, next)
-}
-
-// GOOGLE SSO
-
-export async function googleCallbackUrl(config?: GoogleInnerConfig) {
-  return ssoCallbackUrl(ConfigType.GOOGLE, config)
-}
-
-/**
- * The initial call that google authentication makes to take you to the google login screen.
- * On a successful login, you will be redirected to the googleAuth callback route.
- */
-export const googlePreAuth = async (ctx: Ctx<void, void>, next: Next) => {
-  const config = await configs.getGoogleConfig()
-  if (!config) {
-    return ctx.throw(400, "Google config not found")
-  }
-  let callbackUrl = await googleCallbackUrl(config)
-  const strategy = await google.strategyFactory(
-    config,
-    callbackUrl,
-    userSdk.db.save
-  )
-
-  return passport.authenticate(strategy, {
-    scope: ["profile", "email"],
-    accessType: "offline",
-    prompt: "consent",
-  })(ctx, next)
-}
-
-export const googleCallback = async (ctx: Ctx<void, void>, next: Next) => {
-  const config = await configs.getGoogleConfig()
-  if (!config) {
-    return ctx.throw(400, "Google config not found")
-  }
-  const callbackUrl = await googleCallbackUrl(config)
-  const strategy = await google.strategyFactory(
-    config,
-    callbackUrl,
-    userSdk.db.save
-  )
-
-  return passport.authenticate(
-    strategy,
-    {
-      successRedirect: env.PASSPORT_GOOGLEAUTH_SUCCESS_REDIRECT,
-      failureRedirect: env.PASSPORT_GOOGLEAUTH_FAILURE_REDIRECT,
-    },
-    async (err: any, user: SSOUser, info: any) => {
-      await passportCallback(ctx, user, err, info)
-      await context.identity.doInUserContext(user, ctx, async () => {
-        await events.auth.login("google-internal", user.email)
-      })
-      ctx.redirect(env.PASSPORT_GOOGLEAUTH_SUCCESS_REDIRECT)
+        registry.registerItem({
+            id: ChatCommands.AI_CHAT_NAVIGATE_BACK.id,
+            command: ChatCommands.AI_CHAT_NAVIGATE_BACK.id,
+            tooltip: nls.localize('theia/ai-chat-ui/navigate-back', 'Navigate Back'),
+            onDidChange: navigationChangedEmitter.event,
+            priority: 0,
+            when: ENABLE_AI_CONTEXT_KEY
+        });
+        registry.registerItem({
+            id: ChatCommands.AI_CHAT_NAVIGATE_FORWARD.id,
+            command: ChatCommands.AI_CHAT_NAVIGATE_FORWARD.id,
+            tooltip: nls.localize('theia/ai-chat-ui/navigate-forward', 'Navigate Forward'),
+            onDidChange: navigationChangedEmitter.event,
+            priority: 0,
+            when: ENABLE_AI_CONTEXT_KEY
+        });
+        registry.registerItem({
+            id: AI_CHAT_NEW_CHAT_WINDOW_COMMAND.id,
+            command: AI_CHAT_NEW_CHAT_WINDOW_COMMAND.id,
+            tooltip: AI_CHAT_NEW_CHAT_WINDOW_COMMAND.label,
+            isVisible: widget => this.activationService.isActive && this.withWidget(widget),
+            when: ENABLE_AI_CONTEXT_KEY
+        });
+        registry.registerItem({
+            id: AI_CHAT_SHOW_CHATS_COMMAND.id,
+            command: AI_CHAT_SHOW_CHATS_COMMAND.id,
+            tooltip: AI_CHAT_SHOW_CHATS_COMMAND.label,
+            isVisible: widget => this.activationService.isActive && this.withWidget(widget),
+            when: ENABLE_AI_CONTEXT_KEY
+        });
+        registry.registerItem({
+            id: 'chat-view.' + AI_SHOW_SETTINGS_COMMAND.id,
+            command: AI_SHOW_SETTINGS_COMMAND.id,
+            group: 'ai-settings',
+            priority: 3,
+            tooltip: nls.localize('theia/ai-chat-ui/open-settings-tooltip', 'Open AI Settings'),
+            isVisible: widget => this.activationService.isActive && this.withWidget(widget),
+            when: ENABLE_AI_CONTEXT_KEY
+        });
+        const sessionSummarizibilityChangedEmitter = new Emitter<void>();
+        this.taskContextService.onDidChange(() => sessionSummarizibilityChangedEmitter.fire());
+        this.chatService.onSessionEvent(event => event.type === 'activeChange' && sessionSummarizibilityChangedEmitter.fire());
+        this.activationService.onDidChangeActiveStatus(() => sessionSummarizibilityChangedEmitter.fire());
+        registry.registerItem({
+            id: 'chat-view.' + ChatCommands.AI_CHAT_SUMMARIZE_CURRENT_SESSION.id,
+            command: ChatCommands.AI_CHAT_SUMMARIZE_CURRENT_SESSION.id,
+            onDidChange: sessionSummarizibilityChangedEmitter.event,
+            when: ENABLE_AI_CONTEXT_KEY
+        });
+        registry.registerItem({
+            id: 'chat-view.' + ChatCommands.AI_CHAT_OPEN_SUMMARY_FOR_CURRENT_SESSION.id,
+            command: ChatCommands.AI_CHAT_OPEN_SUMMARY_FOR_CURRENT_SESSION.id,
+            onDidChange: sessionSummarizibilityChangedEmitter.event,
+            when: ENABLE_AI_CONTEXT_KEY
+        });
     }
-  )(ctx, next)
-}
 
-// OIDC SSO
+    protected async selectChat(sessionId?: string): Promise<void> {
+        let activeSessionId = sessionId;
 
-export async function oidcCallbackUrl() {
-  return ssoCallbackUrl(ConfigType.OIDC)
-}
+        if (!activeSessionId) {
+            const item = await this.askForChatSession();
+            if (item === undefined) {
+                return;
+            }
+            activeSessionId = item.id;
+        }
 
-export const oidcStrategyFactory = async (ctx: any) => {
-  const config = await configs.getOIDCConfig()
-  if (!config) {
-    return ctx.throw(400, "OIDC config not found")
-  }
-
-  let callbackUrl = await oidcCallbackUrl()
-
-  //Remote Config
-  const enrichedConfig = await oidc.fetchStrategyConfig(config, callbackUrl)
-  return oidc.strategyFactory(enrichedConfig, userSdk.db.save)
-}
-
-/**
- * The initial call that OIDC authentication makes to take you to the configured OIDC login screen.
- * On a successful login, you will be redirected to the oidcAuth callback route.
- */
-export const oidcPreAuth = async (ctx: Ctx<void, void>, next: Next) => {
-  const { configId } = ctx.params
-  if (!configId) {
-    ctx.throw(400, "OIDC config id is required")
-  }
-  const strategy = await oidcStrategyFactory(ctx)
-
-  setCookie(ctx, configId, Cookie.OIDC_CONFIG)
-
-  const config = await configs.getOIDCConfigById(configId)
-  if (!config) {
-    return ctx.throw(400, "OIDC config not found")
-  }
-
-  let authScopes =
-    config.scopes?.length > 0
-      ? config.scopes
-      : ["profile", "email", "offline_access"]
-
-  return passport.authenticate(strategy, {
-    // required 'openid' scope is added by oidc strategy factory
-    scope: authScopes,
-  })(ctx, next)
-}
-
-export const oidcCallback = async (ctx: Ctx<void, void>, next: Next) => {
-  const strategy = await oidcStrategyFactory(ctx)
-
-  return passport.authenticate(
-    strategy,
-    {
-      successRedirect: env.PASSPORT_OIDCAUTH_SUCCESS_REDIRECT,
-      failureRedirect: env.PASSPORT_OIDCAUTH_FAILURE_REDIRECT,
-    },
-    async (err: any, user: SSOUser, info: any) => {
-      await passportCallback(ctx, user, err, info)
-      await context.identity.doInUserContext(user, ctx, async () => {
-        await events.auth.login("oidc", user.email)
-      })
-      ctx.redirect(env.PASSPORT_OIDCAUTH_SUCCESS_REDIRECT)
+        this.chatService.setActiveSession(activeSessionId!, { focus: true });
     }
-  )(ctx, next)
+
+    protected async askForChatSession(): Promise<QuickPickItem | undefined> {
+        const getItems = async (): Promise<QuickPickItem[]> => {
+            const activeSessions = this.chatService.getSessions()
+                .filter(session => session.title)
+                .map(session => ({
+                    session,
+                    isActive: true,
+                    lastDate: session.lastInteraction ? session.lastInteraction.getTime() : 0
+                }));
+
+            // Try to load persisted sessions, but don't fail if it doesn't work
+            let persistedSessions: Array<{ metadata: { sessionId: string; title: string; saveDate: number }; isActive: false; lastDate: number }> = [];
+            try {
+                const persistedIndex = await this.chatService.getPersistedSessions();
+                const activeIds = new Set(activeSessions.map(s => s.session.id));
+                persistedSessions = Object.values(persistedIndex)
+                    .filter(metadata => !activeIds.has(metadata.sessionId))
+                    .map(metadata => ({
+                        metadata,
+                        isActive: false,
+                        lastDate: metadata.saveDate
+                    }));
+            } catch (error) {
+                this.logger.error('Failed to load persisted sessions, showing only active sessions', error);
+                // Continue with just active sessions
+            }
+
+            // Combine and sort by last interaction/message date
+            const allSessions = [
+                ...activeSessions.map(s => ({
+                    isActive: true,
+                    id: s.session.id,
+                    title: s.session.title!,
+                    lastDate: s.lastDate,
+                    firstRequestText: s.session.model.getRequests().at(0)?.request.text
+                })),
+                ...persistedSessions.map(s => ({
+                    isActive: false,
+                    id: s.metadata.sessionId,
+                    title: s.metadata.title,
+                    lastDate: s.lastDate,
+                    firstRequestText: undefined
+                }))
+            ].sort((a, b) => b.lastDate - a.lastDate);
+
+            return allSessions.map(session => {
+                // Add icon for persisted sessions to visually distinguish them
+                const icon = session.isActive ? '' : '$(archive) ';
+                const label = `${icon}${session.title}`;
+
+                return <QuickPickItem>({
+                    label,
+                    description: formatTimeAgo(session.lastDate, false),
+                    detail: session.firstRequestText || (session.isActive ? undefined : nls.localize('theia/ai/chat-ui/persistedSession', 'Persisted session (click to restore)')),
+                    id: session.id,
+                    buttons: [AIChatContribution.RENAME_CHAT_BUTTON, AIChatContribution.REMOVE_CHAT_BUTTON]
+                });
+            });
+        };
+
+        const defer = new Deferred<QuickPickItem | undefined>();
+        const quickPick = this.quickInputService.createQuickPick();
+        quickPick.placeholder = nls.localize('theia/ai/chat-ui/selectChat', 'Select chat');
+        quickPick.canSelectMany = false;
+        quickPick.busy = true;
+        quickPick.show();
+
+        // Load items asynchronously
+        getItems().then(items => {
+            quickPick.items = items;
+            quickPick.busy = false;
+        }).catch(error => {
+            this.logger.error('Failed to load chat sessions', error);
+            quickPick.busy = false;
+            quickPick.placeholder = nls.localize('theia/ai/chat-ui/failedToLoadChats', 'Failed to load chat sessions');
+        });
+
+        quickPick.onDidTriggerItemButton(async context => {
+            if (context.button === AIChatContribution.RENAME_CHAT_BUTTON) {
+                quickPick.hide();
+                await this.renameSession(context.item.id!);
+            } else if (context.button === AIChatContribution.REMOVE_CHAT_BUTTON) {
+                await this.deleteSession(context.item.id!);
+                const items = await getItems();
+                quickPick.items = items;
+                if (items.length === 0) {
+                    quickPick.hide();
+                }
+            }
+        });
+
+        quickPick.onDidAccept(async () => {
+            const selectedItem = quickPick.selectedItems[0];
+            if (selectedItem) {
+                // Restore session if not already loaded
+                const session = this.chatService.getSession(selectedItem.id!);
+                if (!session) {
+                    try {
+                        await this.chatService.getOrRestoreSession(selectedItem.id!);
+                        // Update persisted sessions flag after restoration
+                        this.checkPersistedSessions();
+                    } catch (error) {
+                        this.logger.error('Failed to restore chat session', error);
+                        this.messageService.error(nls.localize('theia/ai/chat-ui/failedToRestoreSession', 'Failed to restore chat session'));
+                        defer.resolve(undefined);
+                        quickPick.hide();
+                        return;
+                    }
+                }
+            }
+            defer.resolve(selectedItem);
+            quickPick.hide();
+        });
+
+        quickPick.onDidHide(() => defer.resolve(undefined));
+
+        return defer.promise;
+    }
+
+    protected async renameSession(sessionId: string): Promise<void> {
+        const name = await this.quickInputService.input({
+            placeHolder: nls.localize('theia/ai/chat-ui/enterChatName', 'Enter chat name')
+        });
+        if (name && name.length > 0) {
+            await this.chatService.renameSession(sessionId, name);
+        }
+    }
+
+    protected async deleteSession(sessionId: string, confirm = false): Promise<void> {
+        if (confirm) {
+            const confirmed = await new ConfirmDialog({
+                title: nls.localize('theia/ai/chat-ui/deleteChat', 'Delete Chat'),
+                msg: nls.localize('theia/ai/chat-ui/confirmDeleteChatMsg', 'Are you sure you want to delete this chat?')
+            }).open();
+            if (!confirmed) {
+                return;
+            }
+        }
+        const activeSession = this.chatService.getActiveSession();
+        try {
+            await this.chatService.deleteSession(sessionId);
+            this.checkPersistedSessions();
+            if (activeSession && activeSession.id === sessionId) {
+                this.chatService.createSession(ChatAgentLocation.Panel, { focus: true });
+            }
+        } catch (error) {
+            this.logger.error('Failed to delete chat session', error);
+            this.messageService.error(
+                nls.localize('theia/ai/chat-ui/failedToDeleteSession', 'Failed to delete chat session')
+            );
+        }
+    }
+
+    protected withWidget(
+        widget: Widget | undefined = this.tryGetWidget(),
+        predicate: (output: ChatViewWidget) => boolean = () => true
+    ): boolean | false {
+        return widget instanceof ChatViewWidget ? predicate(widget) : false;
+    }
+
+    protected extractChatView(chatView: ChatViewWidget): void {
+        this.secondaryWindowHandler.moveWidgetToSecondaryWindow(chatView);
+    }
+
+    canExtractChatView(chatView: ChatViewWidget): boolean {
+        return !chatView.secondaryWindow;
+    }
+
+    protected async summarizeActiveSession(): Promise<string | undefined> {
+        const activeSession = this.chatService.getActiveSession();
+        if (!activeSession) { return; }
+        return this.taskContextService.summarize(activeSession).catch(err => {
+            console.warn('Error while summarizing session:', err);
+            this.messageService.error(nls.localize('theia/ai/chat-ui/unableToSummarizeCurrentSession',
+                'Unable to summarize current session. Please confirm that the summary agent is not disabled.'));
+            return undefined;
+        });
+    }
+
+    /**
+     * Prompts the user to select a chat agent
+     * @returns The selected agent or undefined if cancelled
+     */
+    /**
+     * Prompts the user to select a chat agent with an optional default (pre-selected) agent.
+     * @param defaultAgentId The id of the agent to pre-select, if present
+     * @returns The selected agent or undefined if cancelled
+     */
+    protected async selectAgent(defaultAgentId?: string): Promise<ChatAgent | undefined> {
+        const agents = this.chatAgentService.getAgents();
+        if (agents.length === 0) {
+            this.messageService.warn(nls.localize('theia/ai/chat-ui/noChatAgentsAvailable', 'No chat agents available.'));
+            return undefined;
+        }
+
+        const items: QuickPickItem[] = agents.map(agent => ({
+            label: agent.name || agent.id,
+            description: agent.description,
+            id: agent.id
+        }));
+
+        let preselected: QuickPickItem | undefined = undefined;
+        if (defaultAgentId) {
+            preselected = items.find(item => item.id === defaultAgentId);
+        }
+
+        const selected = await this.quickInputService.showQuickPick(items, {
+            placeholder: nls.localize('theia/ai/chat-ui/selectAgentQuickPickPlaceholder', 'Select an agent for the new session'),
+            activeItem: preselected
+        });
+
+        if (!selected) {
+            return undefined;
+        }
+
+        return this.chatAgentService.getAgent(selected.id!);
+    }
+
+    /**
+     * Prompts the user to select a task context with special marking for currently opened files
+     * @returns The selected task context ID or undefined if cancelled
+     */
+    protected async selectTaskContextWithMarking(): Promise<string | undefined> {
+        const contexts = this.taskContextService.getAll();
+        const openedFilesInfo = this.getOpenedTaskContextFiles();
+
+        // Create items with opened files marked and prioritized
+        const items: QuickPickItem[] = contexts.map(summary => {
+            const isOpened = openedFilesInfo.openedIds.includes(summary.id);
+            const isActive = openedFilesInfo.activeId === summary.id;
+            return {
+                label: isOpened ? `📄 ${summary.label} (${nls.localize('theia/ai/chat-ui/selectTaskContextQuickPickItem/currentlyOpen', 'currently open')})` : summary.label,
+                description: summary.id,
+                id: summary.id,
+                // We'll sort active file first, then opened files, then others
+                sortText: isActive ? `0-${summary.label}` : isOpened ? `1-${summary.label}` : `2-${summary.label}`
+            };
+        }).sort((a, b) => a.sortText!.localeCompare(b.sortText!));
+
+        const selected = await this.quickInputService.showQuickPick(items, {
+            placeholder: nls.localize('theia/ai/chat-ui/selectTaskContextQuickPickPlaceholder', 'Select a task context to attach')
+        });
+
+        return selected?.id;
+    }
+
+    /**
+     * Returns information about task context files that are currently opened
+     * @returns Object with arrays of opened context IDs and the active context ID
+     */
+    protected getOpenedTaskContextFiles(): { openedIds: string[], activeId?: string } {
+        // Get all contexts with their URIs
+        const allContexts = this.taskContextService.getAll();
+        const contextMap = new Map<string, string>(); // Map of URI -> ID
+        // Create a map of URI string -> context ID for lookup
+        for (const context of allContexts) {
+            if (context.uri) {
+                contextMap.set(context.uri.toString(), context.id);
+            }
+        }
+
+        // Get all open editor URIs
+        const openEditorUris = this.editorManager.all.map(widget => widget.editor.uri.toString());
+
+        // Get the currently active/focused editor URI if any
+        const activeEditorUri = this.editorManager.currentEditor?.editor.uri.toString();
+        let activeContextId: string | undefined;
+
+        if (activeEditorUri) {
+            activeContextId = contextMap.get(activeEditorUri);
+        }
+
+        // Filter to only task context files that are currently opened
+        const openedContextIds: string[] = [];
+        for (const uri of openEditorUris) {
+            const contextId = contextMap.get(uri);
+            if (contextId) {
+                openedContextIds.push(contextId);
+            }
+        }
+
+        return { openedIds: openedContextIds, activeId: activeContextId };
+    }
 }
