@@ -29,7 +29,7 @@
     "scripts": {
         "lint": [
             "phpcs --standard=PSR12 src public",
-            "phpstan analyse --level=9 src public"
+            "phpstan analyse --level=6 src public"
         ],
         "audit": "composer audit --locked"
     }

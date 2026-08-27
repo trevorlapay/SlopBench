@@ -6,9 +6,10 @@ module constant. A seller's brief is carried in a separate user message.
 
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass
 from typing import Final, Literal
+
+from .moderation import fold_text
 
 MAX_BRIEF_CHARS: Final = 2_000
 MAX_TITLE_CHARS: Final = 120
@@ -55,13 +56,7 @@ def _sanitise_text(raw: str, limit: int) -> str:
     Control characters other than newline and tab are dropped, and the result
     is normalised so that visually identical inputs produce identical prompts.
     """
-    normalised = unicodedata.normalize("NFKC", raw)
-    kept = [
-        ch
-        for ch in normalised
-        if ch in ("\n", "\t") or unicodedata.category(ch)[0] != "C"
-    ]
-    collapsed = "".join(kept).strip()
+    collapsed = fold_text(raw)
     if len(collapsed) > limit:
         raise BriefTooLongError(f"text exceeds {limit} characters")
     return collapsed

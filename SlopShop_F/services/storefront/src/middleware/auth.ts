@@ -87,7 +87,11 @@ export function setSessionCookie(res: Response, customerId: string): void {
 }
 
 export function requireSession(req: Request, res: Response, next: NextFunction): void {
-  const raw = req.cookies?.[SESSION_COOKIE];
+  const cookies: unknown = req.cookies;
+  const raw =
+    typeof cookies === 'object' && cookies !== null && 'ss_session' in cookies
+      ? (cookies as { ss_session?: unknown }).ss_session
+      : undefined;
   const session = typeof raw === 'string' ? verifySession(raw) : null;
   if (session === null) {
     res.status(401).json({ error: 'unauthenticated' });

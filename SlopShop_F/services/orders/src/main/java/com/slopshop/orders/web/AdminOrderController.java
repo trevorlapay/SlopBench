@@ -3,6 +3,7 @@ package com.slopshop.orders.web;
 import com.slopshop.orders.domain.FulfilmentEvent;
 import com.slopshop.orders.domain.Order;
 import com.slopshop.orders.persistence.MerchantOrderRepository;
+import com.slopshop.orders.persistence.MerchantOrderRepository.MerchantOrderSummary;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.Valid;
@@ -65,7 +66,7 @@ public class AdminOrderController {
     }
 
     @GetMapping("/{orderId}")
-    public ResponseEntity<Order> get(
+    public ResponseEntity<MerchantOrderSummary> get(
             @AuthenticationPrincipal Jwt principal, @PathVariable UUID orderId) {
 
         return orders.findForMerchant(orderId, merchantOf(principal))
@@ -74,7 +75,7 @@ public class AdminOrderController {
     }
 
     @GetMapping
-    public List<Order> list(
+    public List<MerchantOrderSummary> list(
             @AuthenticationPrincipal Jwt principal,
             @RequestParam(defaultValue = "25") @Min(1) @Max(100) int limit,
             @RequestParam(defaultValue = "0") @Min(0) int offset) {

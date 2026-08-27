@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "pg"
+require "securerandom"
 
 require_relative "audit_log"
 
@@ -59,9 +60,17 @@ module SlopShop
 
       class UnknownTask < ArgumentError; end
 
+      # Operator identifiers the audit trail will accept.
+      ACTOR_PATTERN = /\A[a-z0-9][a-z0-9._-]{2,63}\z/
+
+      class InvalidActor < ArgumentError; end
+
       def initialize(connection, audit_log)
         @connection = connection
         @audit = audit_log
+        # Statement names are unique per instance, so two runs sharing a
+        # connection cannot collide on a prepared-statement name.
+        @statement_suffix = SecureRandom.hex(8)
       end
 
       # Opens a connection using the settings in the environment.
@@ -95,15 +104,18 @@ module SlopShop
       def run(task_name, batch_size: DEFAULT_BATCH_SIZE, actor: "operator")
         task = TASKS[task_name]
         raise UnknownTask, "unknown backfill: #{task_name}" if task.nil?
+        raise InvalidActor, "actor is not an operator id" unless ACTOR_PATTERN.match?(actor.to_s)
+
+        statement_name = "backfill_#{task_name}_#{@statement_suffix}"
 
         size = batch_size.clamp(1, MAX_BATCH_SIZE)
         cursor = "00000000-0000-0000-0000-000000000000"
         updated = 0
 
-        @connection.prepare("backfill_#{task_name}", task[:sql])
+        @connection.prepare(statement_name, task[:sql])
 
         loop do
-          result = @connection.exec_prepared("backfill_#{task_name}", [cursor, size])
+          result = @connection.exec_prepared(statement_name, [cursor, size])
           break if result.ntuples.zero?
 
           updated += result.ntuples
@@ -138,7 +150,11 @@ module SlopShop
         )
         raise
       ensure
-        @connection.exec("DEALLOCATE ALL") if @connection && !@connection.finished?
+        # Only this run's statement is released; other users of the connection
+        # keep theirs.
+        if defined?(statement_name) && statement_name && @connection && !@connection.finished?
+          @connection.exec("DEALLOCATE #{@connection.escape_identifier(statement_name)}")
+        end
       end
     end
   end

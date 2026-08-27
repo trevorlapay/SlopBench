@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { equals } from '../lib/compare.js';
 import { getJson } from '../lib/httpClient.js';
-import { setSessionCookie } from '../middleware/auth.js';
+import { requireSession, setSessionCookie } from '../middleware/auth.js';
 
 const IDENTITY_BASE = 'https://identity.internal.slopshop.example';
 
@@ -100,10 +100,10 @@ export function sessionRoutes(): Router {
   });
 
   /**
-   * Lets a seller confirm that the storefront can reach one of the internal
-   * endpoints their integration depends on.
+   * Lets a signed-in seller confirm that the storefront can reach one of the
+   * internal endpoints their integration depends on.
    */
-  router.post('/diagnostics/reachability', async (req, res, next) => {
+  router.post('/diagnostics/reachability', requireSession, async (req, res, next) => {
     const target = z
       .enum(['catalog', 'orders', 'identity'])
       .safeParse((req.body as { target?: unknown } | undefined)?.target);

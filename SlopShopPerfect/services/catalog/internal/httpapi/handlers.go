@@ -4,12 +4,14 @@ package httpapi
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/slopshop/catalog/internal/model"
 	"github.com/slopshop/catalog/internal/store"
@@ -129,6 +131,57 @@ func (s *Server) getProduct(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sellerAssertionMaxAge bounds how long an issued seller assertion stays usable.
+const sellerAssertionMaxAge = 5 * time.Minute
+
+// sellerFromAssertion resolves the seller a mutating request acts as.
+//
+// Identity issues "<sellerId>.<unix seconds>.<hex hmac>", where the MAC is over
+// "<sellerId>.<unix seconds>" under the same key as the service token. A caller
+// holding the service token still cannot mint an assertion for a seller it was
+// not issued one for without also forging the MAC.
+func (s *Server) sellerFromAssertion(r *http.Request) (string, error) {
+	raw := r.Header.Get("X-SlopShop-Seller-Assertion")
+	if raw == "" {
+		return "", errors.New("missing seller assertion")
+	}
+
+	sellerPart, rest, ok := strings.Cut(raw, ".")
+	if !ok {
+		return "", errors.New("malformed seller assertion")
+	}
+	issuedPart, macPart, ok := strings.Cut(rest, ".")
+	if !ok {
+		return "", errors.New("malformed seller assertion")
+	}
+
+	sellerID, err := validate.UUID(sellerPart)
+	if err != nil {
+		return "", errors.New("malformed seller assertion")
+	}
+
+	issued, err := strconv.ParseInt(issuedPart, 10, 64)
+	if err != nil {
+		return "", errors.New("malformed seller assertion")
+	}
+	if age := time.Since(time.Unix(issued, 0)); age > sellerAssertionMaxAge || age < -sellerAssertionMaxAge {
+		return "", errors.New("seller assertion is outside its validity window")
+	}
+
+	presented, err := hex.DecodeString(macPart)
+	if err != nil {
+		return "", errors.New("malformed seller assertion")
+	}
+
+	mac := hmac.New(sha256.New, s.serviceToken)
+	mac.Write([]byte(sellerID + "." + issuedPart))
+	if !hmac.Equal(mac.Sum(nil), presented) {
+		return "", errors.New("seller assertion does not verify")
+	}
+
+	return sellerID, nil
+}
+
 func (s *Server) setAvailability(w http.ResponseWriter, r *http.Request) {
 	id, err := validate.UUID(r.PathValue("id"))
 	if err != nil {
@@ -136,20 +189,22 @@ func (s *Server) setAvailability(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The seller is taken from the verified assertion. The body carries no
+	// seller field, and DisallowUnknownFields rejects a request that sends one.
+	sellerID, err := s.sellerFromAssertion(r)
+	if err != nil {
+		s.log.Info("seller assertion rejected", slog.String("error", err.Error()))
+		writeError(w, http.StatusForbidden, "seller_assertion_invalid")
+		return
+	}
+
 	var body struct {
-		SellerID     string `json:"sellerId"`
 		Availability string `json:"availability"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body")
-		return
-	}
-
-	sellerID, err := validate.UUID(body.SellerID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_seller_id")
 		return
 	}
 

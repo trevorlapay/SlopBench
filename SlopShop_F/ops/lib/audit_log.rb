@@ -12,6 +12,12 @@ module SlopShop
     class AuditLog
       MAX_FIELD_CHARS = 512
 
+      # How far into nested structures the redaction walk descends.
+      MAX_REDACTION_DEPTH = 4
+
+      # Elements kept from any one array value.
+      MAX_ARRAY_ELEMENTS = 32
+
       # Fields that are recorded for every event.
       REQUIRED_FIELDS = %i[actor action subject outcome].freeze
 
@@ -68,8 +74,16 @@ module SlopShop
           out[name] =
             if REDACTED_KEYS.any? { |needle| name.downcase.include?(needle) }
               REDACTION
-            elsif value.is_a?(Hash) && depth.zero?
-              sanitise(value, depth: 1)
+            elsif value.is_a?(Hash) && depth < MAX_REDACTION_DEPTH
+              sanitise(value, depth: depth + 1)
+            elsif value.is_a?(Array) && depth < MAX_REDACTION_DEPTH
+              value.first(MAX_ARRAY_ELEMENTS).map do |element|
+                element.is_a?(Hash) ? sanitise(element, depth: depth + 1) : truncate(element)
+              end
+            elsif value.is_a?(Hash) || value.is_a?(Array)
+              # Deeper than the walk goes, so the contents are not inspectable
+              # and are dropped rather than stringified into the record.
+              REDACTION
             else
               truncate(value)
             end

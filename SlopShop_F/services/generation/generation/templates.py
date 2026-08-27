@@ -11,7 +11,8 @@ from __future__ import annotations
 import re
 import string
 from dataclasses import dataclass
-from typing import Any, Final, Mapping
+from collections.abc import Mapping
+from typing import Any, Final
 
 from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescape
 from markupsafe import Markup
@@ -75,7 +76,7 @@ class SubjectTemplate:
     text: str
 
     @staticmethod
-    def parse(raw: str) -> "SubjectTemplate":
+    def parse(raw: str) -> SubjectTemplate:
         """Validates a stored template.
 
         Every field the template references must be a plain, named placeholder

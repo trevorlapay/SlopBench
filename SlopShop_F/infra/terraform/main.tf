@@ -41,12 +41,58 @@ locals {
 # Encryption key
 # ---------------------------------------------------------------------------
 
+data "aws_caller_identity" "current" {}
+
 resource "aws_kms_key" "platform" {
   description             = "Customer managed key for ${local.name_prefix} data at rest"
   enable_key_rotation     = true
   rotation_period_in_days = 365
   deletion_window_in_days = 30
   multi_region            = false
+
+  # Without an explicit policy the key falls back to the account default, which
+  # grants use to every principal IAM allows. This one names the key
+  # administrators and the four services that may encrypt with it, and confines
+  # service use to this account.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "KeyAdministration"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "PlatformServiceUse"
+        Effect = "Allow"
+        Principal = {
+          Service = [
+            "s3.amazonaws.com",
+            "rds.amazonaws.com",
+            "logs.${var.region}.amazonaws.com",
+            "secretsmanager.amazonaws.com",
+          ]
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      },
+    ]
+  })
 }
 
 resource "aws_kms_alias" "platform" {
@@ -194,7 +240,40 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "access_logs" {
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.platform.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    id     = "expire-logs"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = 400
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
@@ -368,7 +447,32 @@ resource "aws_db_instance" "primary" {
   performance_insights_kms_key_id       = aws_kms_key.platform.arn
   performance_insights_retention_period = 93
 
+  monitoring_interval = 30
+  monitoring_role_arn = aws_iam_role.rds_monitoring.arn
+
   enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
+}
+
+data "aws_iam_policy_document" "rds_monitoring_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["monitoring.rds.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "rds_monitoring" {
+  name               = "${local.name_prefix}-rds-monitoring"
+  assume_role_policy = data.aws_iam_policy_document.rds_monitoring_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "rds_monitoring" {
+  role       = aws_iam_role.rds_monitoring.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
 }
 
 # ---------------------------------------------------------------------------

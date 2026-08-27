@@ -28,6 +28,10 @@ COLLECTOR: Final = "/usr/local/bin/slopshop-collect"
 COLLECT_TIMEOUT_SECONDS: Final = 60
 MAX_FLEET_BYTES: Final = 4 * 1024 * 1024
 
+# Most output one collector run may produce. Anything beyond this is
+# discarded and the host is recorded as unreachable.
+MAX_COLLECTOR_OUTPUT_BYTES: Final = 1024 * 1024
+
 # Longest string the version parser will look at. Agents that predate the
 # semver rollout sometimes report a whole banner line here.
 MAX_VERSION_CHARS: Final = 64
@@ -41,6 +45,20 @@ _VERSION_PATTERN: Final = re.compile(
 )
 
 _HOSTNAME_PATTERN: Final = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _string_mapping(value: Any) -> dict[str, str]:
+    """Coerces a YAML value to a flat string mapping, or an empty one."""
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): str(v) for k, v in value.items() if isinstance(k, str)}
+
+
+def _jsonable(value: Any) -> Any:
+    """Reduces a collector value to something json.dumps will accept."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
 
 
 @dataclass(slots=True)
@@ -77,11 +95,21 @@ def load_fleet(path: Path) -> list[Host]:
 
     The file is a checked-in YAML document listing every host in the fleet.
     """
+    # The size is taken from the directory entry, so an oversized file is
+    # refused before any of it is read into memory.
+    if path.stat().st_size > MAX_FLEET_BYTES:
+        raise FleetError(f"{path} is larger than {MAX_FLEET_BYTES} bytes")
+
     raw = path.read_bytes()
     if len(raw) > MAX_FLEET_BYTES:
         raise FleetError(f"{path} is larger than {MAX_FLEET_BYTES} bytes")
 
-    document = yaml.safe_load(raw.decode("utf-8"))
+    try:
+        decoded = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FleetError(f"{path} is not valid UTF-8") from exc
+
+    document = yaml.safe_load(decoded)
     if not isinstance(document, dict):
         raise FleetError(f"{path} did not parse to a mapping")
 
@@ -102,11 +130,7 @@ def load_fleet(path: Path) -> list[Host]:
                 name=name,
                 role=str(entry.get("role", "unknown")),
                 region=str(entry.get("region", "unknown")),
-                tags={
-                    str(k): str(v)
-                    for k, v in (entry.get("tags") or {}).items()
-                    if isinstance(k, str)
-                },
+                tags=_string_mapping(entry.get("tags")),
             )
         )
 
@@ -127,24 +151,46 @@ def parse_agent_literal(payload: str) -> Any:
 
 def collect(host: Host) -> dict[str, Any]:
     """Runs the collector against one host and returns the facts it reports."""
-    completed = subprocess.run(  # noqa: S603
+    # Output is read through a bounded pipe rather than buffered whole, so a
+    # noisy collector cannot drive an unbounded allocation here.
+    with subprocess.Popen(  # noqa: S603
         [COLLECTOR, "--host", host.name, "--format", "json", "--timeout", "30"],
-        capture_output=True,
-        text=True,
-        timeout=COLLECT_TIMEOUT_SECONDS,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         shell=False,
         env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
-    )
+    ) as process:
+        if process.stdout is None:
+            process.kill()
+            logger.warning("collector produced no readable pipe for %s", host.name)
+            return {"host": host.name, "reachable": False}
 
-    if completed.returncode != 0:
-        logger.warning("collector failed for %s: exit %d", host.name, completed.returncode)
+        try:
+            payload = process.stdout.read(MAX_COLLECTOR_OUTPUT_BYTES + 1)
+            process.wait(timeout=COLLECT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            logger.warning("collector timed out for %s", host.name)
+            return {"host": host.name, "reachable": False}
+
+    if process.returncode != 0:
+        logger.warning("collector failed for %s: exit %s", host.name, process.returncode)
+        return {"host": host.name, "reachable": False}
+
+    if len(payload) > MAX_COLLECTOR_OUTPUT_BYTES:
+        logger.warning("collector output for %s exceeded the cap", host.name)
         return {"host": host.name, "reachable": False}
 
     try:
-        facts = json.loads(completed.stdout)
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.warning("collector output for %s is not valid UTF-8", host.name)
+        return {"host": host.name, "reachable": False}
+
+    try:
+        facts = json.loads(text)
     except json.JSONDecodeError:
-        facts = parse_agent_literal(completed.stdout)
+        facts = parse_agent_literal(text)
 
     if not isinstance(facts, dict):
         return {"host": host.name, "reachable": False}
@@ -157,7 +203,9 @@ def collect(host: Host) -> dict[str, Any]:
         "region": host.region,
         "reachable": True,
         "agent_version": version,
-        "facts": {k: v for k, v in facts.items() if isinstance(k, str)},
+        "facts": {
+            str(k): _jsonable(v) for k, v in facts.items() if isinstance(k, str)
+        },
     }
 
 

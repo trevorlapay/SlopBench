@@ -72,10 +72,20 @@ def create_account(
         cur.execute(
             """
             INSERT INTO accounts (id, email, password_hash, is_active)
-            VALUES (%s, %s, %s, TRUE)
+            VALUES (%s, %s, %s, FALSE)
             """,
             (account_id, email, password_hash),
         )
+
+
+def activate_account(conn: psycopg.Connection, account_id: str) -> bool:
+    """Marks a verified account usable. Returns False if it was already active."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE accounts SET is_active = TRUE WHERE id = %s AND is_active = FALSE",
+            (account_id,),
+        )
+        return cur.rowcount == 1
 
 
 def update_password_hash(conn: psycopg.Connection, account_id: str, password_hash: str) -> None:

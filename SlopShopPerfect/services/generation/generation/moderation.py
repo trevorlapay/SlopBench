@@ -8,6 +8,7 @@ the input.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
@@ -63,18 +64,35 @@ _ALLOWED_ARTIFACT_TYPES: Final[frozenset[str]] = frozenset(
     {"image/png", "image/jpeg", "image/webp"}
 )
 
-# Magic bytes for each accepted type. The declared type must agree with the
-# bytes actually present.
-_MAGIC: Final[dict[str, tuple[bytes, ...]]] = {
-    "image/png": (b"\x89PNG\r\n\x1a\n",),
-    "image/jpeg": (b"\xff\xd8\xff",),
-    "image/webp": (b"RIFF",),
+# Signature bytes for each accepted type, as (offset, expected) pairs. Every
+# pair must match. WebP needs both halves: "RIFF" on its own is the container
+# marker it shares with WAV and AVI.
+_MAGIC: Final[dict[str, tuple[tuple[int, bytes], ...]]] = {
+    "image/png": ((0, b"\x89PNG\r\n\x1a\n"),),
+    "image/jpeg": ((0, b"\xff\xd8\xff"),),
+    "image/webp": ((0, b"RIFF"), (8, b"WEBP")),
 }
+
+
+def fold_text(raw: str) -> str:
+    """Folds text to the form the renderer will actually see.
+
+    Screening and prompt assembly both go through this, so a brief cannot be
+    written to miss a pattern here and still normalise into the blocked form
+    further down the pipeline.
+    """
+    normalised = unicodedata.normalize("NFKC", raw)
+    kept = [
+        ch
+        for ch in normalised
+        if ch in ("\n", "\t") or unicodedata.category(ch)[0] != "C"
+    ]
+    return "".join(kept).strip()
 
 
 def screen_text(text: str) -> Verdict:
     """Classifies a seller brief."""
-    scanned = text[:MAX_SCANNED_CHARS]
+    scanned = fold_text(text)[:MAX_SCANNED_CHARS]
 
     refusals = tuple(
         name for name, pattern in _REFUSE_PATTERNS.items() if pattern.search(scanned)
@@ -97,7 +115,10 @@ def screen_artifact(declared_type: str, payload: bytes, max_bytes: int) -> Verdi
 
     if declared_type not in _ALLOWED_ARTIFACT_TYPES:
         reasons.append("unsupported_media_type")
-    elif not any(payload.startswith(prefix) for prefix in _MAGIC[declared_type]):
+    elif not all(
+        payload[offset : offset + len(signature)] == signature
+        for offset, signature in _MAGIC[declared_type]
+    ):
         reasons.append("magic_bytes_mismatch")
 
     if len(payload) == 0:

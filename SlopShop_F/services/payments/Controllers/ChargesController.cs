@@ -21,16 +21,10 @@ public sealed class ChargesController : ControllerBase
         _log = log;
     }
 
-    public sealed record ChargeLine(
-        [Required] Guid ProductId,
-        [Range(1, 20)] int Quantity,
-        [Range(0, AmountMath.MaxChargeMinor)] long UnitPriceMinor);
-
+    // The caller names an order and supplies an idempotency key. Amounts,
+    // currency and tax are read from the order, never accepted from the client.
     public sealed record ChargeRequest(
         [Required] Guid OrderId,
-        [Required][RegularExpression("^(GBP|EUR|USD)$")] string Currency,
-        [Required][MinLength(1)][MaxLength(50)] IReadOnlyList<ChargeLine> Lines,
-        [Range(0, 10000)] int TaxBasisPoints,
         [Required][StringLength(64, MinimumLength = 8)] string IdempotencyKey);
 
     public sealed record ChargeResponse(Guid ChargeId, long TotalMinor, string Currency, string Status);
@@ -51,35 +45,56 @@ public sealed class ChargesController : ControllerBase
             return Unauthorized(new { error = "unauthenticated" });
         }
 
-        long subtotal;
-        long tax;
-        long total;
-        try
-        {
-            long[] extended = new long[request.Lines.Count];
-            for (int i = 0; i < request.Lines.Count; i++)
-            {
-                ChargeLine line = request.Lines[i];
-                extended[i] = AmountMath.Extend(line.UnitPriceMinor, line.Quantity);
-            }
-
-            subtotal = AmountMath.Sum(extended);
-            tax = AmountMath.ApplyBasisPoints(subtotal, request.TaxBasisPoints);
-            total = checked(subtotal + tax);
-        }
-        catch (Exception e) when (e is OverflowException or ArgumentOutOfRangeException)
-        {
-            return BadRequest(new { error = "amount_out_of_range" });
-        }
-
-        if (AmountMath.RejectionReason(total, request.Currency) is string reason)
-        {
-            return BadRequest(new { error = reason });
-        }
-
         await using NpgsqlConnection connection = await _db.OpenConnectionAsync(cancellationToken);
         await using NpgsqlTransaction transaction =
             await connection.BeginTransactionAsync(cancellationToken);
+
+        // The order is loaded under the caller's own id and locked for the
+        // transaction. An order belonging to someone else returns no row, so a
+        // caller cannot raise a charge against an order that is not theirs.
+        long subtotal;
+        long tax;
+        long total;
+        string currency;
+
+        await using (NpgsqlCommand order = new(
+            """
+            SELECT currency, subtotal_minor, tax_minor, total_minor, status
+              FROM orders
+             WHERE id = $1 AND customer_id = $2
+               FOR UPDATE
+            """, connection, transaction))
+        {
+            order.Parameters.AddWithValue(request.OrderId);
+            order.Parameters.AddWithValue(customerId);
+
+            await using NpgsqlDataReader reader = await order.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                return NotFound(new { error = "order_not_found" });
+            }
+
+            currency = reader.GetString(0);
+            subtotal = reader.GetInt64(1);
+            tax = reader.GetInt64(2);
+            total = reader.GetInt64(3);
+
+            if (reader.GetString(4) is not ("PENDING" or "AUTHORISED"))
+            {
+                return Conflict(new { error = "order_not_chargeable" });
+            }
+        }
+
+        if (total != checked(subtotal + tax))
+        {
+            _log.LogError("order {OrderId} has inconsistent stored amounts", request.OrderId);
+            return StatusCode(StatusCodes.Status500InternalServerError, new { error = "internal_error" });
+        }
+
+        if (AmountMath.RejectionReason(total, currency) is string reason)
+        {
+            return BadRequest(new { error = reason });
+        }
 
         // A retry of the same request returns the original charge.
         await using (NpgsqlCommand existing = new(
@@ -117,7 +132,7 @@ public sealed class ChargesController : ControllerBase
             insert.Parameters.AddWithValue(subtotal);
             insert.Parameters.AddWithValue(tax);
             insert.Parameters.AddWithValue(total);
-            insert.Parameters.AddWithValue(request.Currency);
+            insert.Parameters.AddWithValue(currency);
             insert.Parameters.AddWithValue(request.IdempotencyKey);
 
             await insert.ExecuteNonQueryAsync(cancellationToken);
@@ -130,7 +145,7 @@ public sealed class ChargesController : ControllerBase
             chargeId, request.OrderId, total);
 
         return Created($"/v1/charges/{chargeId}",
-            new ChargeResponse(chargeId, total, request.Currency, "authorised"));
+            new ChargeResponse(chargeId, total, currency, "authorised"));
     }
 
     [HttpGet("{chargeId:guid}")]

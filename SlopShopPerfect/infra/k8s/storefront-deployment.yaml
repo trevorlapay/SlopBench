@@ -30,6 +30,8 @@ spec:
       labels:
         app.kubernetes.io/name: storefront
         app.kubernetes.io/part-of: slopshop
+      annotations:
+        platform.slopshop.example/inject-runtime-config: storefront
     spec:
       serviceAccountName: storefront
       automountServiceAccountToken: false
@@ -72,12 +74,16 @@ spec:
               value: production
             - name: PORT
               value: "8080"
-          # Projected from the platform secret store by the CSI driver.
-          envFrom:
-            - secretRef:
-                name: storefront-runtime
-                optional: false
+            - name: RUNTIME_CONFIG_DIR
+              value: /var/run/storefront/config
+          # Projected from the platform secret store by the CSI driver and read
+          # from disk at start-up. Environment variables are visible in
+          # /proc/<pid>/environ and are inherited by any child process, so the
+          # runtime secrets are not passed that way.
           volumeMounts:
+            - name: runtime-config
+              mountPath: /var/run/storefront/config
+              readOnly: true
             - name: tmp
               mountPath: /tmp
             - name: cache
@@ -103,6 +109,12 @@ spec:
             timeoutSeconds: 2
             failureThreshold: 2
       volumes:
+        # Populated at admission by the platform config injector, which reads
+        # the annotation above. Nothing is written into the manifest itself.
+        - name: runtime-config
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         # Writable paths the Node runtime needs.
         - name: tmp
           emptyDir:

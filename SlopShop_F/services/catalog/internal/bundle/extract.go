@@ -90,6 +90,13 @@ func Extract(r io.Reader, destination string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("bundle: resolve destination: %w", err)
 	}
+	// Resolve the destination through any symlinks once, up front, so the
+	// containment test below compares real paths rather than lexical ones.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Result{}, fmt.Errorf("bundle: resolve destination: %w", err)
+	}
 	info, err := os.Stat(root)
 	if err != nil {
 		return Result{}, fmt.Errorf("bundle: stat destination: %w", err)
@@ -107,6 +114,7 @@ func Extract(r io.Reader, destination string) (Result, error) {
 	tarReader := tar.NewReader(gzipReader)
 
 	var result Result
+	entries := 0
 	for {
 		header, err := tarReader.Next()
 		if errors.Is(err, io.EOF) {
@@ -116,7 +124,10 @@ func Extract(r io.Reader, destination string) (Result, error) {
 			return result, fmt.Errorf("bundle: read entry: %w", err)
 		}
 
-		if result.Files >= MaxEntries {
+		// Every member counts toward the cap, including directories, so a
+		// directory-only archive cannot run past the entry budget.
+		entries++
+		if entries > MaxEntries {
 			return result, fmt.Errorf("%w: more than %d entries", ErrTooLarge, MaxEntries)
 		}
 
@@ -149,7 +160,7 @@ func Extract(r io.Reader, destination string) (Result, error) {
 				ErrTooLarge, MaxTotalBytes)
 		}
 
-		written, err := writeRegular(target, tarReader, header.Size)
+		written, err := writeRegular(root, target, tarReader, header.Size)
 		if err != nil {
 			return result, err
 		}
@@ -164,9 +175,19 @@ func Extract(r io.Reader, destination string) (Result, error) {
 // writeRegular creates one file and copies at most declared bytes into it.
 //
 // The file must not already exist and must not be a symbolic link.
-func writeRegular(target string, source io.Reader, declared int64) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(target), directoryMode); err != nil {
+func writeRegular(root, target string, source io.Reader, declared int64) (int64, error) {
+	parent := filepath.Dir(target)
+	if err := os.MkdirAll(parent, directoryMode); err != nil {
 		return 0, fmt.Errorf("bundle: create parent: %w", err)
+	}
+	// The parent may have been an existing symlink; confirm where it actually
+	// landed before opening anything inside it.
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return 0, fmt.Errorf("bundle: resolve parent: %w", err)
+	}
+	if resolvedParent != root && !strings.HasPrefix(resolvedParent, root+string(os.PathSeparator)) {
+		return 0, fmt.Errorf("%w: %q", ErrUnsafeEntry, parent)
 	}
 
 	file, err := os.OpenFile(

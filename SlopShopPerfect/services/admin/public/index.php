@@ -15,6 +15,7 @@ use SlopShop\Admin\View\Escaper;
 
 const SESSION_NAME = 'ss_admin';
 const CSRF_FIELD = 'csrf_token';
+const SEEN_NONCES = 'seen_assertion_nonces';
 
 /** @var array<string, callable(array<string, mixed>): string> $routes */
 $routes = [
@@ -126,6 +127,9 @@ function requireOperator(): string
 
     $operator = $decoded['operator'] ?? null;
     $issuedAt = $decoded['issued_at'] ?? null;
+    $nonce = $decoded['nonce'] ?? null;
+    $method = $decoded['method'] ?? null;
+    $path = $decoded['path'] ?? null;
 
     if (!is_string($operator) || preg_match('/^[a-z0-9._-]{3,64}$/', $operator) !== 1) {
         $reject();
@@ -133,8 +137,52 @@ function requireOperator(): string
     if (!is_int($issuedAt) || abs(time() - $issuedAt) > 300) {
         $reject();
     }
+    if (!is_string($nonce) || preg_match('/^[0-9a-f]{32}$/', $nonce) !== 1) {
+        $reject();
+    }
+
+    // The assertion authorises one request, not any request in the window.
+    $requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+    if ($method !== $requestMethod || $path !== (is_string($requestPath) ? $requestPath : '/')) {
+        $reject();
+    }
+    if (!nonceIsFresh($nonce)) {
+        $reject();
+    }
 
     return $operator;
+}
+
+/**
+ * Records an assertion nonce and reports whether this is its first use.
+ *
+ * Entries older than the assertion window can no longer pass the timestamp
+ * check, so they are pruned rather than kept.
+ */
+function nonceIsFresh(string $nonce): bool
+{
+    $seen = $_SESSION[SEEN_NONCES] ?? [];
+    if (!is_array($seen)) {
+        $seen = [];
+    }
+
+    $cutoff = time() - 600;
+    $seen = array_filter($seen, static fn (int $at): bool => $at >= $cutoff);
+
+    if (array_key_exists($nonce, $seen)) {
+        $_SESSION[SEEN_NONCES] = $seen;
+        return false;
+    }
+
+    if (count($seen) >= 512) {
+        $seen = array_slice($seen, -256, null, true);
+    }
+
+    $seen[$nonce] = time();
+    $_SESSION[SEEN_NONCES] = $seen;
+
+    return true;
 }
 
 function requireCsrfTokenForWrites(): void
@@ -177,7 +225,7 @@ if (!array_key_exists($path, $routes)) {
 
 try {
     /** @var array<string, mixed> $query */
-    $query = is_array($_GET) ? $_GET : [];
+    $query = $_GET;
     $body = $routes[$path]($query);
 } catch (Throwable $e) {
     error_log('admin: request failed: ' . $e->getMessage());

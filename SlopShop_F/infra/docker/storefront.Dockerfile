@@ -41,6 +41,9 @@ COPY --from=build --chown=nonroot:nonroot /src/package.json ./package.json
 
 EXPOSE 8080
 
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
 # Runtime configuration arrives as environment variables projected from the
 # secret store.
 ENTRYPOINT ["/nodejs/bin/node", "dist/server.js"]

@@ -13,15 +13,6 @@ variable "public_subnet_ids" {
   type        = list(string)
 }
 
-variable "reporting_db_secret_arn" {
-  description = <<-EOT
-    ARN of the Secrets Manager secret holding the reporting warehouse
-    credentials. The secret is created and rotated outside this stack by the
-    platform rotation Lambda; Terraform only reads the current version.
-  EOT
-  type        = string
-}
-
 locals {
   edge_name = "slopshop-${var.environment}-edge"
 }
@@ -165,20 +156,6 @@ resource "aws_iam_role_policy_attachment" "discovery" {
 # Reporting warehouse
 # ---------------------------------------------------------------------------
 
-data "aws_secretsmanager_secret" "reporting_db" {
-  arn = var.reporting_db_secret_arn
-}
-
-data "aws_secretsmanager_secret_version" "reporting_db" {
-  secret_id = data.aws_secretsmanager_secret.reporting_db.id
-}
-
-locals {
-  reporting_credentials = jsondecode(
-    data.aws_secretsmanager_secret_version.reporting_db.secret_string
-  )
-}
-
 resource "aws_rds_cluster" "reporting" {
   cluster_identifier = "slopshop-${var.environment}-reporting"
   engine             = "aurora-postgresql"
@@ -186,8 +163,13 @@ resource "aws_rds_cluster" "reporting" {
   engine_version     = "16.4"
 
   database_name   = "reporting"
-  master_username = local.reporting_credentials["username"]
-  master_password = local.reporting_credentials["password"]
+  master_username = "slopshop_reporting"
+
+  # RDS generates the password and writes it straight into Secrets Manager
+  # under the platform key. Terraform never reads it, so it does not reach the
+  # plan, the state file or a variable file.
+  manage_master_user_password   = true
+  master_user_secret_kms_key_id = aws_kms_key.platform.arn
 
   db_subnet_group_name   = aws_db_subnet_group.primary.name
   vpc_security_group_ids = [aws_security_group.database.id]
@@ -206,14 +188,31 @@ resource "aws_rds_cluster" "reporting" {
   iam_database_authentication_enabled = true
   enabled_cloudwatch_logs_exports     = ["postgresql"]
 
+  db_cluster_parameter_group_name = aws_rds_cluster_parameter_group.reporting.name
+
   serverlessv2_scaling_configuration {
     min_capacity = 0.5
     max_capacity = 8
   }
 
   lifecycle {
-    # The rotation Lambda owns the credentials after creation.
-    ignore_changes = [master_username, master_password]
+    ignore_changes = [master_username]
+  }
+}
+
+# Statement logging for the reporting warehouse.
+resource "aws_rds_cluster_parameter_group" "reporting" {
+  name   = "slopshop-${var.environment}-reporting"
+  family = "aurora-postgresql16"
+
+  parameter {
+    name  = "log_statement"
+    value = "ddl"
+  }
+
+  parameter {
+    name  = "log_min_duration_statement"
+    value = "1000"
   }
 }
 
@@ -227,8 +226,13 @@ resource "aws_rds_cluster_instance" "reporting" {
   engine_version      = aws_rds_cluster.reporting.engine_version
   publicly_accessible = false
 
+  auto_minor_version_upgrade = true
+
   performance_insights_enabled    = true
   performance_insights_kms_key_id = aws_kms_key.platform.arn
+
+  monitoring_interval = 30
+  monitoring_role_arn = aws_iam_role.rds_monitoring.arn
 }
 
 output "reporting_endpoint" {

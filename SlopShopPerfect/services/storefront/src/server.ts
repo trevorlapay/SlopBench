@@ -12,8 +12,7 @@ const ALLOWED_ORIGINS = new Set([
   'https://www.slopshop.example',
 ]);
 
-function requiredEnv(name: string): string {
-  const value = process.env[name];
+function required(name: string, value: string | undefined): string {
   if (value === undefined || value.length === 0) {
     throw new Error(`missing required environment variable: ${name}`);
   }
@@ -60,7 +59,9 @@ export function createApp(): express.Express {
   });
 
   app.use(express.json({ limit: '64kb' }));
-  app.use(cookieParser(requiredEnv('SESSION_COOKIE_SECRET')));
+  app.use(
+    cookieParser(required('SESSION_COOKIE_SECRET', process.env.SESSION_COOKIE_SECRET)),
+  );
 
   app.use(
     rateLimit({

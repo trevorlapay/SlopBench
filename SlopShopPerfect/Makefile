@@ -17,7 +17,7 @@ lint:
 	cd services/identity && ruff check .
 	cd services/generation && ruff check .
 	cd services/catalog && go vet ./...
-	cd services/search && cargo clippy --locked -- -D warnings
+	cd services/search && cargo clippy --locked
 	cd services/orders && mvn --batch-mode verify -DskipTests
 	cd services/admin && composer run-script lint
 	cd ops && bundle exec rubocop

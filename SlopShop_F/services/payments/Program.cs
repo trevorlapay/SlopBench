@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -52,15 +53,32 @@ builder.Services.AddAuthorization();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    // Authenticated callers get their own bucket keyed on the token subject.
+    // Everything else shares one small bucket: the forwarding headers are not
+    // trusted here, so the peer address is the mesh sidecar and is the same for
+    // every caller. It must not become a per-caller key.
     options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            context.User.Identity?.Name ?? context.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
-            _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = 60,
-                Window = TimeSpan.FromMinutes(1),
-                QueueLimit = 0,
-            }));
+    {
+        string? subject = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+        return string.IsNullOrEmpty(subject)
+            ? RateLimitPartition.GetFixedWindowLimiter(
+                "unauthenticated",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 30,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                })
+            : RateLimitPartition.GetFixedWindowLimiter(
+                "sub:" + subject,
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 60,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                });
+    });
 });
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>

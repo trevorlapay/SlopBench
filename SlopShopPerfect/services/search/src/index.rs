@@ -1,6 +1,6 @@
 //! An in-memory inverted index over product documents.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::query::{tokenise_document, Query};
 use crate::ranking::{sort_by_score, term_score, CorpusStats};
@@ -47,16 +47,6 @@ impl Index {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.document_lengths.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.document_lengths.is_empty()
     }
 
     #[must_use]
@@ -114,11 +104,13 @@ impl Index {
 
         let stats = self.stats();
 
-        let excluded: HashSet<u32> = query
+        // Exclusion is tested per candidate against the posting lists rather
+        // than by materialising every excluded id, so a query with a common
+        // negated term does no work proportional to the corpus.
+        let excluded: Vec<&Postings> = query
             .exclude
             .iter()
             .filter_map(|term| self.postings.get(term))
-            .flat_map(|postings| postings.keys().copied())
             .collect();
 
         let mut scores: HashMap<u32, f64> = HashMap::new();
@@ -130,7 +122,7 @@ impl Index {
             let documents_containing = u32::try_from(postings.len()).unwrap_or(u32::MAX);
 
             for (&document_id, &frequency) in postings {
-                if excluded.contains(&document_id) {
+                if excluded.iter().any(|postings| postings.contains_key(&document_id)) {
                     continue;
                 }
                 let length = self
@@ -146,8 +138,22 @@ impl Index {
         }
 
         let mut ranked: Vec<(u32, f64)> = scores.into_iter().collect();
+        let wanted = limit.min(MAX_RESULTS);
+
+        // Partition around the cut point before sorting, so only the returned
+        // window is ordered rather than the whole match set.
+        if ranked.len() > wanted && wanted > 0 {
+            ranked.select_nth_unstable_by(wanted - 1, |left, right| {
+                right
+                    .1
+                    .partial_cmp(&left.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+            ranked.truncate(wanted);
+        }
         sort_by_score(&mut ranked);
-        ranked.truncate(limit.min(MAX_RESULTS));
+        ranked.truncate(wanted);
 
         ranked
             .into_iter()

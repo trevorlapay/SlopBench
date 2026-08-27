@@ -1,0 +1,6 @@
+# Shell scripts and Dockerfiles must keep LF endings: a CR in the
+# shebang makes the script unrunnable on the deployment hosts.
+*.sh text eol=lf
+*.Dockerfile text eol=lf
+Makefile text eol=lf
+* text=auto

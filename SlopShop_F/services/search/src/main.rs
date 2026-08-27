@@ -9,7 +9,7 @@ mod query;
 mod ranking;
 
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use axum::extract::{Query as AxumQuery, State};
@@ -28,6 +28,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_LIMIT: usize = 20;
 
 type SharedIndex = Arc<RwLock<Index>>;
+
+/// Service token every non-health route must present, read once at start-up.
+static SERVICE_TOKEN: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct SearchParams {
@@ -148,10 +151,50 @@ async fn healthz() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
+/// Compares two tokens without an early exit on the first differing byte.
+fn tokens_match(presented: &[u8], expected: &[u8]) -> bool {
+    if presented.len() != expected.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (left, right) in presented.iter().zip(expected.iter()) {
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
+/// Rejects any request that does not present the mesh service token.
+async fn require_service_token(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let expected = SERVICE_TOKEN.get().map(String::as_str).unwrap_or_default();
+    if expected.is_empty() {
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default();
+
+    if !tokens_match(presented.as_bytes(), expected.as_bytes()) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    Ok(next.run(request).await)
+}
+
 fn router(state: SharedIndex) -> Router {
-    Router::new()
+    let protected: Router<SharedIndex> = Router::new()
         .route("/v1/search", get(search))
         .route("/v1/documents", post(ingest))
+        .route_layer(axum::middleware::from_fn(require_service_token));
+
+    Router::new()
+        .merge(protected)
         .route("/healthz", get(healthz))
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(TimeoutLayer::new(REQUEST_TIMEOUT))
@@ -174,6 +217,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = std::env::var("SEARCH_LISTEN_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8083".to_owned())
         .parse()?;
+
+    let token = std::env::var("SEARCH_SERVICE_TOKEN")
+        .map_err(|_| "SEARCH_SERVICE_TOKEN is not configured")?;
+    if token.len() < 32 {
+        return Err("SEARCH_SERVICE_TOKEN must be at least 32 characters".into());
+    }
+    let _ = SERVICE_TOKEN.set(token);
 
     let state: SharedIndex = Arc::new(RwLock::new(Index::new()));
     let listener = tokio::net::TcpListener::bind(addr).await?;

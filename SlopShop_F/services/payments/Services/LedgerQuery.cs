@@ -31,6 +31,9 @@ public sealed class LedgerQuery
 
     private const int MaxPageSize = 500;
 
+    /// <summary>Deep paging past this point is refused rather than scanned.</summary>
+    private const int MaxOffset = 50_000;
+
     private readonly NpgsqlDataSource _db;
 
     public LedgerQuery(NpgsqlDataSource db) => _db = db;
@@ -54,6 +57,8 @@ public sealed class LedgerQuery
         int offset,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(statuses);
+
         if (!Orderings.TryGetValue(sortKey, out string? orderBy))
         {
             throw new ArgumentException($"unsupported sort key: {sortKey}", nameof(sortKey));
@@ -88,7 +93,7 @@ public sealed class LedgerQuery
         command.Parameters.AddWithValue(to.AddDays(1).ToDateTime(TimeOnly.MinValue));
         command.Parameters.AddWithValue(statuses.ToArray());
         command.Parameters.AddWithValue(Math.Clamp(limit, 1, MaxPageSize));
-        command.Parameters.AddWithValue(Math.Max(offset, 0));
+        command.Parameters.AddWithValue(Math.Clamp(offset, 0, MaxOffset));
 
         List<LedgerRow> rows = [];
         await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken);

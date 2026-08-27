@@ -14,6 +14,9 @@ module SlopShop
       MAX_BODY_BYTES = 1_048_576
       DIGEST = "SHA256"
 
+      # Signatures already presented, so a captured callback is accepted once.
+      MAX_REMEMBERED_SIGNATURES = 10_000
+
       class InvalidSignature < StandardError; end
 
       # @param secret [String] shared secret, at least 32 bytes
@@ -21,6 +24,8 @@ module SlopShop
         raise ArgumentError, "webhook secret must be at least 32 bytes" if secret.bytesize < 32
 
         @secret = secret.dup.freeze
+        @seen = {}
+        @seen_mutex = Mutex.new
       end
 
       # Returns true when the header authenticates the body.
@@ -35,8 +40,25 @@ module SlopShop
         return false if (now.to_i - timestamp).abs > TOLERANCE_SECONDS
 
         expected = mac("#{timestamp}.#{body}")
+        return false unless OpenSSL.secure_compare(expected, presented)
 
-        OpenSSL.secure_compare(expected, presented)
+        first_use?(presented, now)
+      end
+
+      # Records a signature and reports whether this is its first presentation.
+      # Entries older than twice the tolerance window can no longer pass the
+      # timestamp check on their own and are dropped.
+      def first_use?(signature, now)
+        @seen_mutex.synchronize do
+          cutoff = now.to_i - (TOLERANCE_SECONDS * 2)
+          @seen.delete_if { |_, seen_at| seen_at < cutoff }
+          @seen.shift while @seen.size >= MAX_REMEMBERED_SIGNATURES
+
+          return false if @seen.key?(signature)
+
+          @seen[signature] = now.to_i
+          true
+        end
       end
 
       def sign(body, now: Time.now)

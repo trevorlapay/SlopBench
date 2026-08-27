@@ -62,6 +62,8 @@ spec:
       labels:
         app.kubernetes.io/name: gateway
         app.kubernetes.io/part-of: slopshop
+      annotations:
+        platform.slopshop.example/inject-tls: gateway
     spec:
       serviceAccountName: gateway
       automountServiceAccountToken: true
@@ -141,10 +143,11 @@ spec:
             timeoutSeconds: 2
             failureThreshold: 2
       volumes:
+        # Populated at admission by the platform certificate injector.
         - name: tls
-          secret:
-            secretName: gateway-tls
-            defaultMode: 0400
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         - name: run
           emptyDir:
             sizeLimit: 32Mi

@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import logging
 import os
 from pathlib import Path
 from typing import Annotated, Final
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from . import moderation, prompts
@@ -29,6 +30,18 @@ REQUEST_TIMEOUT: Final = httpx.Timeout(connect=2.0, read=60.0, write=10.0, pool=
 MAX_ARTIFACT_BYTES: Final = 16 * 1024 * 1024
 
 app = FastAPI(title="SlopShop Generation", version="1.5.0", docs_url=None, redoc_url=None)
+
+
+def require_service_caller(request: Request) -> None:
+    """Rejects any request that does not present the gateway's service token."""
+    expected = _required_env("GENERATION_SERVICE_TOKEN")
+
+    scheme, _, presented = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not presented:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "unauthenticated")
+
+    if not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "unauthenticated")
 
 
 def _required_env(name: str) -> str:
@@ -69,7 +82,11 @@ def get_client() -> httpx.Client:
     )
 
 
-@app.post("/v1/renders", status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/v1/renders",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_service_caller)],
+)
 def create_render(
     body: RenderRequest,
     store: Annotated[ArtifactStore, Depends(get_store)],

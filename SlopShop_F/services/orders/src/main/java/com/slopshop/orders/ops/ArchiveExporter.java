@@ -6,8 +6,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -26,6 +28,12 @@ public class ArchiveExporter {
     private static final Path ARCHIVE_TOOL = Path.of("/usr/local/bin/slopshop-archive");
 
     private static final Duration TIMEOUT = Duration.ofMinutes(10);
+
+    /** Archives may only be written beneath this directory. */
+    private static final Path ARCHIVE_ROOT = Path.of("/var/lib/slopshop/archives");
+
+    /** Most tool output retained for the log. */
+    private static final int MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 
     /**
      * Runs the archive tool for one accounting period.
@@ -46,6 +54,14 @@ public class ArchiveExporter {
             throw new IllegalArgumentException("output path must be absolute");
         }
 
+        // The destination is normalised and confirmed to sit under the archive
+        // root, so a caller cannot direct the tool at an arbitrary path.
+        Path normalised = output.normalize();
+        if (!normalised.startsWith(ARCHIVE_ROOT)) {
+            throw new IllegalArgumentException("output path is outside the archive root");
+        }
+        output = normalised;
+
         List<String> command = List.of(
                 ARCHIVE_TOOL.toString(),
                 "--period", String.format("%04d-%02d", year, month),
@@ -53,32 +69,55 @@ public class ArchiveExporter {
                 "--compression", "zstd",
                 "--output", output.toString());
 
-        ProcessBuilder builder = new ProcessBuilder(command);
-        builder.directory(Files.createTempDirectory("slopshop-archive").toFile());
-        builder.redirectErrorStream(true);
+        Path workingDirectory = Files.createTempDirectory("slopshop-archive");
 
-        // Start from an empty environment and add back only what the tool needs.
-        builder.environment().clear();
-        builder.environment().put("LC_ALL", "C");
-        builder.environment().put("TZ", "UTC");
+        try {
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.directory(workingDirectory.toFile());
+            builder.redirectErrorStream(true);
 
-        Process process = builder.start();
+            // Start from an empty environment and add back only what the tool needs.
+            builder.environment().clear();
+            builder.environment().put("LC_ALL", "C");
+            builder.environment().put("TZ", "UTC");
 
-        String output0;
-        try (InputStream stream = process.getInputStream()) {
-            output0 = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            Process process = builder.start();
+
+            String toolOutput;
+            try (InputStream stream = process.getInputStream()) {
+                // Bounded: a noisy tool cannot force an unbounded heap allocation.
+                toolOutput = new String(
+                        stream.readNBytes(MAX_TOOL_OUTPUT_BYTES), StandardCharsets.UTF_8);
+            }
+
+            if (!process.waitFor(TIMEOUT.toMinutes(), TimeUnit.MINUTES)) {
+                process.destroyForcibly();
+                throw new IOException("archive tool did not finish within " + TIMEOUT);
+            }
+
+            int status = process.exitValue();
+            log.info("archive export finished period={}-{} status={}", year, month, status);
+            if (status != 0) {
+                log.warn("archive tool reported: {}", toolOutput.lines().limit(20).toList());
+            }
+            return status;
+        } finally {
+            deleteRecursively(workingDirectory);
         }
+    }
 
-        if (!process.waitFor(TIMEOUT.toMinutes(), TimeUnit.MINUTES)) {
-            process.destroyForcibly();
-            throw new IOException("archive tool did not finish within " + TIMEOUT);
+    /** Removes the run's scratch directory on every exit path. */
+    private static void deleteRecursively(Path root) {
+        try (Stream<Path> entries = Files.walk(root)) {
+            entries.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException e) {
+                    log.warn("could not remove archive scratch entry: {}", e.getMessage());
+                }
+            });
+        } catch (IOException e) {
+            log.warn("could not walk archive scratch directory: {}", e.getMessage());
         }
-
-        int status = process.exitValue();
-        log.info("archive export finished period={}-{} status={}", year, month, status);
-        if (status != 0) {
-            log.warn("archive tool reported: {}", output0.lines().limit(20).toList());
-        }
-        return status;
     }
 }

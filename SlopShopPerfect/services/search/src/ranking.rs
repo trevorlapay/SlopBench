@@ -1,4 +1,4 @@
-//! Okapi BM25 scoring.
+//! Okapi `BM25` scoring.
 //!
 //! Corpus statistics are computed once per query and passed to each term.
 

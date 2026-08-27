@@ -21,11 +21,11 @@ export function escapeHtml(value: string): string {
 
 /** Tagged template that escapes every interpolated value. */
 export function html(strings: TemplateStringsArray, ...values: unknown[]): string {
-  let out = strings[0] ?? '';
-  for (let i = 0; i < values.length; i += 1) {
-    out += escapeHtml(String(values[i]));
-    out += strings[i + 1] ?? '';
-  }
+  let out = strings.at(0) ?? '';
+  values.forEach((value, index) => {
+    out += escapeHtml(String(value));
+    out += strings.at(index + 1) ?? '';
+  });
   return out;
 }
 

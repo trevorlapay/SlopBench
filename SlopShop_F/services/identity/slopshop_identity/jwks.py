@@ -27,6 +27,7 @@ ISSUER: Final = "https://identity.slopshop.example"
 AUDIENCE: Final = "slopshop-internal"
 
 JWKS_CACHE_SECONDS: Final = 300
+JWKS_REFRESH_COOLDOWN: Final = 30
 JWKS_FETCH_TIMEOUT: Final = 5.0
 MAX_TOKEN_BYTES: Final = 8 * 1024
 LEEWAY_SECONDS: Final = 30
@@ -52,6 +53,7 @@ class JwksVerifier:
         )
         self._lock = threading.Lock()
         self._cache: _CachedKeys | None = None
+        self._last_forced_refresh = float("-inf")
 
     def _key_set(self, *, force_refresh: bool = False) -> PyJWKSet:
         with self._lock:
@@ -59,8 +61,7 @@ class JwksVerifier:
                 self._cache is not None
                 and time.monotonic() - self._cache.fetched_at < JWKS_CACHE_SECONDS
             )
-            if fresh_enough and not force_refresh:
-                assert self._cache is not None
+            if fresh_enough and self._cache is not None and not force_refresh:
                 return self._cache.key_set
 
             response = self._client.get(self._jwks_url)
@@ -81,12 +82,29 @@ class JwksVerifier:
         if not isinstance(kid, str) or not kid:
             raise VerificationError("token header carries no key id")
 
-        for key_set in (self._key_set(), self._key_set(force_refresh=True)):
-            for key in key_set.keys:
+        cached = self._key_set()
+        for key in cached.keys:
+            if key.key_id == kid:
+                return key
+
+        # Only an actual miss pays for a refresh, and the refresh is rate
+        # limited so that unknown key ids cannot be used to drive repeated
+        # outbound fetches.
+        if self._refresh_allowed():
+            for key in self._key_set(force_refresh=True).keys:
                 if key.key_id == kid:
                     return key
 
         raise VerificationError(f"no published key with id {kid!r}")
+
+    def _refresh_allowed(self) -> bool:
+        """Permits at most one forced refresh per JWKS_REFRESH_COOLDOWN."""
+        with self._lock:
+            now = time.monotonic()
+            if now - self._last_forced_refresh < JWKS_REFRESH_COOLDOWN:
+                return False
+            self._last_forced_refresh = now
+            return True
 
     def verify(self, token: str) -> dict[str, Any]:
         """Verifies a token and returns its claims.

@@ -72,7 +72,9 @@ class ExportBundle:
         directory.mkdir(parents=True, exist_ok=True, mode=_DIRECTORY_MODE)
         return directory
 
-    def write_artifact(self, slug: str, digest: str, extension: str, payload: bytes) -> ExportedFile:
+    def write_artifact(
+        self, slug: str, digest: str, extension: str, payload: bytes
+    ) -> ExportedFile:
         """Writes one artifact into a listing's export directory."""
         if len(payload) == 0 or len(payload) > MAX_FILE_BYTES:
             raise ValueError(f"payload must be 1..{MAX_FILE_BYTES} bytes")

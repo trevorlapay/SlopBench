@@ -147,6 +147,6 @@ final class ReportController
             'options' => ['min_range' => 1, 'max_range' => self::MAX_ROWS, 'default' => 50],
         ]);
 
-        return is_int($parsed) ? $parsed : 50;
+        return $parsed;
     }
 }

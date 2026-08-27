@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -111,19 +112,21 @@ class ThumbnailPipeline {
   }
 
   static std::vector<std::uint8_t> ReadBounded(const fs::path& path) {
-    std::error_code ec;
-    const auto size = fs::file_size(path, ec);
-    if (ec) {
-      throw std::runtime_error("cannot stat artifact: " + ec.message());
-    }
-    if (size == 0 || size > PPM_MAX_ENCODED_BYTES) {
-      throw std::runtime_error("artifact size is outside the accepted range");
-    }
-
-    std::ifstream in(path, std::ios::binary);
+    // The stream is opened first and the length is taken from the open stream,
+    // so the bytes that are measured are the bytes that are read.
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in) {
       throw std::runtime_error("cannot open artifact for reading");
     }
+
+    const std::streamoff size = in.tellg();
+    if (size < 0) {
+      throw std::runtime_error("cannot determine artifact length");
+    }
+    if (size == 0 || static_cast<std::uintmax_t>(size) > PPM_MAX_ENCODED_BYTES) {
+      throw std::runtime_error("artifact size is outside the accepted range");
+    }
+    in.seekg(0, std::ios::beg);
 
     std::vector<std::uint8_t> buffer(static_cast<std::size_t>(size));
     in.read(reinterpret_cast<char*>(buffer.data()),
@@ -143,11 +146,26 @@ class ThumbnailPipeline {
     return buffer;
   }
 
-  // Writes to a sibling temporary and renames.
+  // Returns 16 hex characters from the platform entropy source.
+  static std::string TemporarySuffix() {
+    std::random_device source;
+    std::uniform_int_distribution<unsigned> nibble(0, 15);
+    static constexpr char kHex[] = "0123456789abcdef";
+
+    std::string out;
+    out.reserve(16);
+    for (int i = 0; i < 16; ++i) {
+      out.push_back(kHex[nibble(source)]);
+    }
+    return out;
+  }
+
+  // Writes to a sibling temporary and renames. The temporary carries a random
+  // suffix, so two concurrent renders cannot land on the same scratch path.
   static void WriteAtomically(const fs::path& target,
                               const std::vector<std::uint8_t>& bytes) {
     fs::path temporary = target;
-    temporary += ".partial";
+    temporary += "." + TemporarySuffix() + ".partial";
 
     {
       std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
