@@ -1,0 +1,1485 @@
+import { consola } from "consola";
+import { compact, flattenDeep, isEqual, mapValues, uniq } from "es-toolkit";
+import { camelCase, get, reduce } from "es-toolkit/compat";
+import { callFunction } from "yummies/common";
+import { typeGuard } from "yummies/type-guard";
+import type { AnyObject } from "yummies/types";
+import type {
+  GenerateApiConfiguration,
+  ParsedRoute,
+  ParsedSchema,
+  RouteLinkInfo,
+  SchemaTypeEnumContent,
+  SchemaTypeObjectContent,
+  SchemaTypePrimitiveContent,
+} from "../../types/index.js";
+import type { CodeGenConfig } from "../configuration.js";
+import {
+  DEFAULT_BODY_ARG_NAME,
+  RESERVED_BODY_ARG_NAMES,
+  RESERVED_HEADER_ARG_NAMES,
+  RESERVED_PATH_ARG_NAMES,
+  RESERVED_QUERY_ARG_NAMES,
+} from "../constants.js";
+import type { ResolvedSwaggerSchema } from "../resolved-swagger-schema.js";
+import type { SchemaComponentsMap } from "../schema-components-map.js";
+import type { SchemaParserFabric } from "../schema-parser/schema-parser-fabric.js";
+import type { SchemaUtils } from "../schema-parser/schema-utils.js";
+import type { TemplatesWorker } from "../templates-worker.js";
+import type { TypeNameFormatter } from "../type-name-formatter.js";
+import { generateId } from "../util/id.js";
+import { SpecificArgNameResolver } from "./util/specific-arg-name-resolver.js";
+
+const CONTENT_KIND = {
+  JSON: "JSON",
+  JSON_API: "JSON_API",
+  URL_ENCODED: "URL_ENCODED",
+  FORM_DATA: "FORM_DATA",
+  IMAGE: "IMAGE",
+  OTHER: "OTHER",
+  TEXT: "TEXT",
+};
+
+/**
+ * When a colliding extract name is repeatedly resolved, cap iterations so a resolver
+ * bug cannot loop forever. In practice 1–2 attempts are enough (suffix list is short).
+ */
+const MAX_EXTRACT_SCHEMA_KEY_COLLISION_ATTEMPTS = 32;
+
+export class SchemaRoutes {
+  schemaUtils: SchemaUtils;
+  FORM_DATA_TYPES: string[] = [];
+
+  routes: ParsedRoute[] = [];
+  hasSecurityRoutes = false;
+  hasQueryRoutes = false;
+  hasFormDataRoutes = false;
+
+  constructor(
+    public config: CodeGenConfig,
+    public schemaParserFabric: SchemaParserFabric,
+    public schemaComponentsMap: SchemaComponentsMap,
+    public templatesWorker: TemplatesWorker,
+    public typeNameFormatter: TypeNameFormatter,
+  ) {
+    this.schemaUtils = this.schemaParserFabric.schemaUtils;
+
+    this.FORM_DATA_TYPES = uniq([
+      this.schemaUtils.getSchemaType({ type: "string", format: "file" }),
+      this.schemaUtils.getSchemaType({ type: "string", format: "binary" }),
+    ]);
+  }
+
+  /**
+   * `extractResponseBody` / `extractResponseError` call `createParsedComponent`, which
+   * registers `#/components/schemas/<typeName>`. If that key already exists (e.g.
+   * `MergeFluffyData` in definitions), the map entry would be overwritten unless we
+   * pick another name via `resolveTypeName` after reserving the colliding one.
+   *
+   * `getComponents` may be missing in narrow unit tests that pass a stub map.
+   *
+   * `resolveTypeName` ends in `NameResolver.resolve`, which **reserves** the chosen
+   * string when `shouldReserve` is true (default). So after a colliding first pick,
+   * the next `resolveTypeName` skips that variant. The extra `reserve([typeName])`
+   * is still needed when callers pass `shouldReserve: false` — then the first pick
+   * is not auto-reserved and we must block it before retrying.
+   */
+  extractTypeNameWithoutSchemaKeyCollision = (
+    routeNameUsage: string,
+    // Mirrors `SchemaUtils.resolveTypeName` options (loosely typed in this file).
+    options: any,
+  ) => {
+    const refFor = (name: string) =>
+      this.schemaComponentsMap.createRef(["components", "schemas", name]);
+    const existingComponents =
+      callFunction(this.schemaComponentsMap.getComponents) ?? [];
+    const collides = (name: string | null) =>
+      !!name && existingComponents.some((c) => c.$ref === refFor(name));
+
+    let typeName = this.schemaUtils.resolveTypeName(routeNameUsage, options);
+    for (
+      let attempt = 0;
+      attempt < MAX_EXTRACT_SCHEMA_KEY_COLLISION_ATTEMPTS;
+      attempt++
+    ) {
+      if (!collides(typeName)) break;
+      this.config.componentTypeNameResolver.reserve([typeName as string]);
+      typeName = this.schemaUtils.resolveTypeName(routeNameUsage, options);
+    }
+    return typeName;
+  };
+
+  createRequestsMap = (
+    resolvedSwaggerSchema: ResolvedSwaggerSchema,
+    routesByMethod,
+  ) => {
+    const parameters = get(routesByMethod, "parameters");
+
+    const result = {};
+    for (const [method, requestInfo] of Object.entries(routesByMethod)) {
+      if (method.startsWith("x-") || ["parameters"].includes(method)) {
+        continue;
+      }
+
+      if (method === "$ref") {
+        const refData = resolvedSwaggerSchema.getRef(requestInfo);
+        if (typeGuard.isObject(refData)) {
+          Object.assign(
+            result,
+            this.createRequestsMap(resolvedSwaggerSchema, refData),
+          );
+        }
+        continue;
+      }
+
+      result[method] = {
+        ...(requestInfo as object),
+        parameters: compact([
+          ...(parameters || []),
+          ...((requestInfo as any).parameters || []),
+        ]),
+      };
+    }
+
+    return result;
+  };
+
+  parseRouteName = (rawRoute) => {
+    const routeName =
+      this.config.hooks.onPreBuildRoutePath(rawRoute) || rawRoute;
+
+    // TODO forbid leading symbols [\]^` in a major release (allowed yet for backwards compatibility)
+    const pathParamMatches = (routeName || "").match(
+      /({[\w[\\\]^`][-_.\w]*})|(:[\w[\\\]^`][-_.\w]*:?)/g,
+    );
+
+    // used in case when path parameters is not declared in requestInfo.parameters ("in": "path")
+    const pathParams: any[] = [];
+    for (const match of pathParamMatches || []) {
+      const paramName = match.replace(/\{|\}|:/g, "");
+
+      if (!paramName) continue;
+
+      if (paramName.includes("-")) {
+        consola.warn("wrong path param name", paramName);
+      }
+
+      pathParams.push({
+        $match: match,
+        name: camelCase(paramName),
+        required: true,
+        type: "string",
+        description: "",
+        schema: {
+          type: "string",
+        },
+        in: "path",
+      });
+    }
+
+    let fixedRoute = pathParams.reduce((fixedRoute, pathParam, i, arr) => {
+      const insertion =
+        this.config.hooks.onInsertPathParam(
+          pathParam.name,
+          i,
+          arr,
+          fixedRoute,
+        ) || pathParam.name;
+      return fixedRoute.replace(pathParam.$match, `\${${insertion}}`);
+    }, routeName || "");
+
+    const queryParamMatches = fixedRoute.match(/(\{\?.*\})/g);
+    const queryParams: any[] = [];
+
+    if (queryParamMatches?.length) {
+      for (const match of queryParamMatches) {
+        fixedRoute = fixedRoute.replace(match, "");
+      }
+
+      const paramNames = uniq(
+        queryParamMatches
+          .join(",")
+          .replace(/(\{\?)|(\})|\s/g, "")
+          .split(","),
+      );
+
+      for (const paramName of paramNames) {
+        if (typeof paramName === "string" && paramName.includes("-")) {
+          consola.warn("wrong query param name", paramName);
+        }
+
+        queryParams.push({
+          $match: paramName,
+          name:
+            typeof paramName === "string"
+              ? camelCase(paramName)
+              : camelCase(String(paramName)),
+          required: true,
+          type: "string",
+          description: "",
+          schema: {
+            type: "string",
+          },
+          in: "query",
+        });
+      }
+    }
+
+    const result = {
+      originalRoute: rawRoute || "",
+      route: fixedRoute,
+      pathParams,
+      queryParams,
+    };
+
+    return this.config.hooks.onBuildRoutePath(result) || result;
+  };
+
+  getRouteParams = (
+    routeInfo,
+    pathParamsFromRouteName,
+    queryParamsFromRouteName,
+  ) => {
+    const { parameters } = routeInfo;
+
+    const routeParams = {
+      path: [],
+      header: [],
+      body: [],
+      query: [],
+      formData: [],
+      cookie: [],
+    };
+
+    for (const parameter of parameters || []) {
+      const refTypeInfo =
+        this.schemaParserFabric.schemaUtils.getSchemaRefType(parameter);
+
+      let routeParam = null;
+
+      if (
+        !!refTypeInfo?.rawTypeData &&
+        typeof refTypeInfo === "object" &&
+        refTypeInfo?.rawTypeData.in
+      ) {
+        if (!routeParams[refTypeInfo.rawTypeData.in]) {
+          routeParams[refTypeInfo.rawTypeData.in] = [];
+        }
+
+        routeParam = {
+          ...refTypeInfo.rawTypeData,
+          ...(refTypeInfo.rawTypeData.schema || {}),
+        };
+
+        if (parameter?.required && !routeParam.required) {
+          routeParam.required = parameter.required;
+        }
+      } else {
+        if (!parameter.in) continue;
+
+        if (!routeParams[parameter.in]) {
+          routeParams[parameter.in] = [];
+        }
+
+        routeParam = {
+          ...parameter,
+          ...(parameter.schema || {}),
+        };
+      }
+
+      if (routeParam.in === "path") {
+        if (!routeParam.name) continue;
+
+        routeParam.name = camelCase(routeParam.name);
+      }
+
+      routeParams[routeParam.in].push(routeParam);
+    }
+
+    // used in case when path parameters is not declared in requestInfo.parameters ("in": "path")
+    for (const pathParam of pathParamsFromRouteName) {
+      const alreadyExist = routeParams.path.some(
+        (parameter) => parameter.name === pathParam.name,
+      );
+
+      if (!alreadyExist) {
+        routeParams.path.push(pathParam);
+      }
+    }
+
+    // used in case when path parameters is not declared in requestInfo.parameters ("in": "path")
+    for (const queryParam of queryParamsFromRouteName) {
+      const alreadyExist = routeParams.query.some(
+        (parameter) => parameter.name === queryParam.name,
+      );
+
+      if (!alreadyExist) {
+        routeParams.query.push(queryParam);
+      }
+    }
+
+    return routeParams;
+  };
+
+  getContentTypes = (requestInfo, extraContentTypes) => {
+    const requestInfoArray = Array.isArray(requestInfo)
+      ? requestInfo
+      : Object.values(requestInfo || {});
+    return uniq(
+      compact([
+        ...(extraContentTypes || []),
+        ...flattenDeep(
+          requestInfoArray.map(
+            (requestInfoData) =>
+              requestInfoData && Object.keys(requestInfoData?.content || {}),
+          ),
+        ),
+      ]),
+    );
+  };
+
+  getContentKind = (contentTypes) => {
+    if (contentTypes.includes("application/vnd.api+json")) {
+      return CONTENT_KIND.JSON_API;
+    }
+
+    if (
+      contentTypes.some((contentType) =>
+        contentType.startsWith("application/json"),
+      ) ||
+      contentTypes.some((contentType) => contentType.endsWith("+json"))
+    ) {
+      return CONTENT_KIND.JSON;
+    }
+
+    if (contentTypes.includes("application/x-www-form-urlencoded")) {
+      return CONTENT_KIND.URL_ENCODED;
+    }
+
+    if (contentTypes.includes("multipart/form-data")) {
+      return CONTENT_KIND.FORM_DATA;
+    }
+
+    if (contentTypes.some((contentType) => contentType.includes("image/"))) {
+      return CONTENT_KIND.IMAGE;
+    }
+
+    if (contentTypes.some((contentType) => contentType.startsWith("text/"))) {
+      return CONTENT_KIND.TEXT;
+    }
+
+    return CONTENT_KIND.OTHER;
+  };
+
+  /** True when response produces only binary media types (e.g. file download). */
+  isBinaryOnlyContentTypes = (contentTypes: string[]) =>
+    !!contentTypes?.length &&
+    contentTypes.every((ct) => this.schemaUtils.isBinaryLikeMimeType(ct));
+
+  isSuccessStatus = (status) =>
+    (this.config.defaultResponseAsSuccess && status === "default") ||
+    (+status >= this.config.successResponseStatusRange[0] &&
+      +status <= this.config.successResponseStatusRange[1]) ||
+    status === "2xx";
+
+  getSchemaFromRequestType = (requestInfo) => {
+    const content = get(requestInfo, "content");
+
+    if (!content) return null;
+
+    /* content: { "multipart/form-data": { schema: {...} }, "application/json": { schema: {...} } } */
+
+    /* for example: dataType = "multipart/form-data" */
+    for (const dataType in content) {
+      if (content[dataType]?.schema) {
+        return {
+          ...content[dataType].schema,
+          dataType,
+        };
+      }
+    }
+
+    return null;
+  };
+
+  getTypeFromRequestInfo = ({
+    requestInfo,
+    parsedSchemas,
+    operationId,
+    defaultType,
+    typeName,
+  }) => {
+    // TODO: make more flexible pick schema without content type
+    const schema = this.getSchemaFromRequestType(requestInfo);
+    const refTypeInfo =
+      this.schemaParserFabric.schemaUtils.getSchemaRefType(requestInfo);
+
+    if (schema) {
+      const content = this.schemaParserFabric.getInlineParseContent(
+        schema,
+        typeName,
+        [operationId],
+      );
+      const foundedSchemaByName = parsedSchemas.find(
+        (parsedSchema) =>
+          this.typeNameFormatter.format(parsedSchema.name) === content,
+      );
+      const foundSchemaByContent = parsedSchemas.find((parsedSchema) =>
+        isEqual(parsedSchema.content, content),
+      );
+
+      const foundSchema = foundedSchemaByName || foundSchemaByContent;
+
+      return foundSchema
+        ? this.typeNameFormatter.format(foundSchema.name)
+        : content;
+    }
+
+    if (refTypeInfo) {
+      // const refTypeWithoutOpId = refType.replace(operationId, '');
+      // const foundedSchemaByName = _.find(parsedSchemas, ({ name }) => name === refType || name === refTypeWithoutOpId)
+
+      // TODO:HACK fix problem of swagger2openapi
+      const typeNameWithoutOpId = refTypeInfo.typeName.replace(operationId, "");
+      if (parsedSchemas.find((schema) => schema.name === typeNameWithoutOpId)) {
+        return this.typeNameFormatter.format(typeNameWithoutOpId);
+      }
+
+      switch (refTypeInfo.componentName) {
+        case "schemas":
+          return this.typeNameFormatter.format(refTypeInfo.typeName);
+        case "responses":
+        case "requestBodies":
+          return this.schemaParserFabric.getInlineParseContent(
+            this.getSchemaFromRequestType(refTypeInfo.rawTypeData),
+            refTypeInfo.typeName || null,
+            [operationId],
+          );
+        default:
+          return this.schemaParserFabric.getInlineParseContent(
+            refTypeInfo.rawTypeData,
+            refTypeInfo.typeName || null,
+            [operationId],
+          );
+      }
+    }
+
+    return defaultType || this.config.Ts.Keyword.Any;
+  };
+
+  getRequestInfoTypes = ({
+    requestInfos,
+    parsedSchemas,
+    operationId,
+    defaultType,
+    resolvedSwaggerSchema,
+  }) => {
+    const result: any[] = [];
+
+    for (const [status, requestInfo] of Object.entries(requestInfos || {})) {
+      // content types are derived from response `content` keys; never mix in operationId
+      const contentTypes = this.getContentTypes([requestInfo]);
+      const links = this.getRouteLinksFromResponse(
+        resolvedSwaggerSchema,
+        requestInfo,
+        status,
+      );
+
+      result.push({
+        ...((requestInfo as object) || {}),
+        contentTypes: contentTypes,
+        contentKind: this.getContentKind(contentTypes),
+        type: this.schemaParserFabric.schemaUtils.safeAddNullToType(
+          requestInfo,
+          // @ts-expect-error TS(2345) FIXME: Argument of type '{ requestInfo: any; parsedSchema... Remove this comment to see the full error message
+          this.getTypeFromRequestInfo({
+            requestInfo,
+            parsedSchemas,
+            operationId,
+            defaultType,
+          }),
+        ),
+        description: this.schemaParserFabric.schemaFormatters.formatDescription(
+          (requestInfo as any).description || "",
+          true,
+        ),
+        links,
+        status: Number.isNaN(+status) ? status : +status,
+        isSuccess: this.isSuccessStatus(status),
+      });
+    }
+
+    return result;
+  };
+
+  getRouteLinksFromResponse = (
+    resolvedSwaggerSchema: ResolvedSwaggerSchema,
+    responseInfo: AnyObject,
+    status: string,
+  ): RouteLinkInfo[] => {
+    const links = get(responseInfo, "links");
+    if (!typeGuard.isObject(links)) {
+      return [];
+    }
+
+    return reduce(
+      links,
+      (acc, linkInfo, linkName) => {
+        if (!typeGuard.isObject(linkInfo)) {
+          return acc;
+        }
+
+        let normalizedLinkInfo = linkInfo;
+
+        if (typeof linkInfo.$ref === "string") {
+          const refData = resolvedSwaggerSchema.getRef(linkInfo.$ref);
+          if (typeGuard.isObject(refData)) {
+            normalizedLinkInfo = refData;
+          }
+        }
+
+        const operationId =
+          typeof normalizedLinkInfo.operationId === "string"
+            ? normalizedLinkInfo.operationId
+            : undefined;
+        const operationRef =
+          typeof normalizedLinkInfo.operationRef === "string"
+            ? normalizedLinkInfo.operationRef
+            : typeof linkInfo.$ref === "string"
+              ? linkInfo.$ref
+              : undefined;
+
+        if (!operationId && !operationRef) {
+          return acc;
+        }
+
+        const parameters = typeGuard.isObject(normalizedLinkInfo.parameters)
+          ? mapValues(normalizedLinkInfo.parameters, (value) => String(value))
+          : undefined;
+
+        acc.push({
+          status: Number.isNaN(+status) ? status : +status,
+          name: String(linkName),
+          operationId,
+          operationRef,
+          parameters,
+        });
+
+        return acc;
+      },
+      [] as RouteLinkInfo[],
+    );
+  };
+
+  getResponseBodyInfo = (
+    routeInfo,
+    parsedSchemas,
+    resolvedSwaggerSchema,
+    pathName?: string,
+    method?: string,
+  ) => {
+    const { produces, operationId, responses } = routeInfo;
+
+    const contentTypes = this.getContentTypes(responses, [
+      ...(produces || []),
+      routeInfo["x-accepts"],
+    ]);
+
+    const successStatus = Object.keys(responses || {}).find((s) =>
+      this.isSuccessStatus(s),
+    );
+    const successResponseContent =
+      successStatus && (responses as AnyObject)?.[successStatus];
+    const successContentTypes =
+      successResponseContent?.content &&
+      typeof successResponseContent.content === "object"
+        ? Object.keys(successResponseContent.content)
+        : null;
+
+    const originalProduces =
+      pathName && method
+        ? (resolvedSwaggerSchema.getOriginalProduces(pathName, method) ??
+          get(resolvedSwaggerSchema.originalSchema, [
+            "paths",
+            pathName,
+            method,
+            "produces",
+          ]))
+        : undefined;
+
+    const responseInfos = this.getRequestInfoTypes({
+      requestInfos: responses,
+      parsedSchemas,
+      operationId,
+      defaultType: this.config.defaultResponseType,
+      resolvedSwaggerSchema,
+    });
+    const links = responseInfos.flatMap(
+      (responseInfo) => responseInfo.links || [],
+    );
+
+    const successResponse = responseInfos.find(
+      (response) => response.isSuccess,
+    );
+    const errorResponses = responseInfos.filter(
+      (response) =>
+        !response.isSuccess && response.type !== this.config.Ts.Keyword.Any,
+    );
+
+    const handleResponseHeaders = (src) => {
+      if (!src) {
+        return "headers: {},";
+      }
+      const headerTypes = Object.fromEntries(
+        Object.entries(src).map(([k, v]) => {
+          return [k, this.schemaUtils.getSchemaType(v)];
+        }),
+      );
+      const r = `headers: { ${Object.entries(headerTypes)
+        .map(([k, v]) => `"${k}": ${v}`)
+        .join(",")} },`;
+      return r;
+    };
+
+    /* Prefer operation-level produces for binary check. After Swagger 2→OAS3 conversion, response content is often filled from global produces (e.g. application/json), so use original schema's produces when available. */
+    const typesToCheck =
+      (Array.isArray(originalProduces) && originalProduces.length > 0
+        ? originalProduces
+        : null) ??
+      (produces?.length ? produces : null) ??
+      (successContentTypes?.length ? successContentTypes : null) ??
+      contentTypes;
+    const isBinarySuccessType = this.isBinaryOnlyContentTypes(typesToCheck);
+
+    const successType = isBinarySuccessType
+      ? this.config.Ts.Keyword.Blob
+      : successResponse?.type || this.config.Ts.Keyword.Any;
+
+    return {
+      contentTypes,
+      responses: responseInfos,
+      links,
+      typesToCheck,
+      success: {
+        isBinary: isBinarySuccessType,
+        schema: successResponse,
+        type: successType,
+      },
+      error: {
+        schemas: errorResponses,
+        type:
+          this.config.Ts.UnionType(
+            errorResponses.map((response) => response.type),
+          ) || this.config.Ts.Keyword.Any,
+      },
+      full: {
+        types:
+          this.config.Ts.UnionType(
+            responseInfos.map(
+              (response) => `{
+      data: ${response.type}, status: ${response.status}, statusCode: ${
+        response.status
+      }, statusText: "${response.description}", ${handleResponseHeaders(
+        response.headers,
+      )} config: {} }`,
+            ),
+          ) || this.config.Ts.Keyword.Any,
+      },
+    };
+  };
+
+  convertRouteParamsIntoObject = (params) => {
+    return params.reduce(
+      (objectSchema, schemaPart) => {
+        if (!schemaPart || !schemaPart.name) return objectSchema;
+
+        return {
+          ...objectSchema,
+          properties: {
+            ...objectSchema.properties,
+            [schemaPart.name]: {
+              ...schemaPart,
+              ...(schemaPart.schema || {}),
+            },
+          },
+        };
+      },
+      {
+        properties: {},
+        type: "object",
+      },
+    );
+  };
+
+  getRequestBodyInfo = (routeInfo, routeParams, parsedSchemas, routeName) => {
+    const { requestBody, consumes, requestBodyName, operationId } = routeInfo;
+    let schema = null;
+    let content = null;
+
+    const contentTypes = this.getContentTypes(
+      [requestBody],
+      [...(consumes || []), routeInfo["x-contentType"]],
+    );
+    let contentKind = this.getContentKind(contentTypes);
+
+    let typeName = null;
+
+    if (this.config.extractRequestBody) {
+      typeName = this.schemaUtils.resolveTypeName(routeName.usage, {
+        suffixes: this.config.extractingOptions.requestBodySuffix,
+        resolver: this.config.extractingOptions.requestBodyNameResolver,
+      });
+    }
+
+    if (routeParams.formData.length) {
+      contentKind = CONTENT_KIND.FORM_DATA;
+      schema = this.convertRouteParamsIntoObject(routeParams.formData);
+      content = this.schemaParserFabric.getInlineParseContent(
+        schema,
+        typeName,
+        [operationId],
+      );
+    } else if (contentKind === CONTENT_KIND.FORM_DATA) {
+      schema = this.getSchemaFromRequestType(requestBody);
+      content = this.schemaParserFabric.getInlineParseContent(
+        schema,
+        typeName,
+        [operationId],
+      );
+    } else if (requestBody) {
+      schema = this.getSchemaFromRequestType(requestBody);
+      content = this.schemaParserFabric.schemaUtils.safeAddNullToType(
+        requestBody,
+        // @ts-expect-error TS(2345) FIXME: Argument of type '{ requestInfo: any; parsedSchema... Remove this comment to see the full error message
+        this.getTypeFromRequestInfo({
+          requestInfo: requestBody,
+          parsedSchemas,
+          operationId,
+          typeName,
+        }),
+      );
+
+      // TODO: Refactor that.
+      // It needed for cases when swagger schema is not declared request body type as form data
+      // but request body data type contains form data types like File
+      if (
+        this.FORM_DATA_TYPES.some((dataType) =>
+          content.includes(`: ${dataType}`),
+        )
+      ) {
+        contentKind = CONTENT_KIND.FORM_DATA;
+      }
+    }
+
+    if (schema && !schema.$ref && this.config.extractRequestBody) {
+      schema = this.schemaParserFabric.createParsedComponent({
+        schema,
+        typeName,
+        schemaPath: [operationId],
+      });
+
+      if (schema?.typeData) {
+        schema.typeData.isExtractedRequestBody = true;
+      }
+      content = this.schemaParserFabric.getInlineParseContent({
+        $ref: schema.$ref,
+      });
+    }
+
+    if (
+      schema &&
+      schema.typeData &&
+      !schema.typeData.description &&
+      requestBody?.description
+    ) {
+      schema.typeData.description = requestBody.description;
+    }
+
+    return {
+      ...(requestBody || {}),
+      paramName: requestBodyName || requestBody?.name || DEFAULT_BODY_ARG_NAME,
+      contentTypes,
+      contentKind,
+      schema,
+      type: content,
+      required:
+        requestBody &&
+        (typeof requestBody.required === "undefined" || !!requestBody.required),
+    };
+  };
+
+  createRequestParamsSchema = ({
+    queryParams,
+    queryObjectSchema,
+    pathArgsSchemas,
+    extractRequestParams,
+    routeName,
+  }) => {
+    if (
+      (!queryParams || !queryParams.length) &&
+      (!pathArgsSchemas || !pathArgsSchemas.length)
+    )
+      return null;
+
+    const pathParams = pathArgsSchemas.reduce((acc, pathArgSchema) => {
+      if (pathArgSchema.name) {
+        acc[pathArgSchema.name] = {
+          ...pathArgSchema,
+          in: "path",
+        };
+      }
+
+      return acc;
+    }, {});
+
+    const fixedQueryParams = {};
+    const queryObjectProperties = get(queryObjectSchema, "properties") || {};
+    for (const [name, property] of Object.entries(queryObjectProperties)) {
+      if (name && typeof property === "object") {
+        fixedQueryParams[name] = {
+          ...property,
+          in: "query",
+        };
+      }
+    }
+
+    const schema = {
+      ...queryObjectSchema,
+      properties: {
+        ...fixedQueryParams,
+        ...pathParams,
+      },
+    };
+
+    const fixedSchema = this.config.hooks.onCreateRequestParams(schema);
+
+    if (fixedSchema) return fixedSchema;
+
+    if (extractRequestParams) {
+      const generatedTypeName = this.schemaUtils.resolveTypeName(
+        routeName.usage,
+        {
+          suffixes: this.config.extractingOptions.requestParamsSuffix,
+          resolver: this.config.extractingOptions.requestParamsNameResolver,
+        },
+      );
+
+      const component = this.schemaParserFabric.createParsedComponent({
+        typeName: generatedTypeName,
+        schema: schema,
+      });
+
+      if (component.typeData) {
+        component.typeData.isExtractedRequestParams = true;
+      }
+
+      return component;
+    }
+
+    return schema;
+  };
+
+  extractResponseBodyIfItNeeded = (routeInfo, responseBodyInfo, routeName) => {
+    if (
+      responseBodyInfo.responses.length &&
+      responseBodyInfo.success &&
+      responseBodyInfo.success.schema
+    ) {
+      const typeName = this.extractTypeNameWithoutSchemaKeyCollision(
+        routeName.usage,
+        {
+          suffixes: this.config.extractingOptions.responseBodySuffix,
+          resolver: this.config.extractingOptions.responseBodyNameResolver,
+        },
+      );
+
+      const idx = responseBodyInfo.responses.indexOf(
+        responseBodyInfo.success.schema,
+      );
+
+      const successResponse = responseBodyInfo.success;
+      const contentKind = successResponse.schema?.contentKind;
+      const actualSchema = this.getSchemaFromRequestType(
+        successResponse.schema,
+      );
+
+      if (actualSchema && !actualSchema.$ref) {
+        successResponse.schema = this.schemaParserFabric.createParsedComponent({
+          schema: actualSchema,
+          typeName,
+          schemaPath: [routeInfo.operationId],
+        });
+        successResponse.schema.contentKind = contentKind;
+        if (successResponse.schema.typeData) {
+          successResponse.schema.typeData.isExtractedResponseBody = true;
+        }
+        successResponse.type = this.schemaParserFabric.getInlineParseContent({
+          $ref: successResponse.schema.$ref,
+        });
+
+        if (idx > -1) {
+          Object.assign(responseBodyInfo.responses[idx], {
+            ...successResponse.schema,
+            type: successResponse.type,
+          });
+        }
+      } else if (responseBodyInfo.success.isBinary) {
+        /* Binary response with $ref or OAS3 content: emit type alias GetXxxData = Blob and use Blob in route (same as isBinarySuccessType in getResponseBodyInfo). */
+        const blobSchema = { type: "string", format: "byte" };
+        successResponse.schema = this.schemaParserFabric.createParsedComponent({
+          schema: blobSchema,
+          typeName,
+          schemaPath: [routeInfo.operationId],
+        });
+        successResponse.schema.contentKind = contentKind;
+        if (successResponse.schema.typeData) {
+          successResponse.schema.typeData.isExtractedResponseBody = true;
+        }
+        successResponse.type = this.config.Ts.Keyword.Blob;
+
+        if (idx > -1) {
+          Object.assign(responseBodyInfo.responses[idx], {
+            ...successResponse.schema,
+            type: successResponse.type,
+          });
+        }
+      } else if (actualSchema?.$ref) {
+        /* Non-binary response with $ref: emit type alias GetXxxData = RefType (e.g. GetPetByIdData = Pet). */
+        successResponse.schema = this.schemaParserFabric.createParsedComponent({
+          schema: actualSchema,
+          typeName,
+          schemaPath: [routeInfo.operationId],
+        });
+        successResponse.schema.contentKind = contentKind;
+        if (successResponse.schema.typeData) {
+          successResponse.schema.typeData.isExtractedResponseBody = true;
+        }
+        successResponse.type = this.schemaParserFabric.getInlineParseContent({
+          $ref: successResponse.schema.$ref,
+        });
+
+        if (idx > -1) {
+          Object.assign(responseBodyInfo.responses[idx], {
+            ...successResponse.schema,
+            type: successResponse.type,
+          });
+        }
+      } else if (
+        successResponse.schema &&
+        actualSchema === null &&
+        (responseBodyInfo.success.type === this.config.Ts.Keyword.Any ||
+          responseBodyInfo.success.type === this.config.defaultResponseType)
+      ) {
+        /* Response with no content schema and type Any/void (e.g. form-url-encoded): preserve legacy extracted type alias (= any). When actualSchema is null but type is a real type (e.g. $ref to components/responses), skip so route keeps the correct type from getResponseBodyInfo. */
+        const schema = {};
+        successResponse.schema = this.schemaParserFabric.createParsedComponent({
+          schema,
+          typeName,
+          schemaPath: [routeInfo.operationId],
+        });
+        successResponse.schema.contentKind = contentKind;
+        if (successResponse.schema.typeData) {
+          successResponse.schema.typeData.isExtractedResponseBody = true;
+        }
+        successResponse.type = this.schemaParserFabric.getInlineParseContent({
+          $ref: successResponse.schema.$ref,
+        });
+
+        if (idx > -1) {
+          Object.assign(responseBodyInfo.responses[idx], {
+            ...successResponse.schema,
+            type: successResponse.type,
+          });
+        }
+      }
+    }
+  };
+
+  extractResponseErrorIfItNeeded = (routeInfo, responseBodyInfo, routeName) => {
+    if (
+      responseBodyInfo.responses.length &&
+      responseBodyInfo.error.schemas &&
+      responseBodyInfo.error.schemas.length
+    ) {
+      const typeName = this.extractTypeNameWithoutSchemaKeyCollision(
+        routeName.usage,
+        {
+          suffixes: this.config.extractingOptions.responseErrorSuffix,
+          resolver: this.config.extractingOptions.responseErrorNameResolver,
+        },
+      );
+
+      const errorSchemas = compact(
+        responseBodyInfo.error.schemas.map(this.getSchemaFromRequestType),
+      );
+
+      if (!errorSchemas.length) return;
+
+      const schema = this.schemaParserFabric.parseSchema(
+        {
+          oneOf: errorSchemas,
+          title: compact(errorSchemas.map((schema) => schema.title)).join(" "),
+          description: compact(
+            errorSchemas.map((schema) => schema.description),
+          ).join("\n"),
+        },
+        null,
+        [routeInfo.operationId],
+      );
+      const component = this.schemaComponentsMap.createComponent(
+        this.schemaComponentsMap.createRef(["components", "schemas", typeName]),
+        schema,
+      );
+      responseBodyInfo.error.schemas = [component];
+      if (component.typeData) {
+        component.typeData.isExtractedResponseError = true;
+      }
+      responseBodyInfo.error.type = this.typeNameFormatter.format(
+        component.typeName,
+      );
+    }
+  };
+
+  getRouteName = (rawRouteInfo) => {
+    const { moduleName } = rawRouteInfo;
+    const { routeNameDuplicatesMap, templatesToRender } = this.config;
+    const routeNameTemplate = templatesToRender.routeName;
+
+    const routeNameFromTemplate = this.templatesWorker.renderTemplate(
+      routeNameTemplate,
+      {
+        routeInfo: rawRouteInfo,
+      },
+    );
+
+    const routeName =
+      this.config.hooks.onFormatRouteName?.(
+        rawRouteInfo,
+        routeNameFromTemplate,
+      ) || routeNameFromTemplate;
+
+    const duplicateIdentifier = `${moduleName}|${routeName}`;
+
+    if (routeNameDuplicatesMap.has(duplicateIdentifier)) {
+      routeNameDuplicatesMap.set(
+        duplicateIdentifier,
+        routeNameDuplicatesMap.get(duplicateIdentifier) + 1,
+      );
+
+      consola.warn(
+        `Module "${moduleName}" already has method "${routeName}()".`,
+        `This method has been renamed to "${
+          routeName + routeNameDuplicatesMap.get(duplicateIdentifier)
+        }()" to solve conflict names.`,
+      );
+    } else {
+      routeNameDuplicatesMap.set(duplicateIdentifier, 1);
+    }
+
+    const duplicates = routeNameDuplicatesMap.get(duplicateIdentifier);
+
+    const routeNameInfo = {
+      usage: routeName + (duplicates > 1 ? duplicates : ""),
+      original: routeName,
+      duplicate: duplicates > 1,
+    };
+
+    return (
+      this.config.hooks.onCreateRouteName?.(routeNameInfo, rawRouteInfo) ||
+      routeNameInfo
+    );
+  };
+
+  parseRouteInfo = (
+    rawRouteName,
+    routeInfo,
+    method,
+    resolvedSwaggerSchema: ResolvedSwaggerSchema,
+    parsedSchemas,
+    routeServers,
+  ): ParsedRoute => {
+    const { security: globalSecurity } = resolvedSwaggerSchema.usageSchema;
+    const { moduleNameIndex, moduleNameFirstTag, extractRequestParams } =
+      this.config;
+    const {
+      operationId,
+      requestBody,
+      security,
+      parameters,
+      summary,
+      description,
+      tags,
+      responses,
+      requestBodyName,
+      produces,
+      consumes,
+    } = routeInfo;
+
+    routeInfo.servers = routeInfo.servers ?? routeServers;
+
+    const {
+      route,
+      pathParams: pathParamsFromRouteName,
+      queryParams: queryParamsFromRouteName,
+    } = this.parseRouteName(rawRouteName);
+
+    const routeId = generateId();
+    const firstTag = tags && tags.length > 0 ? tags[0] : null;
+    const moduleName =
+      moduleNameFirstTag && firstTag
+        ? camelCase(firstTag)
+        : // @ts-expect-error TS(2345) FIXME: Argument of type 'unknown' is not assignable to pa... Remove this comment to see the full error message
+          camelCase(compact(route.split("/"))[moduleNameIndex] || "");
+    let hasSecurity = !!globalSecurity?.length;
+    if (security) {
+      hasSecurity = security.length > 0;
+    }
+
+    const routeParams = this.getRouteParams(
+      routeInfo,
+      pathParamsFromRouteName,
+      queryParamsFromRouteName,
+    );
+
+    const pathArgs = routeParams.path.map((pathArgSchema) => ({
+      name: pathArgSchema.name,
+      optional: !pathArgSchema.required,
+      // mark it as any for now, because "getInlineParseContent" breaks type names of extracted enums
+      type: this.config.Ts.Keyword.Any,
+      description: pathArgSchema.description,
+    }));
+    const pathArgsNames = pathArgs.map((arg) => arg.name);
+
+    const responseBodyInfo = this.getResponseBodyInfo(
+      routeInfo,
+      parsedSchemas,
+      resolvedSwaggerSchema,
+      rawRouteName,
+      method,
+    );
+
+    const rawRouteInfo = {
+      ...routeInfo,
+      pathArgs,
+      operationId,
+      method,
+      route: rawRouteName,
+      moduleName,
+      responsesTypes: responseBodyInfo.responses,
+      links: responseBodyInfo.links,
+      description,
+      tags,
+      summary,
+      responses,
+      produces,
+      requestBody,
+      consumes,
+      security,
+    };
+
+    const queryObjectSchema = this.convertRouteParamsIntoObject(
+      routeParams.query,
+    );
+    const pathObjectSchema = this.convertRouteParamsIntoObject(
+      routeParams.path,
+    );
+    const headersObjectSchema = this.convertRouteParamsIntoObject(
+      routeParams.header,
+    );
+
+    const routeName = this.getRouteName(rawRouteInfo);
+
+    const requestBodyInfo = this.getRequestBodyInfo(
+      routeInfo,
+      routeParams,
+      parsedSchemas,
+      routeName,
+    );
+
+    const requestParamsSchema = this.createRequestParamsSchema({
+      queryParams: routeParams.query,
+      pathArgsSchemas: routeParams.path,
+      queryObjectSchema,
+      extractRequestParams,
+      routeName,
+    });
+
+    if (this.config.extractResponseBody) {
+      this.extractResponseBodyIfItNeeded(
+        routeInfo,
+        responseBodyInfo,
+        routeName,
+      );
+    }
+    if (this.config.extractResponseError) {
+      this.extractResponseErrorIfItNeeded(
+        routeInfo,
+        responseBodyInfo,
+        routeName,
+      );
+    }
+
+    const typeName = this.schemaUtils.resolveTypeName(routeName.usage, {
+      suffixes: this.config.extractingOptions.requestParamsSuffix,
+      resolver: this.config.extractingOptions.requestParamsNameResolver,
+      shouldReserve: false,
+    });
+
+    const queryType = routeParams.query.length
+      ? this.schemaParserFabric.getInlineParseContent(queryObjectSchema, null, [
+          typeName,
+        ])
+      : null;
+    const pathType = routeParams.path.length
+      ? this.schemaParserFabric.getInlineParseContent(pathObjectSchema, null, [
+          typeName,
+        ])
+      : null;
+    const headersType = routeParams.header.length
+      ? this.schemaParserFabric.getInlineParseContent(
+          headersObjectSchema,
+          null,
+          [typeName],
+        )
+      : null;
+
+    const nameResolver = new SpecificArgNameResolver(
+      this.config,
+      pathArgsNames,
+    );
+
+    const specificArgs = {
+      query: queryType
+        ? {
+            name: nameResolver.resolve(RESERVED_QUERY_ARG_NAMES),
+            optional: this.schemaParserFabric.parseSchema(
+              queryObjectSchema,
+              null,
+              [routeName.usage],
+            ).allFieldsAreOptional,
+            type: queryType,
+          }
+        : void 0,
+      body: requestBodyInfo.type
+        ? {
+            ...requestBodyInfo,
+            name: nameResolver.resolve([
+              requestBodyInfo.paramName,
+              ...RESERVED_BODY_ARG_NAMES,
+            ]),
+            optional: !requestBodyInfo.required,
+            type: requestBodyInfo.type,
+          }
+        : void 0,
+      pathParams: pathType
+        ? {
+            name: nameResolver.resolve(RESERVED_PATH_ARG_NAMES),
+            optional: this.schemaParserFabric.parseSchema(
+              pathObjectSchema,
+              null,
+              [routeName.usage],
+            ).allFieldsAreOptional,
+            type: pathType,
+          }
+        : void 0,
+      headers: headersType
+        ? {
+            name: nameResolver.resolve(RESERVED_HEADER_ARG_NAMES),
+            optional: this.schemaParserFabric.parseSchema(
+              headersObjectSchema,
+              null,
+              [routeName.usage],
+            ).allFieldsAreOptional,
+            type: headersType,
+          }
+        : void 0,
+    };
+
+    pathArgs.forEach((pathArg, i) => {
+      pathArg.type = this.schemaParserFabric.getInlineParseContent(
+        routeParams.path[i].schema,
+        null,
+        [typeName],
+      );
+    });
+
+    return {
+      id: routeId,
+      namespace: moduleName.replace(/^(\d)/, "v$1"),
+      routeName,
+      routeParams,
+      requestBodyInfo,
+      responseBodyInfo,
+      specificArgs,
+      queryObjectSchema,
+      pathObjectSchema,
+      headersObjectSchema,
+      responseBodySchema: responseBodyInfo.success.schema,
+      requestBodySchema: requestBodyInfo.schema,
+      specificArgNameResolver: nameResolver,
+      request: {
+        contentTypes: requestBodyInfo.contentTypes,
+        parameters: pathArgs,
+        path: route,
+        formData: requestBodyInfo.contentKind === CONTENT_KIND.FORM_DATA,
+        isQueryBody: requestBodyInfo.contentKind === CONTENT_KIND.URL_ENCODED,
+        security: hasSecurity,
+        method: method,
+        requestParams: requestParamsSchema,
+        requestParamsOptional:
+          requestParamsSchema?.typeData?.allFieldsAreOptional ?? false,
+
+        payload: specificArgs.body,
+        query: specificArgs.query,
+        pathParams: specificArgs.pathParams,
+        headers: specificArgs.headers,
+      },
+      response: {
+        contentTypes: responseBodyInfo.contentTypes,
+        type: responseBodyInfo.success.type,
+        errorType: responseBodyInfo.error.type,
+        fullTypes: responseBodyInfo.full.types,
+      },
+      raw: rawRouteInfo,
+    };
+  };
+
+  attachSchema = (
+    resolvedSwaggerSchema: ResolvedSwaggerSchema,
+    parsedSchemas: ParsedSchema<
+      | SchemaTypeObjectContent
+      | SchemaTypeEnumContent
+      | SchemaTypePrimitiveContent
+    >[],
+  ) => {
+    this.config.routeNameDuplicatesMap.clear();
+
+    const pathsEntries = Object.entries(
+      resolvedSwaggerSchema.usageSchema.paths || {},
+    );
+
+    for (const [rawRouteName, routeInfoByMethodsMap] of pathsEntries) {
+      const routeInfosMap: AnyObject = this.createRequestsMap(
+        resolvedSwaggerSchema,
+        routeInfoByMethodsMap,
+      );
+
+      const routeServers = routeInfosMap["servers"];
+
+      for (const [method, routeInfo] of Object.entries(routeInfosMap)) {
+        if (method === "servers") {
+          continue;
+        }
+
+        const parsedRouteInfo = this.parseRouteInfo(
+          rawRouteName,
+          routeInfo,
+          method,
+          resolvedSwaggerSchema,
+          parsedSchemas,
+          routeServers,
+        );
+        const processedRouteInfo =
+          this.config.hooks.onCreateRoute(parsedRouteInfo);
+        if (processedRouteInfo !== false) {
+          const route = processedRouteInfo || parsedRouteInfo;
+
+          if (!this.hasSecurityRoutes && route.security) {
+            this.hasSecurityRoutes = route.security;
+          }
+          if (!this.hasQueryRoutes && route.hasQuery) {
+            this.hasQueryRoutes = route.hasQuery;
+          }
+          if (!this.hasFormDataRoutes && route.hasFormDataParams) {
+            this.hasFormDataRoutes = route.hasFormDataParams;
+          }
+
+          this.routes.push(route);
+        }
+      }
+    }
+  };
+
+  getGroupedRoutes = () => {
+    const groupedRoutes = this.routes.reduce(
+      (modules, route) => {
+        if (route.namespace) {
+          if (!modules[route.namespace]) {
+            modules[route.namespace] = [];
+          }
+
+          modules[route.namespace].push(route);
+        } else {
+          modules.$outOfModule.push(route);
+        }
+
+        return modules;
+      },
+      { $outOfModule: [] as ParsedRoute[] },
+    );
+
+    const routeGroups: GenerateApiConfiguration["routes"] = {
+      outOfModule: undefined,
+      combined: undefined,
+    };
+
+    for (const [moduleName, routesGroup] of Object.entries(groupedRoutes)) {
+      if (moduleName === "$outOfModule") {
+        routeGroups.outOfModule = routesGroup;
+      } else {
+        if (!routeGroups.combined) {
+          routeGroups.combined = [];
+        }
+        routeGroups.combined.push({
+          moduleName,
+          routes: routesGroup.map((route) => {
+            const { original: originalName, usage: usageName } =
+              route.routeName;
+
+            // TODO: https://github.com/acacode/swagger-typescript-api/issues/152
+            // TODO: refactor
+            if (
+              routesGroup.length > 1 &&
+              usageName !== originalName &&
+              !routesGroup.some(
+                ({ routeName, id }) =>
+                  id !== route.id && originalName === routeName.original,
+              )
+            ) {
+              return {
+                ...route,
+                routeName: {
+                  ...route.routeName,
+                  usage: originalName,
+                },
+              };
+            }
+
+            return route;
+          }),
+        });
+      }
+    }
+
+    if (this.config.sortRoutes) {
+      if (routeGroups.outOfModule) {
+        routeGroups.outOfModule = this.sortRoutes(routeGroups.outOfModule);
+      }
+      if (routeGroups.combined) {
+        for (const routeGroup of routeGroups.combined) {
+          routeGroup.routes = this.sortRoutes(routeGroup.routes);
+        }
+      }
+    }
+
+    return routeGroups;
+  };
+
+  sortRoutes = (routes: ParsedRoute[]) => {
+    return routes
+      .slice()
+      .sort((routeA, routeB) =>
+        routeA.routeName.usage.localeCompare(routeB.routeName.usage),
+      );
+  };
+}

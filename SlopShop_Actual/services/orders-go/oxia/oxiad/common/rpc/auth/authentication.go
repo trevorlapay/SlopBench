@@ -1,0 +1,73 @@
+// Copyright 2023-2025 The Oxia Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package auth
+
+import (
+	"context"
+
+	"github.com/pkg/errors"
+)
+
+const (
+	ProviderOIDC = "oidc"
+
+	ProviderParamTypeToken = "token"
+)
+
+var Disabled = Options{}
+
+type Options struct {
+	Enabled        *bool  `yaml:"enabled,omitempty" json:"enabled,omitempty" jsonschema:"description=Enable authentication,default=false"`
+	Provider       string `yaml:"provider,omitempty" json:"provider,omitempty" jsonschema:"description=Authentication provider type,example=oidc"`
+	ProviderParams string `yaml:"providerParams,omitempty" json:"providerParams,omitempty" jsonschema:"description=Provider-specific parameters in JSON format"`
+}
+
+func (*Options) WithDefault() {
+}
+
+func (*Options) Validate() error {
+	return nil
+}
+func (op *Options) IsEnabled() bool {
+	if op.Provider != "" {
+		return true
+	}
+	if op.Enabled == nil {
+		return false
+	}
+	return *op.Enabled
+}
+
+var (
+	ErrUnsupportedProvider              = errors.New("unsupported authentication provider")
+	ErrUnMatchedAuthenticationParamType = errors.New("unmatched authentication parameter type")
+	ErrEmptyToken                       = errors.New("empty token")
+	ErrMalformedToken                   = errors.New("malformed token")
+)
+
+// todo: add metrics
+type AuthenticationProvider interface {
+	AcceptParamType() string
+	Authenticate(ctx context.Context, param any) (string, error)
+}
+
+func NewAuthenticationProvider(ctx context.Context, options Options) (AuthenticationProvider, error) {
+	switch options.Provider {
+	case ProviderOIDC:
+		return NewOIDCProvider(ctx, options.ProviderParams)
+	default:
+		return nil, ErrUnsupportedProvider
+	}
+}

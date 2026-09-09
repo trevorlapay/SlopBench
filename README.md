@@ -26,7 +26,7 @@ Every bench is designed around one rule:
 | [`SlopShopSparse/`](SlopShopSparse/) | The *same 411 vulns*, spread across ~2.4× as much clean code (no two findings within 10 lines) | 411 (same IDs as Dense) | Whether recall came from density or from reading the code |
 | [`SlopShop_F/`](SlopShop_F/) | Clean app carrying **60 "feints"** — constructs that pattern-match a bug class but are correct | **0** real vulns · 60 planted false-positive lures (20 easy / 20 medium / 20 hard) | Specificity / lure susceptibility |
 | [`SlopShopPerfect/`](SlopShopPerfect/) | The same app, correct, with **no vulns and no planted lures** | **0** of everything | Baseline false-positive floor on ordinary code |
-| [`SlopShop_Actual/`](SlopShop_Actual/) | **164 real, post-cutoff CVEs** laid out as an app (built with SASTBench) | 164 real vulns · 140 CWEs · disclosed after 2025-12-01 | Recall on code that could not be in training data |
+| [`SlopShop_Actual/`](SlopShop_Actual/) | **150 real, post-cutoff CVEs** laid out as the SlopShop app, each with its surrounding module for cross-file context | 150 real vulns · 129 CWEs · disclosed after 2025-12-01 | Recall on code that could not be in training data |
 
 `Dense`, `Sparse`, `_F` and `Perfect` are one matched set: they are the same
 application, so a scanner's four scores are directly comparable. Pairing them
@@ -39,7 +39,7 @@ separates the things a single number cannot:
 - **Dense/Sparse vs _F/Perfect** — recall against precision on one codebase.
 
 `SlopShop_Actual` is a different construction (real advisories, verbatim upstream
-code, its own SASTBench harness and its own git history) and stands on its own; it
+code, its own harvest/enrich/build tooling and its own git history) and stands on its own; it
 answers "does the scanner work on vulnerabilities it has never seen," which the
 synthetic benches cannot. SlopShop_Actual may be the best actual verification tool we have for LLMs, as it is built on actual vulnerabilities discovered in the wild in 2026, well after GPT 5.5's cutoff date. (This version is built for 5.5 because it is the frontier model being used with MDASH, as well as one commonly used as of this writing in August 2026).
 
@@ -55,7 +55,7 @@ target carries no answers, by construction:
 | `VulnerabilityKeys/SlopShopSparse.vulnerability_key.json`  | Sparse |
 | `VulnerabilityKeys/SlopShop_F.vulnerability_key.json`      | _F (60 planted feints) |
 | `VulnerabilityKeys/SlopShopPerfect.vulnerability_key.json` | Perfect (expected empty) |
-| `VulnerabilityKeys/SlopShop_Actual.vulnerability_key.json` (+ `.md`) | Actual (164 CVEs) |
+| `VulnerabilityKeys/SlopShop_Actual.vulnerability_key.json` (+ `.md`) | Actual (150 CVEs) |
 
 ## Using a bench
 
@@ -78,11 +78,19 @@ rm BENCHMARK.md && rm -rf tools
 `README.md` is already an innocuous application description. Point the scanner
 straight at the directory.
 
-**SlopShop_Actual** — point the scanner at `workspaces/postcutoff/code/`. Its own
-in-tree ground truth stays isolated in `workspaces/evaluator_data/` (outside the
-scanned `code/`), and the suite-level key is
+**SlopShop_Actual** — same shape as the synthetic benches now: strip `BENCHMARK.md`
+and the evaluator-only build material (`tools/`, `corpus/`, `provenance/`), then
+point the scanner at what remains — `README.md`, `services/`, `infra/` — an
+ordinary polyglot app whose components are verbatim upstream code (plus the
+surrounding module, so cross-file flows are present). The suite-level key is
 `VulnerabilityKeys/SlopShop_Actual.vulnerability_key.json`. See its own
 [`README.md`](SlopShop_Actual/README.md).
+
+```bash
+cp -r SlopShop_Actual /tmp/scan-target && cd /tmp/scan-target
+rm BENCHMARK.md && rm -rf tools corpus provenance
+# what remains — README.md, services/, infra/ — is a plain application
+```
 
 Then run your scanner over the target, collect its findings (file + line + CWE),
 and score them against the matching key in `VulnerabilityKeys/`.
@@ -108,7 +116,7 @@ keyed location, and prints the metrics appropriate to that bench:
   positive, so it also reports total noise. Lower is better.
 - **Perfect** — every finding is a false positive; reports the count and its
   distribution. The floor before any bait exists.
-- **Actual** — recall over the 164 CVEs, broken down by language. (Only one sink is
+- **Actual** — recall over the 150 CVEs, broken down by language. (Only one sink is
   labelled per CVE, so no precision figure is reported.)
 
 **Matching is explicit and tunable, not a black box** (`python scoring/score.py -h`):
@@ -234,5 +242,5 @@ SlopBench/
 ├── SlopShopSparse/      sparse vulnerable app  (same 411 vulns, spread out)
 ├── SlopShop_F/          clean app + 60 feints  (README app-facing, no in-tree evaluator files)
 ├── SlopShopPerfect/     clean app, no bait     (README app-facing, no in-tree evaluator files)
-└── SlopShop_Actual/     164 real post-cutoff CVEs (harness + corpus; ground truth isolated)
+└── SlopShop_Actual/     150 real post-cutoff CVEs as the SlopShop app (README app-facing; BENCHMARK.md + tools/ + corpus/ + provenance/ = evaluator-only)
 ```
