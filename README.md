@@ -27,6 +27,7 @@ Every bench is designed around one rule:
 | [`SlopShop_F/`](SlopShop_F/) | Clean app carrying **60 "feints"** — constructs that pattern-match a bug class but are correct | **0** real vulns · 60 planted false-positive lures (20 easy / 20 medium / 20 hard) | Specificity / lure susceptibility |
 | [`SlopShopPerfect/`](SlopShopPerfect/) | The same app, correct, with **no vulns and no planted lures** | **0** of everything | Baseline false-positive floor on ordinary code |
 | [`SlopShop_Actual/`](SlopShop_Actual/) | **150 real, post-cutoff CVEs** laid out as the SlopShop app, each with its surrounding module for cross-file context | 150 real vulns · 129 CWEs · disclosed after 2025-12-01 | Recall on code that could not be in training data |
+| [`SlopShop_Actual_Minimum/`](SlopShop_Actual_Minimum/) | **80 real, post-cutoff CVEs**, each findable in a single file (no module context), so the tree stays small for LLM scanners | 80 real vulns · 80 CWEs · disclosed after 2025-12-01 · ~130 files | Recall on unseen code without a large tree |
 
 `Dense`, `Sparse`, `_F` and `Perfect` are one matched set: they are the same
 application, so a scanner's four scores are directly comparable. Pairing them
@@ -56,6 +57,7 @@ target carries no answers, by construction:
 | `VulnerabilityKeys/SlopShop_F.vulnerability_key.json`      | _F (60 planted feints) |
 | `VulnerabilityKeys/SlopShopPerfect.vulnerability_key.json` | Perfect (expected empty) |
 | `VulnerabilityKeys/SlopShop_Actual.vulnerability_key.json` (+ `.md`) | Actual (150 CVEs) |
+| `VulnerabilityKeys/SlopShop_Actual_Minimum.vulnerability_key.json` (+ `.md`) | Actual_Minimum (80 CVEs) |
 
 ## Using a bench
 
@@ -92,6 +94,17 @@ rm BENCHMARK.md && rm -rf tools corpus provenance
 # what remains — README.md, services/, infra/ — is a plain application
 ```
 
+**SlopShop_Actual_Minimum** — the same idea trimmed for tools that choke on a large
+tree: 80 CVEs, each self-contained in one file, ~130 files total. Strip only
+`BENCHMARK.md` and `tools/`, then scan `README.md` + `services/` + `infra/`. Key:
+`VulnerabilityKeys/SlopShop_Actual_Minimum.vulnerability_key.json`.
+
+```bash
+cp -r SlopShop_Actual_Minimum /tmp/scan-target && cd /tmp/scan-target
+rm BENCHMARK.md && rm -rf tools
+# what remains — README.md, services/, infra/ — is a plain application
+```
+
 Then run your scanner over the target, collect its findings (file + line + CWE),
 and score them against the matching key in `VulnerabilityKeys/`.
 
@@ -104,7 +117,7 @@ CodeQL, Semgrep, and most tools can, and it is easy to coerce an LLM into it), t
 python scoring/score.py --bench dense --sarif run.sarif
 ```
 
-`--bench` is one of `dense` / `sparse` / `f` / `perfect` / `actual`. The scorer
+`--bench` is one of `dense` / `sparse` / `f` / `perfect` / `actual` / `minimum`. The scorer
 loads the matching key from `VulnerabilityKeys/`, matches each SARIF result to a
 keyed location, and prints the metrics appropriate to that bench:
 
@@ -242,5 +255,6 @@ SlopBench/
 ├── SlopShopSparse/      sparse vulnerable app  (same 411 vulns, spread out)
 ├── SlopShop_F/          clean app + 60 feints  (README app-facing, no in-tree evaluator files)
 ├── SlopShopPerfect/     clean app, no bait     (README app-facing, no in-tree evaluator files)
-└── SlopShop_Actual/     150 real post-cutoff CVEs as the SlopShop app (README app-facing; BENCHMARK.md + tools/ + corpus/ + provenance/ = evaluator-only)
+├── SlopShop_Actual/     150 real post-cutoff CVEs as the SlopShop app (README app-facing; BENCHMARK.md + tools/ + corpus/ + provenance/ = evaluator-only)
+└── SlopShop_Actual_Minimum/  80 of those CVEs, one file each, ~130 files (README app-facing; BENCHMARK.md + tools/ = evaluator-only)
 ```

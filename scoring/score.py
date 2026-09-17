@@ -34,6 +34,7 @@ BENCHES = {
     "f":       {"kind": "feint",   "key": "SlopShop_F.vulnerability_key.json"},
     "perfect": {"kind": "perfect", "key": "SlopShopPerfect.vulnerability_key.json"},
     "actual":  {"kind": "actual",  "key": "SlopShop_Actual.vulnerability_key.json"},
+    "minimum": {"kind": "actual",  "key": "SlopShop_Actual_Minimum.vulnerability_key.json"},
 }
 
 # Named safe look-alikes in Dense/Sparse: correct code that bait a false positive.

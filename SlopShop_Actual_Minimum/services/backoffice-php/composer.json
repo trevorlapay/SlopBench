@@ -1,0 +1,4 @@
+{
+  "name": "slopshop/backoffice",
+  "require": {"php": ">=8.2"}
+}
